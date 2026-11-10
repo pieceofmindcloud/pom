@@ -259,6 +259,60 @@ pub struct NetworkSettings {
     /// block; a missing block is metering off.
     #[serde(default)]
     pub metering: MeteringSettings,
+    /// How visitors reach the models: planning themselves (`direct`, every
+    /// released network), or through a member entry node (`member_gateway`,
+    /// `member_gateway_only`). See `backend/delegation.rs`.
+    #[serde(default)]
+    pub inference_access: InferenceAccess,
+    /// Which members serve as entry nodes for visitors.
+    #[serde(default)]
+    pub entry_nodes: EntryNodes,
+    /// Charging visitors from prepaid credit (`crate::payments`).
+    #[serde(default)]
+    pub payments: PaymentsSettings,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceAccess {
+    #[default]
+    Direct,
+    MemberGateway,
+    MemberGatewayOnly,
+}
+
+impl InferenceAccess {
+    /// Whether a visitor hands its requests to an entry node.
+    pub fn delegates(self) -> bool {
+        !matches!(self, InferenceAccess::Direct)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryNodes {
+    #[default]
+    Admins,
+    AdminsAndWorkers,
+}
+
+/// Charging visitors (`docs/superpowers/specs/2026-11-09-visitor-charging-design.md`).
+/// Off: nothing is charged. On, it needs `inference_access =
+/// member_gateway_only`, so no visitor reaches a worker without an entry node.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PaymentsSettings {
+    pub enabled: bool,
+    /// Price per model id (the name clients use), in micro-credits per 1000
+    /// tokens. A model without a price is free even when charging is on.
+    pub prices: std::collections::BTreeMap<String, ModelPrice>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ModelPrice {
+    pub in_micro_per_1k: i64,
+    pub out_micro_per_1k: i64,
 }
 
 pub use metering_core::settings::MeteringSettings;
@@ -281,6 +335,9 @@ impl NetworkSettings {
 /// Public networks need the coarse geographic key because discovery groups by
 /// country and city before measuring peer latency.
 pub fn validate_network_settings(settings: &NetworkSettings) -> Result<()> {
+    if settings.payments.enabled && settings.inference_access != InferenceAccess::MemberGatewayOnly {
+        anyhow::bail!("charging visitors needs inference access through network members only");
+    }
     if settings.visibility == NetworkVisibility::Public {
         if settings.public_name.trim().is_empty() {
             anyhow::bail!("public networks need a public name");
@@ -1803,6 +1860,30 @@ mod tests {
         assert_eq!(parsed.thermal.limit_c, 82.0);
         assert_eq!(parsed.thermal.hysteresis_c, 7.0);
         assert_eq!(parsed.thermal.cooldown_secs, 45);
+    }
+
+    #[test]
+    fn charging_visitors_needs_member_gateway_only() {
+        let mut settings = NetworkSettings::default();
+        settings.payments.enabled = true;
+        assert!(validate_network_settings(&settings).is_err());
+        settings.inference_access = InferenceAccess::MemberGatewayOnly;
+        assert!(validate_network_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn access_policy_defaults_to_direct_and_charging_off() {
+        let old: NetworkSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.inference_access, InferenceAccess::Direct);
+        assert_eq!(old.entry_nodes, EntryNodes::Admins);
+        assert!(!old.payments.enabled);
+        let set: NetworkSettings = serde_json::from_str(
+            r#"{"inference_access":"member_gateway_only","entry_nodes":"admins_and_workers","payments":{"enabled":true}}"#,
+        )
+        .unwrap();
+        assert!(set.inference_access.delegates());
+        assert_eq!(set.entry_nodes, EntryNodes::AdminsAndWorkers);
+        assert!(set.payments.enabled);
     }
 
     #[test]

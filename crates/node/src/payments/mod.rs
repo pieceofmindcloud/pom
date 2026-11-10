@@ -1,14 +1,16 @@
 // Prepaid credit, ported from `feat/x402_research` (plan
 // `2026-10-13-x402-prepaid-credit.md`) for visitor charging
-// (`docs/superpowers/plans/2026-11-09-visitor-charging.md`). Not wired yet: the
-// entry node's gate and settlement (phase D) consume this surface. Remove the
-// allowance when the wiring lands.
+// (`docs/superpowers/plans/2026-11-09-visitor-charging.md`). Wired for visitor
+// charging (`crate::delegation`, `runtime.rs`); parts of the original core
+// (refunds, the per-gateway allowance, minimum funding) are kept for the key
+// accounts and the x402 facilitator and are not used yet.
 #![allow(dead_code, unused_imports)]
 
 mod account;
 mod book;
 mod ledger;
 mod pricing;
+pub(crate) mod runtime;
 mod x402;
 
 pub use account::{key_account, network_account, AccountId};

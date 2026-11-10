@@ -470,6 +470,15 @@ pub const REDISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
 /// cannot read the peer, and says why.
 pub const REDISCOVERY_GIVE_UP: Duration = Duration::from_secs(90);
 
+/// Adds the delegation capability to a member's announce: every node that is
+/// not a visitor can be an entry node (`crate::delegation`).
+fn with_delegation(profile: crate::profile::NodeProfile, mut caps: Vec<String>) -> Vec<String> {
+    if profile != crate::profile::NodeProfile::Visitor {
+        caps.push(crate::pipeline::CAP_GATEWAY_DELEGATE.into());
+    }
+    caps
+}
+
 /// Identity of a node in a tensor parallelism group (path C).
 ///
 /// `role` is `"primary"` (owner of the GGUF and pipeline hop) or `"worker"`
@@ -2607,7 +2616,7 @@ impl Network {
             // `CAP_P2P_TUNNEL`). The last one only goes out once the endpoint
             // has actually come up (`p2p_tunnel_ready`) — claiming it any
             // earlier would send peers to dial an endpoint id that can't answer.
-            inference_frame_capabilities: if let Some(caps) = self.plugin_engine_capabilities() {
+            inference_frame_capabilities: with_delegation(self.profile(), if let Some(caps) = self.plugin_engine_capabilities() {
                 // A plugin engine serves the whole model: it takes prompts,
                 // not hidden states.
                 caps
@@ -2645,7 +2654,7 @@ impl Network {
                     caps.push(crate::pipeline::CAP_P2P_TUNNEL_STREAM.into());
                 }
                 caps
-            },
+            }),
             gateway_port: self.gateway_port,
             gateway_quic_port: self.gateway_quic_port,
             profile: self.profile(),

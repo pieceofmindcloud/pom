@@ -3487,6 +3487,9 @@ pub fn spawn_logged_generation_with_stops(
         .local_profile_is_visitor()
         .then(|| input.state.network.node_id.clone());
     let consumer = crate::metering::consumer_of(&begin_caller, visitor_self.as_deref());
+    // A visitor's charged request (`crate::delegation`): settled at the end.
+    let charge = crate::delegation::current_charge();
+    let charge_state = input.state.clone();
     tokio::spawn(crate::metering::CONSUMER.scope(consumer, generate_stream_with_stops(input, inner_tx)));
 
     tokio::spawn(async move {
@@ -3536,6 +3539,15 @@ pub fn spawn_logged_generation_with_stops(
 
         if reasoning_open {
             result.push_str("</think>");
+        }
+
+        // Settle what ran; without a summary (a failure, the client gone)
+        // nothing is billed and the hold is given back.
+        if let Some(charge) = &charge {
+            match &outcome {
+                Some(Ok(summary)) => crate::delegation::settle(&charge_state, charge, summary),
+                _ => crate::payments::runtime::release(&charge.account, charge.hold_micro),
+            }
         }
 
         let summary_trace = outcome.as_ref().and_then(|outcome| {

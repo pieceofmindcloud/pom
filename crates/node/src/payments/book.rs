@@ -117,6 +117,17 @@ impl BalanceBook {
             .unwrap_or(0)
     }
 
+    /// Every account the book knows, sorted by id.
+    pub fn accounts(&self) -> Vec<(String, AccountState)> {
+        let mut all: Vec<_> = self
+            .accounts
+            .lock()
+            .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+        all.sort_by(|a, b| a.0.cmp(&b.0));
+        all
+    }
+
     pub fn allowance(&self) -> i64 {
         self.allowance_remaining_micro
             .lock()

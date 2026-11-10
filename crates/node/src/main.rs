@@ -229,6 +229,9 @@ mod quota;
 mod metering;
 #[path = "payments/mod.rs"]
 mod payments;
+mod home_statement;
+#[path = "backend/delegation.rs"]
+mod delegation;
 #[path = "backend/metering_verify.rs"]
 mod metering_verify;
 mod rag;

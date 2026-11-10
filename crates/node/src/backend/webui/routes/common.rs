@@ -9,6 +9,7 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/connection", get(connection_status))
         .route("/api/ui/plugins", get(crate::plugins::list_plugins))
         .route("/api/ui/quota", get(crate::quota::my_quota))
+        .route("/api/ui/payments/balance", get(crate::payments::runtime::my_balance))
         .route("/api/ui/quota/reset", post(crate::quota::reset_my_session))
         .route("/api/ui/quota/request", post(crate::quota::request_more))
         .route("/api/ui/plugins/ui", get(crate::plugin_ui::list_plugin_ui))

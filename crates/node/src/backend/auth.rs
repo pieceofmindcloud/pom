@@ -563,6 +563,24 @@ pub(crate) fn set_member_oracle(network: std::sync::Arc<crate::network::Network>
     let _ = MEMBER_ORACLE.set(network);
 }
 
+/// Under `inference_access = member_gateway_only`, whether the caller of an
+/// inference call is a visitor, which must go through an entry node instead
+/// (`crate::delegation`).
+pub(crate) async fn visitor_must_delegate(config: &AuthState, extensions: &axum::http::Extensions) -> bool {
+    if config.read().await.network.inference_access != crate::config::InferenceAccess::MemberGatewayOnly {
+        return false;
+    }
+    let (Some(network), Some(caller)) = (MEMBER_ORACLE.get(), extensions.get::<crate::serve::TransportPeer>()) else {
+        return false;
+    };
+    network
+        .alive_peers()
+        .await
+        .iter()
+        .find(|p| p.node_id == caller.node_id)
+        .is_some_and(|p| network.peer_is_visitor(p))
+}
+
 /// Whether the request arrived in plain text on loopback: from this very
 /// machine, with no transport identity to prove. A tunneled request shows
 /// up as remote (`serve::TUNNELED_ORIGIN`), never as this.
@@ -1111,6 +1129,14 @@ where
         // or `x-api-key: <key>` (Anthropic Messages API style, what
         // `ANTHROPIC_API_KEY` sends). Consider both independently because a
         // client may send both headers and one can be stale or invalid.
+        // A visitor's request this entry node runs (`crate::delegation`): the
+        // marker is set in process only, never from the wire.
+        if let Some(delegated) = parts.extensions.get::<crate::delegation::Delegated>() {
+            return Ok(ApiKeyAuth {
+                caller: delegated.caller.clone(),
+                token: String::new(),
+            });
+        }
         let candidates = credential_candidates(&parts.headers);
         if candidates.is_empty() {
             return Err(AuthRejection::MissingHeader);

@@ -196,6 +196,10 @@ pub const CAP_LINK_STREAM: &str = "transport/link-v1";
 /// Advertised only while the local inference server has the validated
 /// multi-item scheduler active. It is the first and only inference frame
 /// contract; peers are never downgraded to an older wire format.
+/// The node takes visitors' requests as their entry node
+/// (`POST /v1/gateway/delegate`, `crate::delegation`). Every member announces
+/// it; the visitor keeps those the network's `entry_nodes` policy allows.
+pub const CAP_GATEWAY_DELEGATE: &str = "gateway/delegate-v1";
 /// The node signs GPU work receipts in the session lifecycle answers when
 /// the gateway hands a bundle nonce (`crate::metering`).
 pub const CAP_METERING_RECEIPT: &str = "metering/receipt-v1";

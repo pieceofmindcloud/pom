@@ -135,6 +135,15 @@ fn restore_primary_at(
     Ok(true)
 }
 
+/// The trust chain of the node's own network while it is in standby (the
+/// node visits another network). Visitor charging names the visitor's home
+/// network from it (`crate::home_statement`).
+pub(crate) fn standby_trust_document() -> Option<crate::admin_trust::AdminTrustDocument> {
+    let text = std::fs::read_to_string(standby_path()).ok()?;
+    let snapshot: PrimarySnapshot = serde_json::from_str(&text).ok()?;
+    crate::admin_trust::parse_transported(&snapshot.trust_document).ok()
+}
+
 /// Removes the standby file, once the restored config is safely on disk.
 pub(crate) fn discard() {
     if let Err(error) = std::fs::remove_file(standby_path()) {

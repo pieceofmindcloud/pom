@@ -1073,6 +1073,16 @@ pub(super) async fn require_inference_auth(
     next: Next,
 ) -> Response {
     let (parts, body) = request.into_parts();
+    if crate::auth::visitor_must_delegate(&config, &parts.extensions).await {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": "visitor_must_use_gateway",
+                "message": "this network serves visitors through its entry nodes",
+            })),
+        )
+            .into_response();
+    }
     let public_transport = {
         let cfg = config.read().await;
         cfg.network.visibility == crate::config::NetworkVisibility::Public

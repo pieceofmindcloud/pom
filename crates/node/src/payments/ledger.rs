@@ -36,6 +36,14 @@ pub enum PaymentWrite {
 }
 
 impl PaymentWrite {
+    pub fn settle(account: &str, amount_micro: i64, deploy_id: Option<String>, detail_json: Option<String>) -> Self {
+        Self::Settle { key_id: account.to_string(), amount_micro, deploy_id, detail_json }
+    }
+
+    pub fn grant(account: &str, delta_micro: i64, detail_json: Option<String>) -> Self {
+        Self::Grant { key_id: account.to_string(), delta_micro, detail_json }
+    }
+
     fn key_id(&self) -> &str {
         match self {
             Self::Grant { key_id, .. }

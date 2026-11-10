@@ -36,6 +36,15 @@ pub(crate) async fn start_gateway_with_ready(
                 .post(accept_public_directory_record)
                 .layer(axum::extract::DefaultBodyLimit::max(64 * 1024)),
         )
+        .route(
+            crate::delegation::DELEGATE_PATH,
+            post(crate::delegation::delegate_route)
+                .layer(axum::extract::DefaultBodyLimit::max(32 << 20)),
+        )
+        .route("/v1/gateway/balance", post(crate::payments::runtime::visitor_balance))
+        .route("/api/internal/payments/lease", post(crate::payments::runtime::lease_route))
+        .route("/api/internal/payments/settle", post(crate::payments::runtime::settle_route))
+        .route("/api/internal/payments/balance", post(crate::payments::runtime::balance_route))
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
         .route(crate::quic_policy::QUIC_POLICY_PATH, get(cluster_quic))
@@ -89,6 +98,12 @@ pub(crate) async fn start_gateway_with_ready(
         // cares most about the former. Peer-to-peer tensor frames never pass
         // through this router (see inference/infer_server.rs), so there is
         // no risk of compressing binary inference frames here.
+        // A visitor hands its inference requests to an entry node of the
+        // network when the network says so (`crate::delegation`).
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::delegation::visitor_layer,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_admin_for_surface,
@@ -103,6 +118,10 @@ pub(crate) async fn start_gateway_with_ready(
         .layer(compression())
         // Every response says which node it came from; see `peer_client::answered_by_other_node`.
         .layer(middleware::map_response(crate::peer_client::stamp_node_id));
+
+    // A visitor's delegated request runs through this same router.
+    crate::delegation::install_router(app.clone());
+    crate::payments::runtime::install(&warm);
 
     // Both startup paths (with a model and gateway-only) come through here, so
     // this is the one place that warms every node's catalog exactly once.

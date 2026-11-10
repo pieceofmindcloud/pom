@@ -294,6 +294,18 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::LocalOnly,
     },
+    // Charging visitors: the accounts and grants are the principal's; a
+    // machine's own balance on the network it visits is its operator's.
+    RouteRule {
+        prefix: "/api/ui/payments",
+        method: None,
+        scope: RouteScope::PrincipalOnly,
+    },
+    RouteRule {
+        prefix: "/api/ui/payments/balance",
+        method: None,
+        scope: RouteScope::LocalOnly,
+    },
     // A node's own token budget: reading it, spending a session reset,
     // asking the admins for more. A machine's own operator route.
     RouteRule {

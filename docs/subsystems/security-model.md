@@ -266,7 +266,9 @@ account is named by a home statement signed by the visitor's home principal
 and checked against the key the transport proved (`crate::home_statement`); no
 address or name enters it. Only the principal writes the authoritative book;
 other entry nodes spend leases it grants, so with the principal away charging
-fails closed.
+fails closed. A member's home statement lasts a day and its home principal renews it only
+for a member it has not banned, so a banned machine stops drawing on its home
+network's credit within a day.
 
 ## People signed in through a plugin
 

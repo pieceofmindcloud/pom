@@ -642,6 +642,29 @@ data: [DONE]"#;
         assert_eq!(listed["visitors"][0]["node_id"], id.as_str());
     }
 
+    /// A home principal issues statements to the workers it admitted, and
+    /// stops at once for one it banned: its last statement runs out in a day.
+    #[tokio::test]
+    async fn a_banned_member_gets_no_new_home_statement() {
+        let member = key(47);
+        let state = testkit::state_with("home-principal", vec![]).await;
+        let id = id_of(&member);
+        let chat = &state.network_chat;
+        assert!(!crate::home_statement::may_hold_statement(chat, &state.admin_trust, &id));
+        chat.request_admission(&id, Default::default(), crate::config::EnrollmentRole::Worker).unwrap();
+        let decision = crate::webui::AdmissionDecision { node_id: id.clone(), decision: "approve".into(), grant_micro: None };
+        assert!(crate::webui::apply_decision(&state, decision).await.status().is_success());
+        assert!(crate::home_statement::may_hold_statement(chat, &state.admin_trust, &id));
+        crate::webui::ban(&state, &id).await.unwrap();
+        assert!(!crate::home_statement::may_hold_statement(chat, &state.admin_trust, &id));
+        // A visitor of this network is not its member: its home is elsewhere.
+        let visitor = id_of(&key(48));
+        chat.request_admission(&visitor, Default::default(), crate::config::EnrollmentRole::Visitor).unwrap();
+        let decision = crate::webui::AdmissionDecision { node_id: visitor.clone(), decision: "approve".into(), grant_micro: None };
+        crate::webui::apply_decision(&state, decision).await;
+        assert!(!crate::home_statement::may_hold_statement(chat, &state.admin_trust, &visitor));
+    }
+
     #[test]
     fn a_deployment_selector_pays_its_models_price() {
         let mut settings = crate::config::NetworkSettings::default();

@@ -31,9 +31,88 @@ use std::time::Duration;
 
 /// Smallest lease an entry node asks for (one credit).
 pub(crate) const MIN_LEASE_MICRO: i64 = 1_000_000;
+/// How long an entry node spends a lease before it gives the rest back.
+pub(crate) const LEASE_SECS: i64 = 600;
+/// How long past that the principal waits before it takes back a lease an
+/// entry node never returned (it went away, or restarted).
+pub(crate) const LEASE_GRACE_SECS: i64 = 120;
+const SWEEP: Duration = Duration::from_secs(30);
 const PEER_TIMEOUT: Duration = Duration::from_secs(3);
 
 static STATE: OnceLock<Arc<PaymentState>> = OnceLock::new();
+static LEASES: OnceLock<std::sync::Mutex<LeaseBook>> = OnceLock::new();
+
+fn leases() -> &'static std::sync::Mutex<LeaseBook> {
+    LEASES.get_or_init(Default::default)
+}
+
+/// The leases on one node's side, by `(account, entry node)`: on the
+/// principal what each entry node holds of an account's reserved balance,
+/// on an entry node what it holds itself (entry node "" ).
+#[derive(Default)]
+pub(crate) struct LeaseBook {
+    held: std::collections::HashMap<(String, String), Lease>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Lease {
+    pub(crate) remaining_micro: i64,
+    pub(crate) expires_at: i64,
+}
+
+impl LeaseBook {
+    /// A grant of `amount`, which also renews the lease's term.
+    pub(crate) fn grant(&mut self, account: &str, node: &str, amount: i64, expires_at: i64) {
+        let lease = self
+            .held
+            .entry((account.to_string(), node.to_string()))
+            .or_insert(Lease { remaining_micro: 0, expires_at });
+        lease.remaining_micro += amount.max(0);
+        lease.expires_at = lease.expires_at.max(expires_at);
+    }
+
+    /// Takes up to `amount` from the lease; returns what it took.
+    pub(crate) fn take(&mut self, account: &str, node: &str, amount: i64) -> i64 {
+        let key = (account.to_string(), node.to_string());
+        let Some(lease) = self.held.get_mut(&key) else { return 0 };
+        let taken = amount.max(0).min(lease.remaining_micro);
+        lease.remaining_micro -= taken;
+        if lease.remaining_micro == 0 {
+            self.held.remove(&key);
+        }
+        taken
+    }
+
+    /// The leases past `now`, removed: `(account, node, remaining)`.
+    pub(crate) fn expire(&mut self, now: i64) -> Vec<(String, String, i64)> {
+        let gone: Vec<_> = self
+            .held
+            .iter()
+            .filter(|(_, lease)| lease.expires_at <= now)
+            .map(|((account, node), lease)| (account.clone(), node.clone(), lease.remaining_micro))
+            .collect();
+        for (account, node, _) in &gone {
+            self.held.remove(&(account.clone(), node.clone()));
+        }
+        gone
+    }
+
+    fn expire_one(&mut self, account: &str) {
+        self.held.retain(|(a, _), _| a != account);
+    }
+
+    pub(crate) fn expiring(&self, now: i64) -> Vec<String> {
+        self.held
+            .iter()
+            .filter(|(_, lease)| lease.expires_at <= now)
+            .map(|((account, _), _)| account.clone())
+            .collect()
+    }
+}
+
+fn now_secs() -> i64 {
+    chrono::Utc::now().timestamp()
+}
 static LEDGER: OnceLock<Arc<LedgerWriter>> = OnceLock::new();
 
 /// This node's book. Always present: whether anything is charged is the
@@ -56,6 +135,7 @@ pub(crate) fn install(state: &GatewayState) {
             tracing::warn!("payments: loading balances failed: {error}");
         }
     }
+    spawn_lease_sweeper(state.clone());
     // What visitors may learn of the network follows the access policy.
     let state = state.clone();
     tokio::spawn(async move {
@@ -125,6 +205,62 @@ async fn to_principal(state: &GatewayState, path: &str, body: &Value) -> Result<
     response.json().await.map_err(|e| e.to_string())
 }
 
+/// Every 30 s: on the principal, takes back leases past their term and grace
+/// (`sweep_principal`); on an entry node, gives back what is left of its
+/// leases past their term once nothing is in flight (`sweep_entry`).
+fn spawn_lease_sweeper(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(SWEEP);
+        loop {
+            ticker.tick().await;
+            if is_principal(&state) {
+                sweep_principal(&self::state(), now_secs());
+            } else {
+                sweep_entry(&state).await;
+            }
+        }
+    });
+}
+
+/// The principal releases the reservation of every lease past its term
+/// and grace.
+pub(crate) fn sweep_principal(payments: &PaymentState, now: i64) {
+    let expired = leases().lock().map(|mut l| l.expire(now)).unwrap_or_default();
+    for (account, node, remaining) in expired {
+        if remaining > 0 {
+            payments.release(&account, remaining);
+            tracing::info!("payments: took back {remaining} of {account} leased to {} (expired)", &node[..12.min(node.len())]);
+        }
+    }
+}
+
+/// What an entry node gives back of `account` when its lease ran out:
+/// everything it holds, once no request holds part of it.
+pub(crate) fn unspent_on_entry(payments: &PaymentState, account: &str) -> Option<i64> {
+    let book = payments.book();
+    (book.reserved(account) == 0).then(|| book.balance(account))
+}
+
+async fn sweep_entry(state: &GatewayState) {
+    let expiring = leases().lock().map(|l| l.expiring(now_secs())).unwrap_or_default();
+    for account in expiring {
+        let payments = self::state();
+        let Some(unspent) = unspent_on_entry(&payments, &account) else { continue };
+        // Off the local book first: no request may admit on it any more.
+        payments.grant(&account, -unspent);
+        if let Ok(mut l) = leases().lock() {
+            l.expire_one(&account);
+        }
+        if unspent > 0 {
+            let body = json!({ "account": account, "amount_micro": unspent });
+            if let Err(error) = to_principal(state, "/api/internal/payments/return", &body).await {
+                // The principal takes it back itself after the grace.
+                tracing::warn!("payments: giving back a lease failed: {error}");
+            }
+        }
+    }
+}
+
 /// Asks the principal for a lease of at least `want` on `account`; mirrors
 /// what it grants in this node's book. Returns the amount granted.
 pub(crate) async fn lease(state: &GatewayState, account: &str, want: i64) -> i64 {
@@ -134,6 +270,9 @@ pub(crate) async fn lease(state: &GatewayState, account: &str, want: i64) -> i64
             let granted = answer["granted_micro"].as_i64().unwrap_or(0).max(0);
             if granted > 0 {
                 self::state().grant(account, granted);
+                if let Ok(mut l) = leases().lock() {
+                    l.grant(account, "", granted, now_secs() + LEASE_SECS);
+                }
             }
             granted
         }
@@ -188,7 +327,32 @@ pub(crate) async fn lease_route(auth: crate::auth::InternalNodeAuth, State(state
     if let Err(refusal) = merchant_caller(&state, &auth).await {
         return refusal;
     }
-    Json(json!({ "granted_micro": grant_lease(&self::state(), &ask.account, ask.want_micro) })).into_response()
+    let granted = grant_lease(&self::state(), &ask.account, ask.want_micro);
+    if granted > 0 {
+        let node = auth.principal().map(|p| p.node_id.clone()).unwrap_or_default();
+        if let Ok(mut l) = leases().lock() {
+            l.grant(&ask.account, &node, granted, now_secs() + LEASE_SECS + LEASE_GRACE_SECS);
+        }
+    }
+    Json(json!({ "granted_micro": granted, "expires_in_secs": LEASE_SECS })).into_response()
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ReturnAsk {
+    account: String,
+    amount_micro: i64,
+}
+
+/// `POST /api/internal/payments/return`: an entry node gives back what it
+/// did not spend of its lease.
+pub(crate) async fn return_route(auth: crate::auth::InternalNodeAuth, State(state): State<GatewayState>, Json(ask): Json<ReturnAsk>) -> Response {
+    if let Err(refusal) = merchant_caller(&state, &auth).await {
+        return refusal;
+    }
+    let node = auth.principal().map(|p| p.node_id.clone()).unwrap_or_default();
+    let taken = leases().lock().map(|mut l| l.take(&ask.account, &node, ask.amount_micro)).unwrap_or(0);
+    self::state().release(&ask.account, taken);
+    Json(json!({ "returned_micro": taken })).into_response()
 }
 
 /// What a lease of `want` on `account` reserves: the free balance, capped.
@@ -217,7 +381,10 @@ pub(crate) async fn settle_route(auth: crate::auth::InternalNodeAuth, State(stat
         return refusal;
     }
     let bill = report.bill_micro.max(0);
-    self::state().settle(&report.account, bill, bill);
+    // The spend comes out of what the entry node holds of the reservation.
+    let node = auth.principal().map(|p| p.node_id.clone()).unwrap_or_default();
+    let held = leases().lock().map(|mut l| l.take(&report.account, &node, bill)).unwrap_or(0);
+    self::state().settle(&report.account, held, bill);
     if let Some(ledger) = ledger() {
         ledger.enqueue(PaymentWrite::settle(&report.account, bill, None, report.detail));
     }
@@ -768,6 +935,44 @@ mod tests {
         assert_eq!(by_cycle[&7].1["net:b"], 5);
         assert_eq!(by_cycle[&8].0, 3);
         assert_eq!(unmetered, 2);
+    }
+
+    #[test]
+    fn a_lease_is_drawn_down_by_spend_and_expires() {
+        let mut book = LeaseBook::default();
+        book.grant("net:a", "entry", 100, 1_000);
+        book.grant("net:a", "entry", 50, 900);
+        assert_eq!(book.take("net:a", "entry", 30), 30);
+        // Spend past what is held takes only what is held.
+        assert_eq!(book.take("net:a", "entry", 500), 120);
+        assert_eq!(book.take("net:a", "entry", 1), 0);
+        book.grant("net:a", "other", 40, 1_000);
+        assert!(book.expire(999).is_empty());
+        assert_eq!(book.expire(1_000), vec![("net:a".to_string(), "other".to_string(), 40)]);
+    }
+
+    #[test]
+    fn the_principal_takes_back_an_expired_lease() {
+        let payments = PaymentState::new(true, "principal");
+        payments.grant("net:lease-sweep", 1_000);
+        let granted = grant_lease(&payments, "net:lease-sweep", 600);
+        assert_eq!(payments.book().reserved("net:lease-sweep"), 600);
+        leases().lock().unwrap().grant("net:lease-sweep", "gone", granted, 50);
+        sweep_principal(&payments, 49);
+        assert_eq!(payments.book().reserved("net:lease-sweep"), 600);
+        sweep_principal(&payments, 50);
+        assert_eq!(payments.book().reserved("net:lease-sweep"), 0);
+        assert_eq!(payments.book().balance("net:lease-sweep"), 1_000);
+    }
+
+    #[test]
+    fn an_entry_node_gives_back_only_what_no_request_holds() {
+        let payments = PaymentState::new(true, "principal");
+        payments.grant("net:e", 500);
+        assert!(payments.book().try_reserve("net:e", 200) == Some(true));
+        assert_eq!(unspent_on_entry(&payments, "net:e"), None);
+        payments.release("net:e", 200);
+        assert_eq!(unspent_on_entry(&payments, "net:e"), Some(500));
     }
 
     #[test]

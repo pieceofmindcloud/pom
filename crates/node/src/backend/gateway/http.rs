@@ -46,6 +46,7 @@ pub(crate) async fn start_gateway_with_ready(
         .route("/api/internal/payments/credit-request", post(crate::payments::runtime::credit_request_route))
         .route("/api/internal/home-statement", post(crate::home_statement::internal_issue))
         .route("/api/internal/payments/price", post(crate::payments::runtime::price_route))
+        .route("/api/internal/payments/return", post(crate::payments::runtime::return_route))
         .route("/api/internal/payments/lease", post(crate::payments::runtime::lease_route))
         .route("/api/internal/payments/settle", post(crate::payments::runtime::settle_route))
         .route("/api/internal/payments/balance", post(crate::payments::runtime::balance_route))
@@ -126,6 +127,7 @@ pub(crate) async fn start_gateway_with_ready(
     // A visitor's delegated request runs through this same router.
     crate::delegation::install_router(app.clone());
     crate::payments::runtime::install(&warm);
+    crate::home_statement::install_issuer(&warm);
 
     // Both startup paths (with a model and gateway-only) come through here, so
     // this is the one place that warms every node's catalog exactly once.

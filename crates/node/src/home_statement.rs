@@ -12,10 +12,13 @@
 //! A node signs its own statement when it is the principal of its home network,
 //! the common case (every machine starts with a network of its own,
 //! `bootstrap_local_network`). A member of a larger home network gets one from
-//! its principal (`POST /api/internal/home-statement`, [`spawn_keeper`]) while
-//! it is home, valid a week ([`MEMBER_TTL_SECS`]), and keeps it in `pom.db` to
-//! show while it visits another network, where its home principal is out of
-//! reach. Back home it is renewed.
+//! its principal, valid a day ([`MEMBER_TTL_SECS`]): at home through
+//! `POST /api/internal/home-statement`, while visiting through the home
+//! principal's lobby (`LobbyRequest::HomeStatement`, found by its key), and
+//! keeps it in `pom.db` ([`spawn_keeper`]). The principal issues it only to an
+//! admin of its chain or a worker it admitted and did not ban
+//! ([`issue_for_lobby`]), so a banned member's last statement runs out within
+//! a day.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -23,8 +26,9 @@ use std::sync::Mutex;
 
 /// A statement lasts a day; the node makes a new one at two thirds.
 pub(crate) const TTL_SECS: i64 = 86_400;
-/// A statement for a member lasts a week: it must outlive a visit.
-pub(crate) const MEMBER_TTL_SECS: i64 = 7 * 86_400;
+/// A statement for a member lasts a day: what a banned member keeps
+/// spending of its home network's credit, at most. It is renewed past half.
+pub(crate) const MEMBER_TTL_SECS: i64 = 86_400;
 const STORED: &str = "home_statement";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,6 +174,56 @@ fn stored(state: &crate::gateway::GatewayState) -> Option<String> {
     serde_json::from_str(&json).ok()
 }
 
+/// What the principal's lobby answer needs: its key and chain (set once
+/// at startup, `install_issuer`).
+struct Issuer {
+    key: std::sync::Arc<ed25519_dalek::SigningKey>,
+    trust: std::sync::Arc<crate::admin_trust::AdminTrust>,
+    node_id: String,
+}
+
+static ISSUER: std::sync::OnceLock<Issuer> = std::sync::OnceLock::new();
+
+pub(crate) fn install_issuer(state: &crate::gateway::GatewayState) {
+    let _ = ISSUER.set(Issuer {
+        key: state.authority_signing_key.clone(),
+        trust: state.admin_trust.clone(),
+        node_id: state.network.node_id.clone(),
+    });
+}
+
+/// Whether `node_id` may get a statement from this network: an admin of
+/// its chain, or a worker it admitted after its last ban.
+pub(crate) fn may_hold_statement(
+    chat: &crate::network_chat::NetworkChat,
+    trust: &crate::admin_trust::AdminTrust,
+    node_id: &str,
+) -> bool {
+    if crate::admin_trust::is_admin_node(&trust.document(), node_id) {
+        return true;
+    }
+    chat.admitted_role(node_id, trust.revoked_node_at(node_id)) == Some(crate::config::EnrollmentRole::Worker)
+}
+
+/// The lobby's `HomeStatement` answer: a statement for `node_id` (key
+/// `node_key`, proved by the lobby identity) when this node is the
+/// principal and the node may hold one.
+pub(crate) fn issue_for_lobby(
+    chat: &crate::network_chat::NetworkChat,
+    node_id: &str,
+    node_key: &str,
+) -> std::result::Result<String, &'static str> {
+    let issuer = ISSUER.get().ok_or("not_ready")?;
+    let document = issuer.trust.document();
+    if document.primary.node_id != issuer.node_id {
+        return Err("not_principal");
+    }
+    if !may_hold_statement(chat, &issuer.trust, node_id) {
+        return Err("not_a_member");
+    }
+    issue_for_member(&document, &issuer.key, node_id, node_key, now()).map_err(|_| "not_principal")
+}
+
 /// On the principal, at an admission request: the account the candidate's
 /// home statement names, kept on its admission record. A statement for
 /// another node, forged or expired names nothing.
@@ -193,8 +247,10 @@ pub(crate) async fn internal_issue(
         return refuse("signature_required");
     };
     let document = state.admin_trust.document();
-    // An admin, or a worker its membership token proves. A visitor's home is
-    // its own network, never this one.
+    // An admin, or a worker its membership token proves, never one banned.
+    // A visitor's home is its own network, never this one.
+    let revoked = state.admin_trust.revoked_node_at(&caller.node_id).is_some()
+        && !may_hold_statement(&state.network_chat, &state.admin_trust, &caller.node_id);
     let worker = async {
         let peer = state.network.alive_peers().await.into_iter().find(|p| p.node_id == caller.node_id);
         match peer {
@@ -205,13 +261,41 @@ pub(crate) async fn internal_issue(
             None => false,
         }
     };
-    let member = crate::admin_trust::control_issuer_is_admin(&document, &caller) || worker.await;
+    let member = !revoked
+        && (crate::admin_trust::control_issuer_is_admin(&document, &caller)
+            || may_hold_statement(&state.network_chat, &state.admin_trust, &caller.node_id)
+            || worker.await);
     if !member {
         return refuse("not_a_member");
     }
     match issue_for_member(&document, &state.authority_signing_key, &caller.node_id, &caller.pubkey, now()) {
         Ok(token) => axum::Json(serde_json::json!({ "statement": token })).into_response(),
         Err(_) => refuse("not_the_principal"),
+    }
+}
+
+/// Whether the stored statement has more than half its life left.
+fn fresh_enough(state: &crate::gateway::GatewayState) -> bool {
+    stored(state)
+        .and_then(|t| verify(&t, &state.network.node_id, now()).ok())
+        .is_some_and(|c| c.exp - now() > MEMBER_TTL_SECS / 2)
+}
+
+async fn renew_through_lobby(state: &crate::gateway::GatewayState, home: &crate::admin_trust::AdminTrustDocument) {
+    let Some(key) = crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&home.primary.pubkey) else {
+        return;
+    };
+    let Ok(client) = crate::network_lobby::client().await else { return };
+    let request = crate::network_lobby::LobbyRequest::HomeStatement { identity: client.proof() };
+    match client.request(&key, request).await {
+        Ok(answer) => match answer.statement {
+            Some(token) if verify(&token, &state.network.node_id, now()).is_ok() => {
+                let _ = state.database.save_local_setting(STORED, &token);
+                tracing::info!("home statement: renewed from the home principal's lobby");
+            }
+            _ => tracing::warn!("home statement: the home principal refused: {:?}", answer.error),
+        },
+        Err(error) => tracing::debug!("home statement: the home principal is out of reach: {error:#}"),
     }
 }
 
@@ -223,18 +307,18 @@ pub(crate) fn spawn_keeper(state: crate::gateway::GatewayState) {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             ticker.tick().await;
-            // Visiting: the home principal is out of reach.
-            if crate::webui::standby::standby_trust_document().is_some() {
+            // Visiting: the home principal is reached through its lobby.
+            if let Some(home) = crate::webui::standby::standby_trust_document() {
+                if home.primary.node_id != state.network.node_id && !fresh_enough(&state) {
+                    renew_through_lobby(&state, &home).await;
+                }
                 continue;
             }
             let document = state.admin_trust.document();
             if document.primary.node_id == state.network.node_id {
                 continue;
             }
-            let fresh = stored(&state)
-                .and_then(|t| verify(&t, &state.network.node_id, now()).ok())
-                .is_some_and(|c| c.exp - now() > MEMBER_TTL_SECS / 2);
-            if fresh {
+            if fresh_enough(&state) {
                 continue;
             }
             let Some(peer) = state.network.alive_peers().await.into_iter().find(|p| p.node_id == document.primary.node_id) else {

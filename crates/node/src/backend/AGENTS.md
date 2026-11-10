@@ -687,8 +687,12 @@ boundary.
   `gateway::generation::MeterCollect`. Spec
   `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`.
 - `delegation.rs` - the member gateway and the payment gate for visitors
-  (`POST /v1/gateway/delegate`, `visitor_layer`); see
-  `docs/subsystems/payments.md`.
+  (`POST /v1/gateway/delegate`, `visitor_layer`): the entry node holds the
+  request's worst case, refuses in the route's vocabulary (`speak`), and
+  settles at the summary with the metering bundle (`GenSummary.metering_bundle`,
+  also held back on the plugin engine path until the stages' receipts are in);
+  the visitor relays the answer and records `x_pom.payment`
+  (`tap_payment`). See `docs/subsystems/payments.md`.
 - `metering_verify.rs` - re-execution for the ledger (`node.reexecute`, an
   asynchronous job): cuts and loads each range of the local whole model, runs
   the head's sequence teacher-forced with each boundary's codec, and checks the

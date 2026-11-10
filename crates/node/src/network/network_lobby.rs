@@ -218,6 +218,11 @@ pub enum LobbyRequest {
     /// member list (an approved admission record). It does not depend on the
     /// lobby being open, and works for unlisted networks too.
     ClaimKey { identity: LobbyIdentity },
+    /// A member visiting another network asks its home principal for a fresh
+    /// home statement (`crate::home_statement`): answered by the principal to
+    /// an admin of its chain or a worker it admitted and did not ban, lobby
+    /// open or not. An older principal does not know it and refuses it.
+    HomeStatement { identity: LobbyIdentity },
     /// A node says it is leaving the network. It is the same notice a member
     /// sends its principal over the cluster's control channel, for when that
     /// channel is not there: the principal never came to admit this node, or
@@ -480,6 +485,9 @@ pub struct LobbyResponse {
     /// to `Post`, `Fetch` and `Admission`.
     #[serde(default)]
     pub messages_closed: bool,
+    /// The home statement a `HomeStatement` request asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement: Option<String>,
 }
 
 impl LobbyResponse {
@@ -1324,6 +1332,7 @@ mod tests {
                 LobbyRequest::Fetch { .. }
                 | LobbyRequest::Admission { .. }
                 | LobbyRequest::ClaimKey { .. }
+                | LobbyRequest::HomeStatement { .. }
                 | LobbyRequest::Leave { .. }
                 | LobbyRequest::Publish { .. }
                 | LobbyRequest::Info
@@ -1347,6 +1356,7 @@ mod tests {
                 pending: false,
                 admission: None,
                 messages_closed: false,
+                statement: None,
                 messages: vec![LobbyMessage {
                     message_id: "m1".into(),
                     sender_node_id: node_id,

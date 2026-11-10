@@ -63,6 +63,10 @@ level entry consumed by `backend/gateway/` (`generate_stream_with_stops`).
   which decrements on drop (RAII): the load balance never gets stuck on an error.
 - `PipelineStep::frame_encoding` - returns the `F16` marker; every byte passes
   through the initial frame `inference/frame-v1-batch`.
+- `CAP_GATEWAY_DELEGATE` / `CAP_GATEWAY_CLIENT` - `gateway/delegate-v1`,
+  announced by members (they can be entry nodes for visitors), and
+  `gateway/client-v1`, announced by visitors that delegate; a visitor without it
+  is cut off by `member_gateway_only` (`docs/subsystems/payments.md`).
 - `CAP_FRAME_BATCH` - capability `inference/frame-v1-batch`; the relay sends only
   after the peer announces the loaded server. There is no rolling upgrade for
   earlier formats in this first version of the product.

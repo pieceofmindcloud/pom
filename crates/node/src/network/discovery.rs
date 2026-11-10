@@ -1817,6 +1817,23 @@ async fn answer_lobby_request(
     // A member that missed a key rotation asks for the current key. The
     // answer is the same grant an approval carries, and it goes only to a
     // node on the member list whose signature over this transport verifies.
+    if let LobbyRequest::HomeStatement { identity } = &request {
+        if !chat.directory_board().allow(&caller) {
+            return LobbyResponse::rejected("rate_limited");
+        }
+        let Some(node_id) = identity.verified_node_id(&peer) else {
+            return LobbyResponse::rejected("identity_invalid");
+        };
+        return match crate::home_statement::issue_for_lobby(chat, &node_id, &identity.pubkey) {
+            Ok(statement) => LobbyResponse {
+                accepted: true,
+                node_id,
+                statement: Some(statement),
+                ..LobbyResponse::default()
+            },
+            Err(reason) => LobbyResponse::rejected(reason),
+        };
+    }
     if let LobbyRequest::ClaimKey { identity } = &request {
         if !chat.directory_board().allow(&caller) {
             return LobbyResponse::rejected("rate_limited");
@@ -1889,6 +1906,7 @@ async fn answer_lobby_request(
         | LobbyRequest::Describe
         | LobbyRequest::Directory
         | LobbyRequest::ClaimKey { .. }
+        | LobbyRequest::HomeStatement { .. }
         | LobbyRequest::Leave { .. }
         | LobbyRequest::Publish { .. } => {
             unreachable!("answered above")
@@ -1913,6 +1931,7 @@ async fn answer_lobby_request(
         | LobbyRequest::Describe
         | LobbyRequest::Directory
         | LobbyRequest::ClaimKey { .. }
+        | LobbyRequest::HomeStatement { .. }
         | LobbyRequest::Leave { .. }
         | LobbyRequest::Publish { .. } => {
             unreachable!("answered above")

@@ -51,9 +51,15 @@ by a home statement (compact token `<slug>-home-network/v1`, signed by the
 home principal, naming the visitor's node key, checked against the caller's
 transport key; `crate::home_statement`). A node that is its home network's
 principal signs its own (a day). A member of a larger home network gets one
-from its principal (`POST /api/internal/home-statement`, a week) while it is
-home (checked every minute, asked for when missing or past half its life), and keeps it in `pom.db`
-(`home_statement`) to show while it visits.
+from its principal, valid a day: at home through
+`POST /api/internal/home-statement`, while visiting through the home
+principal's lobby (`LobbyRequest::HomeStatement`, found by its key through
+pkarr). `spawn_keeper` checks every minute and asks when the statement is
+missing or past half its life, and keeps it in `pom.db` (`home_statement`).
+The principal issues one only to an admin of its chain or a worker it admitted
+and did not ban since (`may_hold_statement`), so a banned member's last
+statement runs out within a day: that is the most of its home network's credit
+it can still spend.
 
 The statement also travels with the admission request (`LobbyRequest::Admission.home`,
 optional): the host records the account on the admission record
@@ -81,9 +87,15 @@ blocks the next admission. On an entry node other than the principal,
 
 The principal holds the authoritative book and ledger (`x402_*` tables). Other
 entry nodes admit against a lease the principal grants
-(`/api/internal/payments/lease`) and report settlements
-(`/api/internal/payments/settle`); with the principal away, leases run down
-and requests are refused.
+(`/api/internal/payments/lease`, reserved on the principal's book) and report
+settlements (`/api/internal/payments/settle`), which draw the lease down. A
+lease runs ten minutes (`LEASE_SECS`): past it, once no request holds part of
+it, the entry node takes what is left off its book and gives it back
+(`/api/internal/payments/return`). The principal takes back a lease nobody
+returned two minutes after that (`LEASE_GRACE_SECS`): an entry node that went
+away or restarted. With the principal away, leases run down and requests are
+refused. Leases live in memory on both sides; a restart of the principal drops
+its reservations with them.
 
 ## The visitor's side
 
@@ -111,7 +123,7 @@ declines it on the Payments screen.
 - `GET /api/ui/payments/balance`, `POST /api/ui/payments/request` (local, a visitor's own).
 - Between nodes: `/v1/gateway/{delegate,balance,credit-request}` (a visitor to
   an entry node), `/api/internal/payments/{lease,settle,balance,price,credit-request}`
-  (a member to the principal), `/api/internal/home-statement` (a member to its
+  (a member to the principal; also `return`), `/api/internal/home-statement` (a member to its
   home principal).
 
 The admin screen is `/config/payments` (`apps/frontend/src/routes/Payments.tsx`).
@@ -130,7 +142,9 @@ The admin screen is `/config/payments` (`apps/frontend/src/routes/Payments.tsx`)
 ## Income beside payouts
 
 A settlement whose request was metered names the bundle and cycle in the
-ledger row's detail (`{"bundle","cycle"}`). `GET /api/ui/payments` returns
+ledger row's detail (`{"bundle","cycle"}`). On the plugin engine path the
+gateway holds the engine's final summary until the stages' receipts are in, so
+with metering on the answer's end waits for that round. `GET /api/ui/payments` returns
 `cycles`: income per cycle and per account, beside the local metering
 plugin's `rpc.overview` for that cycle (statements' payouts once closed,
 `null` amounts while open, `null` without the plugin), and the income
@@ -142,6 +156,7 @@ credits.
 - A home network's principal transfer opens a new account: the statement's
   earlier principals are claimed by its signer and cannot be checked by the
   host, so they are not used to move an account.
-- A member's statement cannot be renewed while it visits; it lasts a week.
+- Renewing a member's statement while it visits needs the home principal
+  reachable through pkarr; offline, the statement runs out after a day.
 - Funding is the admin's (grants, approved credit requests); a payment
   provider (`pom-plugin-x402`) is later work.

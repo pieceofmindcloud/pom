@@ -265,6 +265,20 @@ troubled deployment.
 
 ## src/ subfolders
 
+- `home_statement.rs` - home statements: a compact token
+  (`<slug>-home-network/v1`) signed by a node's home principal naming the node,
+  which a network that charges visitors uses as the visitor's account
+  (`net:<principal key>`). Self-signed by a principal (a day); issued to an
+  admin or admitted, unbanned worker (a day) at home by
+  `POST /api/internal/home-statement` and while visiting through the lobby
+  (`LobbyRequest::HomeStatement`); `spawn_keeper` keeps it in `pom.db`. See
+  `docs/subsystems/payments.md`.
+- `payments/` - prepaid credit for visitor charging: the x402 core
+  (`book.rs` balances and holds, `ledger.rs` the `x402_*` tables, `pricing.rs`,
+  `x402.rs` the gate and the 402 envelope, `account.rs` account ids) and
+  `runtime.rs` (the process-wide book, settlement, leases with their expiry and
+  return, the Payments and Credit routes, credit requests, income by cycle).
+  See `docs/subsystems/payments.md`.
 - `relay_pass.rs` - relay passes: the admin-signed token a visitor's relay
   admits by, naming the network, the relay URL and an expiry, never its
   holder; its header differs from the membership token's (`membership.rs`

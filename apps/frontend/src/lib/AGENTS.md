@@ -47,7 +47,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   Direct Chat consumers get an isolated provider wrapper. The terminal
   `ChatStreamResult` retains trace, generation timings and source so Chat can
   associate the complete telemetry capture with the specific reply while the
-  persisted message patch settles.
+  persisted message patch settles. A 402 sets `errorKind: "payment_required"` on the reply, which the
+  Chat shows as out of credit with a link to `/config/credit`.
 - `chatWaiting.ts` - which line the Chat shows before the first token: the
   set (`wake`, `pieces`, `assemble`, `long`) from the `asleep` flag and the
   elapsed time, and the rotation inside it. Texts are `chat.wait.<set>.<n>`;
@@ -106,6 +107,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   this network received, admin only), `useAdmissionRequests` (what this node
   asked of other networks) and `admissionsApi` (`decide`, `join`, `forget`).
   The grant never reaches the browser, so there is no type for it.
+  `decide` takes an optional credit granted to a visitor's account on
+  approval (`grant_micro`); `AdmissionRecord.account` is the account its home
+  statement named.
 - `publicLatency.ts` - `usePublicLatencies(keys, enabled, refreshKey)`: round
   trip from this node to each listed network, from
   `/api/ui/network-chat/lobby/latency`. Nothing is asked until `enabled`,

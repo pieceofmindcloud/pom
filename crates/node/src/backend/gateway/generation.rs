@@ -1038,36 +1038,63 @@ async fn generate_measured_stream(
             let _ = tx.send(GenEvent::Failed(error.to_string())).await;
             return;
         }
-        crate::plugin_engine::generate(
-            &state,
-            &plan,
-            &code,
-            model,
-            trace_id.clone(),
-            crate::plugin_engine::EngineRequest {
-                prompt,
-                chat_template,
-                thinking_enabled,
-                max_tokens: budget.total,
-                stops,
-                session: crate::plugin_session::session_of(&request_details),
-                request_details,
-                probe_labels: probe
-                    .as_ref()
-                    .map(|probe| probe.labels.clone())
-                    .unwrap_or_default(),
-                probe_prefix_bytes: probe.as_ref().and_then(|probe| probe.retain_prefix_bytes),
-                images: images
-                    .iter()
-                    .map(|bytes| crate::plugin_engine::image_data_url(bytes))
-                    .collect(),
-            },
-            &tx,
-            &cancellation,
-            request_started,
-        )
-        .await;
-        collect_plugin_receipts(&state, &plan, &code).await;
+        // The engine's final summary waits for the stages' receipts, so it
+        // can name the turn's metering bundle (a charge settles against it).
+        let (engine_tx, mut engine_rx) = mpsc::channel::<GenEvent>(64);
+        let forward = {
+            let tx = tx.clone();
+            async move {
+                let mut held = None;
+                while let Some(event) = engine_rx.recv().await {
+                    if matches!(event, GenEvent::Done(_)) {
+                        held = Some(event);
+                    } else if tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+                held
+            }
+        };
+        let engine = async {
+            crate::plugin_engine::generate(
+                &state,
+                &plan,
+                &code,
+                model,
+                trace_id.clone(),
+                crate::plugin_engine::EngineRequest {
+                    prompt,
+                    chat_template,
+                    thinking_enabled,
+                    max_tokens: budget.total,
+                    stops,
+                    session: crate::plugin_session::session_of(&request_details),
+                    request_details,
+                    probe_labels: probe
+                        .as_ref()
+                        .map(|probe| probe.labels.clone())
+                        .unwrap_or_default(),
+                    probe_prefix_bytes: probe.as_ref().and_then(|probe| probe.retain_prefix_bytes),
+                    images: images
+                        .iter()
+                        .map(|bytes| crate::plugin_engine::image_data_url(bytes))
+                        .collect(),
+                },
+                &engine_tx,
+                &cancellation,
+                request_started,
+            )
+            .await;
+            drop(engine_tx);
+        };
+        let ((), held) = tokio::join!(engine, forward);
+        let bundle = collect_plugin_receipts(&state, &plan, &code).await;
+        if let Some(mut event) = held {
+            if let GenEvent::Done(summary) = &mut event {
+                summary.metering_bundle = bundle;
+            }
+            let _ = tx.send(event).await;
+        }
         return;
     }
 
@@ -2744,8 +2771,8 @@ pub(super) async fn release_sessions_metered(
 /// GPU work metering of a turn a split plugin engine served
 /// (`crate::plugin_metering`): every stage signs its receipt for the bundle
 /// nonce, and the gateway assembles the bundle as for a pipeline.
-async fn collect_plugin_receipts(state: &GatewayState, plan: &PipelinePlan, code: &str) {
-    let Some(meter) = MeterCollect::start(state, plan) else { return };
+async fn collect_plugin_receipts(state: &GatewayState, plan: &PipelinePlan, code: &str) -> Option<(String, u64)> {
+    let meter = MeterCollect::start(state, plan)?;
     let body = serde_json::json!({ "metering_bundle": meter.bnd() });
     let peers = state.network.alive_peers().await;
     for (index, step) in plan.steps.iter().enumerate() {
@@ -2784,7 +2811,7 @@ async fn collect_plugin_receipts(state: &GatewayState, plan: &PipelinePlan, code
             meter.record(index, &answer);
         }
     }
-    let _ = meter.finish(state, plan);
+    meter.finish(state, plan)
 }
 
 /// The receipts of one metered turn, filled by the lifecycle calls

@@ -1825,6 +1825,7 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
         PRAGMA user_version = 1;",
     )?;
     connection.execute_batch(crate::metering::SCHEMA)?;
+    connection.execute_batch(crate::payments::SCHEMA)?;
     let has_origin_node_id = connection
         .prepare("PRAGMA table_info(api_keys)")?
         .query_map([], |row| row.get::<_, String>(1))?

@@ -227,6 +227,8 @@ pub mod quic_policy;
 mod quota;
 #[path = "backend/metering.rs"]
 mod metering;
+#[path = "payments/mod.rs"]
+mod payments;
 #[path = "backend/metering_verify.rs"]
 mod metering_verify;
 mod rag;

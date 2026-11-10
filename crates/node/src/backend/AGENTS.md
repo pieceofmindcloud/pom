@@ -686,6 +686,9 @@ boundary.
   and the ledger's node operations (`node_op`). The gateway's collector is
   `gateway::generation::MeterCollect`. Spec
   `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`.
+- `delegation.rs` - the member gateway and the payment gate for visitors
+  (`POST /v1/gateway/delegate`, `visitor_layer`); see
+  `docs/subsystems/payments.md`.
 - `metering_verify.rs` - re-execution for the ledger (`node.reexecute`, an
   asynchronous job): cuts and loads each range of the local whole model, runs
   the head's sequence teacher-forced with each boundary's codec, and checks the

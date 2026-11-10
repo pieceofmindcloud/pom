@@ -32,7 +32,8 @@ Change any of these before the task that uses it:
   on today's code.
 - [x] A.2 Account kinds: `payments/account.rs` (`net:<pubkey>`, `key:<id>`, a
   bare id reads as a key).
-- [ ] Everything below.
+- [x] B.1-B.3, B.5 (inference port), C.1 (self-signed), D.1-D.3, E (leases), F (Payments screen),
+  live check passed. Deviations and what remains: `docs/subsystems/payments.md`, "Not yet done".
 
 ---
 

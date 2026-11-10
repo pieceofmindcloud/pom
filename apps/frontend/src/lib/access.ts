@@ -36,6 +36,8 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   // The cluster's connection key is the operator's credential: only the
   // admin sees it.
   "/config/keys/connection": ["admin"],
+  // Charging visitors is the principal's; the server enforces it.
+  "/config/payments": ["admin"],
   // A signed-in person's own keys: no node profile opens it, only that
   // person's session (`canAccessRoute`).
   "/config/my-keys": [],

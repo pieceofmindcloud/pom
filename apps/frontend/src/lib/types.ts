@@ -2361,6 +2361,9 @@ export interface DeployLoadDistribution {
 export type MtpPlacement = "auto" | "vram" | "ram";
 
 export interface RuntimeParams {
+  /** What a visitor of a charging network pays, in micro-credits per 1000
+   *  tokens; absent leaves the network's price, zero and zero removes it. */
+  pricing?: { in_micro_per_1k: number; out_micro_per_1k: number } | null;
   /** The plugin whose inference service runs the whole model instead of
    *  llama.cpp (`"strata"`); absent is POM's own engine. */
   inference_service?: string | null;

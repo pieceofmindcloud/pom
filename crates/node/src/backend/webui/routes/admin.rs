@@ -12,6 +12,7 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/network/settings", post(save_network_settings))
         .route("/api/ui/payments", get(crate::payments::runtime::overview))
         .route("/api/ui/payments/grant", post(crate::payments::runtime::grant_route))
+        .route("/api/ui/payments/decide", post(crate::payments::runtime::decide_credit))
         .route("/api/ui/network/trust-share", get(trust_share))
         .route("/api/ui/network/quic", post(save_quic))
         .route("/api/ui/network/relay-policy", post(save_relay_policy))

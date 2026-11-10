@@ -3501,7 +3501,14 @@ pub fn spawn_logged_generation_with_stops(
         let mut outcome: Option<Result<GenSummary, String>> = None;
         let mut failure_trace: Option<crate::prefill::RequestTrace> = None;
 
-        while let Some(event) = inner_rx.recv().await {
+        let mut settled = false;
+        while let Some(mut event) = inner_rx.recv().await {
+            // A charged request settles before its summary reaches the
+            // client, so the answer can say what it cost (`x_pom.payment`).
+            if let (Some(charge), GenEvent::Done(summary)) = (&charge, &mut event) {
+                summary.payment = Some(crate::delegation::settle(&charge_state, charge, summary));
+                settled = true;
+            }
             let terminal = match &event {
                 GenEvent::Token(text) => {
                     generated += 1;
@@ -3544,9 +3551,8 @@ pub fn spawn_logged_generation_with_stops(
         // Settle what ran; without a summary (a failure, the client gone)
         // nothing is billed and the hold is given back.
         if let Some(charge) = &charge {
-            match &outcome {
-                Some(Ok(summary)) => crate::delegation::settle(&charge_state, charge, summary),
-                _ => crate::payments::runtime::release(&charge.account, charge.hold_micro),
+            if !settled {
+                crate::payments::runtime::release(&charge.account, charge.hold_micro);
             }
         }
 

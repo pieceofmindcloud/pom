@@ -23,6 +23,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, OnceLock};
@@ -55,6 +56,18 @@ pub(crate) fn install(state: &GatewayState) {
             tracing::warn!("payments: loading balances failed: {error}");
         }
     }
+    // What visitors may learn of the network follows the access policy.
+    let state = state.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            ticker.tick().await;
+            let settings = settings(&state).await;
+            let view = (settings.inference_access == crate::config::InferenceAccess::MemberGatewayOnly)
+                .then_some(settings.entry_nodes == crate::config::EntryNodes::Admins);
+            state.network.set_visitor_view(view);
+        }
+    });
 }
 
 pub(crate) fn is_principal(state: &GatewayState) -> bool {
@@ -227,17 +240,107 @@ pub(crate) async fn balance_route(auth: crate::auth::InternalNodeAuth, State(sta
     Json(json!({ "balance_micro": self::state().book().balance(&ask.account) })).into_response()
 }
 
+/// Opens `account` on the principal at an admission, with an optional first
+/// grant: a grant of zero still lists the account.
+pub(crate) fn open_account(account: &str, grant_micro: i64, node_id: &str) {
+    self::state().grant(account, grant_micro.max(0));
+    if grant_micro > 0 {
+        if let Some(ledger) = ledger() {
+            let detail = json!({ "admission": node_id }).to_string();
+            ledger.enqueue(PaymentWrite::grant(account, grant_micro, Some(detail)));
+        }
+    }
+}
+
+// ── Prices from the deployments ───────────────────────────────────────────
+
+/// `prices` with `model` set to `price` (zero in and out: removed). `None`
+/// when nothing changes.
+pub(crate) fn with_price(
+    prices: &std::collections::BTreeMap<String, crate::config::ModelPrice>,
+    model: &str,
+    price: crate::config::ModelPrice,
+) -> Option<std::collections::BTreeMap<String, crate::config::ModelPrice>> {
+    let mut next = prices.clone();
+    if price.in_micro_per_1k <= 0 && price.out_micro_per_1k <= 0 {
+        next.remove(model);
+    } else {
+        next.insert(model.to_string(), price);
+    }
+    (next != *prices).then_some(next)
+}
+
+/// Writes a deployment's price into the network's prices, which every entry
+/// node reads: on the principal directly, from another admin through it.
+pub(crate) async fn mirror_price(state: &GatewayState, model: &str, price: crate::config::ModelPrice) {
+    if is_principal(state) {
+        let mut settings = settings(state).await;
+        if let Some(prices) = with_price(&settings.payments.prices, model, price) {
+            settings.payments.prices = prices;
+            if let Err(error) = crate::webui::network::apply_network_settings(state, settings).await {
+                tracing::warn!("could not record the price of {model}: {error}");
+            }
+        }
+        return;
+    }
+    let body = json!({ "model": model, "price": price });
+    if let Err(error) = to_principal(state, "/api/internal/payments/price", &body).await {
+        tracing::warn!("could not send the price of {model} to the principal: {error}");
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct PriceAsk {
+    model: String,
+    price: crate::config::ModelPrice,
+}
+
+/// `POST /api/internal/payments/price`: an admin deployed a priced model.
+pub(crate) async fn price_route(auth: crate::auth::InternalNodeAuth, State(state): State<GatewayState>, Json(ask): Json<PriceAsk>) -> Response {
+    let Some(caller) = auth.principal() else {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "a signed peer call is required"}))).into_response();
+    };
+    if !crate::admin_trust::is_admin_node(&state.admin_trust.document(), &caller.node_id) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "only an admin deploys"}))).into_response();
+    }
+    if !is_principal(&state) {
+        return (StatusCode::CONFLICT, Json(json!({"error": "this node is not the principal"}))).into_response();
+    }
+    mirror_price(&state, &ask.model, ask.price).await;
+    Json(json!({ "recorded": true })).into_response()
+}
+
 // ── The admin's and the visitor's screens ──────────────────────────────────
 
 /// `GET /api/ui/payments` (principal): the switch, prices, every account's
 /// balance and hold, and the latest ledger rows.
 pub(crate) async fn overview(State(state): State<GatewayState>) -> Response {
     let settings = settings(&state).await;
-    let accounts: Vec<Value> = self::state()
-        .book()
-        .accounts()
+    // The visitors each account was admitted for.
+    let mut visitors: std::collections::BTreeMap<String, Vec<Value>> = Default::default();
+    for record in state.network_chat.admissions() {
+        if let Some(account) = record.account.clone() {
+            visitors
+                .entry(account)
+                .or_default()
+                .push(json!({ "node_id": record.node_id, "name": record.card.hostname, "status": record.status }));
+        }
+    }
+    let mut book: std::collections::BTreeMap<String, crate::payments::book::AccountState> =
+        self::state().book().accounts().into_iter().collect();
+    for account in visitors.keys() {
+        book.entry(account.clone()).or_default();
+    }
+    let accounts: Vec<Value> = book
         .into_iter()
-        .map(|(account, s)| json!({ "account": account, "balance_micro": s.balance_micro, "reserved_micro": s.reserved_micro }))
+        .map(|(account, s)| {
+            json!({
+                "account": account,
+                "balance_micro": s.balance_micro,
+                "reserved_micro": s.reserved_micro,
+                "visitors": visitors.get(&account).cloned().unwrap_or_default(),
+            })
+        })
         .collect();
     let ledger = state
         .database
@@ -265,6 +368,7 @@ pub(crate) async fn overview(State(state): State<GatewayState>) -> Response {
         "prices": settings.payments.prices,
         "principal": is_principal(&state),
         "accounts": accounts,
+        "requests": credit_requests(&state),
         "ledger": ledger,
     }))
     .into_response()
@@ -306,13 +410,211 @@ pub(crate) async fn my_balance(State(state): State<GatewayState>) -> Response {
     for peer in crate::delegation::entry_nodes(&state, settings.entry_nodes).await {
         if let Ok(response) = state.control_post_json(&peer, "/v1/gateway/balance", &body, PEER_TIMEOUT).await {
             if response.status().is_success() {
-                if let Ok(answer) = response.json::<Value>().await {
+                if let Ok(mut answer) = response.json::<Value>().await {
+                    answer["spent"] = json!(own_spend(&state));
                     return Json(answer).into_response();
                 }
             }
         }
     }
     Json(json!({ "available": false, "reason": "no entry node answered" })).into_response()
+}
+
+// ── Credit requests: a visitor asks, the principal decides ──────────────────
+
+#[derive(Deserialize)]
+pub(crate) struct CreditAsk {
+    amount_micro: i64,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// `POST /api/ui/payments/request` (a visitor's own): asks the network it
+/// visits for credit, through an entry node.
+pub(crate) async fn request_credit(State(state): State<GatewayState>, Json(ask): Json<CreditAsk>) -> Response {
+    if ask.amount_micro <= 0 {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "the amount must be positive"}))).into_response();
+    }
+    let Some(home) = crate::home_statement::own(&state) else {
+        return (StatusCode::CONFLICT, Json(json!({"error": "this machine cannot name its home network"}))).into_response();
+    };
+    let settings = settings(&state).await;
+    let body = json!({ "home": home, "amount_micro": ask.amount_micro, "note": ask.note });
+    let mut tried = Vec::new();
+    for peer in crate::delegation::entry_nodes(&state, settings.entry_nodes).await {
+        match state.control_post_json(&peer, "/v1/gateway/credit-request", &body, PEER_TIMEOUT).await {
+            Ok(response) if response.status().is_success() => return Json(json!({ "requested": true })).into_response(),
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let answer = response.text().await.unwrap_or_default();
+                tried.push(json!({ "node": peer.node_id, "status": status, "answer": answer }));
+            }
+            Err(error) => tried.push(json!({ "node": peer.node_id, "error": error.to_string() })),
+        }
+    }
+    (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "no entry node took the request", "tried": tried}))).into_response()
+}
+
+/// `POST /v1/gateway/credit-request` (on an entry node, for a visitor).
+pub(crate) async fn visitor_credit_request(auth: crate::auth::InternalNodeAuth, State(state): State<GatewayState>, Json(body): Json<Value>) -> Response {
+    let Some(caller) = auth.principal().cloned() else {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "a signed peer call is required"}))).into_response();
+    };
+    let Some(home) = body["home"]
+        .as_str()
+        .and_then(|t| crate::home_statement::verify(t, &caller.node_id, chrono::Utc::now().timestamp()).ok())
+    else {
+        return (StatusCode::FORBIDDEN, Json(json!({"error": "home_statement_required"}))).into_response();
+    };
+    let amount = body["amount_micro"].as_i64().unwrap_or(0);
+    if amount <= 0 {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "the amount must be positive"}))).into_response();
+    }
+    let request = json!({
+        "account": crate::home_statement::account_of(&home),
+        "node_id": caller.node_id,
+        "amount_micro": amount,
+        "note": body["note"].as_str().map(|n| n.chars().take(500).collect::<String>()),
+    });
+    if is_principal(&state) {
+        return record_credit_request(&state, &request);
+    }
+    match to_principal(&state, "/api/internal/payments/credit-request", &request).await {
+        Ok(answer) => Json(answer).into_response(),
+        Err(error) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": error}))).into_response(),
+    }
+}
+
+/// `POST /api/internal/payments/credit-request` (on the principal, from a member).
+pub(crate) async fn credit_request_route(auth: crate::auth::InternalNodeAuth, State(state): State<GatewayState>, Json(request): Json<Value>) -> Response {
+    if let Err(refusal) = merchant_caller(&state, &auth).await {
+        return refusal;
+    }
+    record_credit_request(&state, &request)
+}
+
+fn record_credit_request(state: &GatewayState, request: &Value) -> Response {
+    let (Some(account), Some(node_id), Some(amount)) = (
+        request["account"].as_str(),
+        request["node_id"].as_str(),
+        request["amount_micro"].as_i64().filter(|a| *a > 0),
+    ) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "account, node and amount are required"}))).into_response();
+    };
+    let result = state.database.with_write("record a credit request", |c| {
+        c.execute(
+            "INSERT INTO x402_credit_requests (account, node_id, amount_micro, note, created_at) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![account, node_id, amount, request["note"].as_str(), chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    });
+    match result {
+        Ok(()) => Json(json!({ "recorded": true })).into_response(),
+        Err(error) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": format!("{error:#}")}))).into_response(),
+    }
+}
+
+fn credit_requests(state: &GatewayState) -> Vec<Value> {
+    state
+        .database
+        .with_read("credit requests", |c| {
+            let mut stmt = c.prepare(
+                "SELECT id, account, node_id, amount_micro, note, status, created_at, decided_at
+                 FROM x402_credit_requests ORDER BY (status = 'pending') DESC, id DESC LIMIT 100",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "account": r.get::<_, String>(1)?,
+                        "node_id": r.get::<_, String>(2)?,
+                        "amount_micro": r.get::<_, i64>(3)?,
+                        "note": r.get::<_, Option<String>>(4)?,
+                        "status": r.get::<_, String>(5)?,
+                        "at": r.get::<_, String>(6)?,
+                        "decided_at": r.get::<_, Option<String>>(7)?,
+                    }))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .unwrap_or_default()
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CreditDecision {
+    id: i64,
+    /// `approve` or `decline`.
+    decision: String,
+    /// What to grant, when not the amount asked.
+    #[serde(default)]
+    amount_micro: Option<i64>,
+}
+
+/// `POST /api/ui/payments/decide` (principal): decide a credit request;
+/// approving grants the credit.
+pub(crate) async fn decide_credit(State(state): State<GatewayState>, Json(decision): Json<CreditDecision>) -> Response {
+    if !is_principal(&state) {
+        return (StatusCode::CONFLICT, Json(json!({"error": "only the principal holds the accounts"}))).into_response();
+    }
+    let approve = match decision.decision.as_str() {
+        "approve" => true,
+        "decline" => false,
+        _ => return (StatusCode::BAD_REQUEST, Json(json!({"error": "decision must be approve or decline"}))).into_response(),
+    };
+    let pending = state.database.with_read("credit request", |c| {
+        Ok(c.query_row(
+            "SELECT account, amount_micro FROM x402_credit_requests WHERE id = ? AND status = 'pending'",
+            [decision.id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()?)
+    });
+    let Ok(Some((account, asked))) = pending else {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "no pending request with that id"}))).into_response();
+    };
+    let status = if approve { "approved" } else { "declined" };
+    let _ = state.database.with_write("decide a credit request", |c| {
+        c.execute(
+            "UPDATE x402_credit_requests SET status = ?, decided_at = ? WHERE id = ?",
+            rusqlite::params![status, chrono::Utc::now().to_rfc3339(), decision.id],
+        )?;
+        Ok(())
+    });
+    if approve {
+        let amount = decision.amount_micro.filter(|a| *a > 0).unwrap_or(asked);
+        self::state().grant(&account, amount);
+        if let Some(ledger) = ledger() {
+            let detail = json!({ "credit_request": decision.id }).to_string();
+            ledger.enqueue(PaymentWrite::grant(&account, amount, Some(detail)));
+        }
+    }
+    Json(json!({ "decided": status })).into_response()
+}
+
+/// What this visitor spent on the network it visits, newest first.
+fn own_spend(state: &GatewayState) -> Vec<Value> {
+    let host = state.admin_trust.document().primary.node_id;
+    state
+        .database
+        .with_read("visitor spend", |c| {
+            let mut stmt = c.prepare(
+                "SELECT model, charged_micro, balance_micro, created_at FROM x402_spend
+                 WHERE host_network = ? ORDER BY id DESC LIMIT 100",
+            )?;
+            let rows = stmt
+                .query_map([host], |r| {
+                    Ok(json!({
+                        "model": r.get::<_, Option<String>>(0)?,
+                        "charged_micro": r.get::<_, i64>(1)?,
+                        "balance_micro": r.get::<_, Option<i64>>(2)?,
+                        "at": r.get::<_, String>(3)?,
+                    }))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .unwrap_or_default()
 }
 
 /// `POST /v1/gateway/balance` (on an entry node, for a visitor): the balance
@@ -342,6 +644,16 @@ pub(crate) async fn visitor_balance(auth: crate::auth::InternalNodeAuth, State(s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deployment_price_sets_changes_or_removes_the_models_price() {
+        let p = |i, o| crate::config::ModelPrice { in_micro_per_1k: i, out_micro_per_1k: o };
+        let empty = Default::default();
+        let set = with_price(&empty, "m", p(1, 2)).unwrap();
+        assert_eq!(set["m"], p(1, 2));
+        assert!(with_price(&set, "m", p(1, 2)).is_none());
+        assert!(with_price(&set, "m", p(0, 0)).unwrap().is_empty());
+    }
 
     #[test]
     fn a_lease_reserves_only_the_free_balance() {

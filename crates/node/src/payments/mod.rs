@@ -49,4 +49,25 @@ pub(crate) const SCHEMA: &str = "
     );
     CREATE INDEX IF NOT EXISTS x402_ledger_key_idx
         ON x402_ledger(key_id, created_at DESC);
+    -- On a visitor: what it spent on each network it visited.
+    CREATE TABLE IF NOT EXISTS x402_spend (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        host_network TEXT NOT NULL,
+        account TEXT NOT NULL,
+        model TEXT,
+        charged_micro INTEGER NOT NULL,
+        balance_micro INTEGER,
+        created_at TEXT NOT NULL
+    );
+    -- On the principal: visitors asking for credit.
+    CREATE TABLE IF NOT EXISTS x402_credit_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        amount_micro INTEGER NOT NULL,
+        note TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        decided_at TEXT
+    );
 ";

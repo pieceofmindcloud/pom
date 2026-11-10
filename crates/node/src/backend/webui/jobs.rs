@@ -48,6 +48,12 @@ impl InferenceRole {
 /// checks that a redeploy changed something.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeParams {
+    /// What a visitor of a charging network pays for this deployment
+    /// (`docs/subsystems/payments.md`). A version carries it, so a price change
+    /// forks a version and reactivating one restores its price. `None` leaves
+    /// the network's price for the model as it is; zero in and out removes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<crate::config::ModelPrice>,
     /// Who runs the model. `None` is the POM's own engine (llama.cpp, the
     /// distributed pipeline). A plugin code (`"strata"`) is a whole-model
     /// inference service that plugin offers: the target machine asks the
@@ -315,6 +321,7 @@ pub(super) fn d_idle_minutes() -> u32 {
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self {
+            pricing: None,
             inference_service: None,
             engine_settings: Default::default(),
             inference_role: Default::default(),
@@ -378,6 +385,8 @@ impl Default for RuntimeParams {
 impl From<&NodeConfig> for RuntimeParams {
     fn from(c: &NodeConfig) -> Self {
         Self {
+            // A node does not know its deployment's price.
+            pricing: None,
             inference_service: c.inference_service.clone(),
             engine_settings: c.engine_settings.clone(),
             inference_role: c.inference_role,

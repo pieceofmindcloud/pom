@@ -879,7 +879,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
                         "output_limits": output_limit,
                         // How many backend generations the response stitched.
                         // `1` is a single one - see `GenSummary::legs`.
-                        "continuation_legs": summary.legs,
+                        "continuation_legs": summary.legs, "payment": summary.payment,
                         "truncated_tool_call": truncated_tool_call,
                         // Present only when the request brought a task
                         // budget. See `TaskBudget`.
@@ -1412,7 +1412,7 @@ fn sse_stream(
                                     "stop_sequence": summary.stop_sequence,
                                     "trace": summary.trace,
                                     "output_limits": s.output_limit,
-                                    "continuation_legs": summary.legs,
+                                    "continuation_legs": summary.legs, "payment": summary.payment,
                                     "truncated_tool_call": truncated_tool_call,
                                     "task_budget": s.task_budget_report,
                                     "task_budget_spent_this_turn":
@@ -1753,6 +1753,7 @@ mod tests {
     #[test]
     fn stop_reason_reflects_the_limit_and_tool_calls() {
         let summary = |n: u32| GenSummary {
+            payment: None,
             source: "pipeline:a→b".into(),
             tokens_generated: n,
             reasoning_tokens: 0,

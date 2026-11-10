@@ -44,7 +44,7 @@ async fn local_card() -> LobbyCard {
 enum Ask {
     Fetch,
     Post { message_id: String, text: String },
-    Admission { role: crate::config::EnrollmentRole },
+    Admission { role: crate::config::EnrollmentRole, home: Option<String> },
 }
 
 /// An admission request this node made to another network. `grant` is what an
@@ -183,10 +183,11 @@ async fn exchange(
             identity,
             card: card.clone(),
         },
-        Ask::Admission { role } => LobbyRequest::Admission {
+        Ask::Admission { role, home } => LobbyRequest::Admission {
             identity,
             card: card.clone(),
             role,
+            home,
         },
     };
     let started = Instant::now();
@@ -311,7 +312,10 @@ pub(super) async fn lobby_admission(
 ) -> Response {
     exchange(
         &ask.key,
-        Ask::Admission { role: ask.role },
+        Ask::Admission {
+            role: ask.role,
+            home: crate::home_statement::own(&state),
+        },
         Some(&ask.name),
         Some(&state.database),
     )
@@ -593,6 +597,10 @@ pub struct AdmissionDecision {
     pub node_id: String,
     /// `approve`, `reject` or `forget`.
     pub decision: String,
+    /// Credit granted to the candidate's account on approval
+    /// (`docs/subsystems/payments.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_micro: Option<i64>,
 }
 
 /// `POST /api/ui/network/admissions` - an admin's decision on one request.

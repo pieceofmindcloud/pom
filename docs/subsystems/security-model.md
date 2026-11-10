@@ -256,6 +256,18 @@ own.
 - **Visitors.** A visitor gateway's bundle pays the hops (it is the consumer)
   but never earns the gateway fee.
 
+## Charging visitors
+
+A charging network (`docs/subsystems/payments.md`) runs
+`inference_access = member_gateway_only`: a visitor never reaches a worker's
+inference port (`visitor_must_use_gateway`) and learns only the entry nodes
+the policy allows, so it cannot skip the entry node that charges it. The
+account is named by a home statement signed by the visitor's home principal
+and checked against the key the transport proved (`crate::home_statement`); no
+address or name enters it. Only the principal writes the authoritative book;
+other entry nodes spend leases it grants, so with the principal away charging
+fails closed.
+
 ## People signed in through a plugin
 
 A node can serve people, not only its operator. The node knows no identity

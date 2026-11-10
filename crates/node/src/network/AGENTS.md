@@ -680,6 +680,15 @@ dedicated or member, with iroh's hole punching), are in
   (`self_addr_candidates`), `route.rs` (`Network.routes`); `discovery.rs` →
   `network.rs::insert_admitted_peer`, `p2p.rs`.
 
+## Visitors under member_gateway_only
+
+`Network::set_visitor_view` (kept from the network settings by
+`payments::runtime::install`) narrows what visitors learn: `peer_list_for` a
+visitor lists only allowed entry nodes (`gateway/delegate-v1`, admins only
+under `entry_nodes = admins`), and a node kept from visitors
+(`self_withheld_from_visitors`) neither announces to them nor answers their
+`PeerRequest`. See `docs/subsystems/payments.md`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

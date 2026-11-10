@@ -1136,7 +1136,7 @@ async fn blocking_response(
                         // How many backend generations this response stitched together.
                         // `1` is a single one; greater than `1` says the output went past the
                         // deployment's `max_new_tokens` without it changing.
-                        "continuation_legs": summary.legs,
+                        "continuation_legs": summary.legs, "payment": summary.payment,
                     },
                 })),
             )
@@ -1728,7 +1728,7 @@ fn chunk_json_final(
             "stop_sequence": summary.stop_sequence,
             "trace": summary.trace,
             "output_limits": output_limit,
-            "continuation_legs": summary.legs,
+            "continuation_legs": summary.legs, "payment": summary.payment,
             "truncated_tool_call": truncated_tool_call,
         });
     }
@@ -2855,6 +2855,7 @@ mod tests {
     #[test]
     fn finish_reason_reflects_the_limit_and_tool_calls() {
         let summary = |n: u32| crate::gateway::GenSummary {
+            payment: None,
             source: "pipeline:a→b".into(),
             tokens_generated: n,
             reasoning_tokens: 0,
@@ -3109,6 +3110,7 @@ mod tests {
     #[tokio::test]
     async fn a_partial_stream_ends_in_an_error_after_the_salvaged_text() {
         let mut summary = crate::gateway::GenSummary {
+            payment: None,
             source: "pipeline:a (partial)".into(),
             tokens_generated: 1,
             reasoning_tokens: 0,
@@ -3152,6 +3154,7 @@ mod tests {
     #[test]
     fn final_stream_chunk_carries_generation_summary() {
         let summary = crate::gateway::GenSummary {
+            payment: None,
             source: "pipeline:a→b".into(),
             tokens_generated: 12,
             reasoning_tokens: 5,

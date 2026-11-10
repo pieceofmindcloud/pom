@@ -118,6 +118,7 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.sharing", to: "/config/sharing", icon: ShieldCheck },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
       { labelKey: "nav.payments", to: "/config/payments", icon: KeyRound },
+      { labelKey: "nav.credit", to: "/config/credit", icon: KeyRound },
     ],
   },
   {

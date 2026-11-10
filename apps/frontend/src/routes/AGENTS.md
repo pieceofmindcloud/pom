@@ -325,6 +325,13 @@ Per-file list:
   is `useMyQuota` (`lib/queries.ts`), shared with `components/UsageButton.tsx`. The admins' side is the logs plugin's Quota
   screen.
 
+- `Payments.tsx` - "Payments" (`/config/payments`, admin): charging on or
+  off, prices per model, the visitor networks' accounts with their visitors,
+  grants, credit requests (approve/decline) and the ledger, from
+  `/api/ui/payments*`. `MyCredit.tsx` - "Credit" (`/config/credit`, visitor):
+  its home network's balance where it visits, the prices, what this machine
+  spent and a credit request. See `docs/subsystems/payments.md`.
+
 ## Chat
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,
   with no title bar on an empty conversation, `../components/MissingPiece`

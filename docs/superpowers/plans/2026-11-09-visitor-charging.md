@@ -33,7 +33,10 @@ Change any of these before the task that uses it:
 - [x] A.2 Account kinds: `payments/account.rs` (`net:<pubkey>`, `key:<id>`, a
   bare id reads as a key).
 - [x] B.1-B.3, B.5 (inference port), C.1 (self-signed), D.1-D.3, E (leases), F (Payments screen),
-  live check passed. Deviations and what remains: `docs/subsystems/payments.md`, "Not yet done".
+  live check passed.
+- [x] A.4 (as `RuntimeParams.pricing`, mirrored into the network's prices), B.5 discovery,
+  C.1 member statements, C.2, C.3, D.2 per-route vocabulary, D.4, credit requests.
+  C.4 not done on purpose (`docs/subsystems/payments.md`, "Limits").
 
 ---
 

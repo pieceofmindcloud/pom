@@ -183,8 +183,11 @@ function LobbyThreadList({ candidates, guests, pending, selected, onSelect, node
  * its admission request, taken here after talking. Either decision erases the
  * thread for every admin.
  */
-function LobbyThreadHeader({ candidate, request, nodeName, deciding, onDecide }: { candidate: string; request: AdmissionRecord | undefined; nodeName: (id: string) => string; deciding: boolean; onDecide: (decision: "approve" | "reject") => void }) {
+function LobbyThreadHeader({ candidate, request, nodeName, deciding, onDecide }: { candidate: string; request: AdmissionRecord | undefined; nodeName: (id: string) => string; deciding: boolean; onDecide: (decision: "approve" | "reject", grantMicro?: number) => void }) {
   const { t } = useI18n();
+  // A visitor that named its home network can be approved with credit.
+  const [credit, setCredit] = useState("");
+  const grantMicro = Math.round(Number(credit || 0) * 1_000_000);
   return (
     <div data-testid="lobby-thread-header" className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-iris/[0.06] px-4 py-2.5 sm:px-6">
       <div className="min-w-0 flex-1">
@@ -197,7 +200,20 @@ function LobbyThreadHeader({ candidate, request, nodeName, deciding, onDecide }:
       </div>
       {request && (
         <div className="flex shrink-0 items-center gap-2">
-          <Button size="sm" variant="primary" icon={<Check className="h-3.5 w-3.5" />} loading={deciding} onClick={() => onDecide("approve")}>
+          {request.account && (
+            <Input
+              compact
+              name="admission-credit"
+              className="w-24"
+              inputMode="decimal"
+              aria-label={t("payments.creditOnApproval")}
+              placeholder={t("payments.creditOnApproval")}
+              title={request.account}
+              value={credit}
+              onChange={(e) => setCredit(e.target.value)}
+            />
+          )}
+          <Button size="sm" variant="primary" icon={<Check className="h-3.5 w-3.5" />} loading={deciding} onClick={() => onDecide("approve", grantMicro > 0 ? grantMicro : undefined)}>
             {t("notifications.admissionApprove")}
           </Button>
           <Button size="sm" variant="ghost" icon={<X className="h-3.5 w-3.5" />} disabled={deciding} onClick={() => onDecide("reject")}>
@@ -340,10 +356,11 @@ export function NetworkChat() {
     await send(textAction(inLobby ? `${THREAD_PREFIX}${selected}` : room, localNodeId, text));
   }
 
-  async function decide(candidate: string, decision: "approve" | "reject") {
+  async function decide(candidate: string, decision: "approve" | "reject", grantMicro?: number) {
     setDeciding(true);
     try {
-      await admissionsApi.decide(candidate, decision);
+      if (decision === "approve" && grantMicro) await admissionsApi.decide(candidate, decision, grantMicro);
+      else await admissionsApi.decide(candidate, decision);
       toast.success(t(decision === "approve" ? "notifications.admissionApproved" : "notifications.admissionRejected"));
       // Either decision erases the thread: the next one takes its place.
       setThread(null);
@@ -475,7 +492,7 @@ export function NetworkChat() {
               request={pending.find((record) => record.node_id === selected)}
               nodeName={nodeName}
               deciding={deciding}
-              onDecide={(decision) => void decide(selected, decision)}
+              onDecide={(decision, grantMicro) => void decide(selected, decision, grantMicro)}
             />
           )}
           <div

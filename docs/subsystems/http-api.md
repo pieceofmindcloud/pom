@@ -1876,6 +1876,13 @@ encrypted with X25519 and ChaCha20-Poly1305 containing the document and the
 never returns the key and drops the in-memory material when it receives
 `enabled: false`.
 
+### Charging visitors
+
+The member gateway (`POST /v1/gateway/delegate`), the visitor's balance and
+credit requests, the Payments screen routes and the internal payment routes
+are listed in `docs/subsystems/payments.md`, "Routes". `x_pom.payment` is
+added to the answers of a charged visitor request.
+
 ## 3. Authentication (`auth.rs`)
 
 There is an operator credential, an inference credential and a private

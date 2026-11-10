@@ -714,6 +714,10 @@ pub(super) async fn publish_record(state: &GatewayState, record: &crate::deploym
             record.deploy_id
         );
     }
+    // The active version's price is what visitors pay for the model.
+    if let Some(price) = record.active().and_then(|v| v.params.pricing) {
+        crate::payments::runtime::mirror_price(state, &record.model.label, price).await;
+    }
 
     let self_id = state.network.node_id.clone();
     let peers = state.all_peers().await;

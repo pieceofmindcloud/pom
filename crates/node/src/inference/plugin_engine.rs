@@ -1256,6 +1256,7 @@ pub(crate) async fn generate(
                     "generation completed by the plugin inference service"
                 );
                 let summary = GenSummary {
+                    payment: None,
                     source: format!("pipeline:{}", shown_plan.hop_chain()),
                     tokens_generated: generated,
                     reasoning_tokens,

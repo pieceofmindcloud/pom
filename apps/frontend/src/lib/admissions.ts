@@ -14,6 +14,8 @@ export interface AdmissionRecord {
   status: AdmissionStatus;
   requested_at: string;
   decided_at?: string | null;
+  /** The account the candidate's home network names (`net:<key>`), when it sent one. */
+  account?: string | null;
 }
 
 /** An admission request this node made to another network. Never the grant. */
@@ -67,8 +69,13 @@ export function useAdmissionRequests() {
 }
 
 export const admissionsApi = {
-  decide: (nodeId: string, decision: "approve" | "reject" | "forget") =>
-    api.post<AdmissionRecord[]>("/api/ui/network/admissions", { node_id: nodeId, decision }),
+  /** `grantMicro`: credit for the candidate's account, on approval. */
+  decide: (nodeId: string, decision: "approve" | "reject" | "forget", grantMicro?: number) =>
+    api.post<AdmissionRecord[]>("/api/ui/network/admissions", {
+      node_id: nodeId,
+      decision,
+      ...(grantMicro && grantMicro > 0 ? { grant_micro: grantMicro } : {}),
+    }),
   /** Leaves the current network for the one that approved this machine. */
   join: (key: string) => api.post<{ joined: boolean }>("/api/ui/network/join", { key }),
   forget: (key: string) => api.post("/api/ui/network-chat/lobby/requests/forget", { key }),

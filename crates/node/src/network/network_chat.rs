@@ -748,6 +748,17 @@ impl NetworkChat {
         Ok(status)
     }
 
+    /// Records the account a candidate's home statement names.
+    pub fn set_admission_account(&self, node_id: &str, account: String) {
+        let mut records = self.admissions.lock().expect("admissions lock");
+        if let Some(record) = records.iter_mut().find(|r| r.node_id == node_id) {
+            if record.account.as_deref() != Some(account.as_str()) {
+                record.account = Some(account);
+                self.store_admissions(&records);
+            }
+        }
+    }
+
     /// Puts an admitted peer on the member list, when it is not there yet.
     /// The approved admission records are the list of nodes that may claim
     /// the network's key after a rotation; a member that joined before
@@ -775,6 +786,7 @@ impl NetworkChat {
         }
         let now = chrono::Utc::now().to_rfc3339();
         records.push(crate::network_lobby::AdmissionRecord {
+            account: None,
             node_id: node_id.to_string(),
             card: crate::network_lobby::LobbyCard {
                 hostname: hostname.to_string(),

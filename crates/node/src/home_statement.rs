@@ -9,11 +9,13 @@
 //! account), and an expiry. The host checks it against the caller the
 //! transport proved.
 //!
-//! Phase 1: a node signs its own statement when it is the principal of its home
-//! network, the common case (every machine starts with a network of its own,
-//! `bootstrap_local_network`). A member of a larger home network would need
-//! that network's principal while it visits, which only multi-network visiting
-//! (`2026-11-06-multi-network-visitor-design.md`) keeps reachable.
+//! A node signs its own statement when it is the principal of its home network,
+//! the common case (every machine starts with a network of its own,
+//! `bootstrap_local_network`). A member of a larger home network gets one from
+//! its principal (`POST /api/internal/home-statement`, [`spawn_keeper`]) while
+//! it is home, valid a week ([`MEMBER_TTL_SECS`]), and keeps it in `pom.db` to
+//! show while it visits another network, where its home principal is out of
+//! reach. Back home it is renewed.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -21,6 +23,9 @@ use std::sync::Mutex;
 
 /// A statement lasts a day; the node makes a new one at two thirds.
 pub(crate) const TTL_SECS: i64 = 86_400;
+/// A statement for a member lasts a week: it must outlive a visit.
+pub(crate) const MEMBER_TTL_SECS: i64 = 7 * 86_400;
+const STORED: &str = "home_statement";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct HomeClaims {
@@ -75,6 +80,47 @@ pub(crate) fn issue_for(
     metering_core::token::sign(&header(), &claims, key)
 }
 
+/// Signs a statement for the member `node_id` (key `node_key`) of
+/// `document`'s network, when `key` is its principal.
+pub(crate) fn issue_for_member(
+    document: &crate::admin_trust::AdminTrustDocument,
+    key: &ed25519_dalek::SigningKey,
+    node_id: &str,
+    node_key: &str,
+    now: i64,
+) -> Result<String> {
+    if document.primary.pubkey != hex::encode(key.verifying_key().as_bytes()) {
+        bail!("only the home network's principal signs its statements");
+    }
+    let history = document.primary_history.iter().map(|p| p.pubkey.clone()).collect();
+    sign_member(key, &document.anchor.cluster_id, history, node_id, node_key, now)
+}
+
+fn sign_member(
+    key: &ed25519_dalek::SigningKey,
+    net: &str,
+    history: Vec<String>,
+    node_id: &str,
+    node_key: &str,
+    now: i64,
+) -> Result<String> {
+    let key_hex = hex::encode(key.verifying_key().as_bytes());
+    if metering_core::node_id_of_pubkey_hex(node_key).as_deref() != Some(node_id) {
+        bail!("the member's key is not its node's");
+    }
+    let claims = HomeClaims {
+        node: node_id.to_string(),
+        node_key: node_key.to_string(),
+        net: net.to_string(),
+        principal: metering_core::node_id_of_pubkey_hex(&key_hex).unwrap_or_default(),
+        principal_key: key_hex,
+        history,
+        iat: now,
+        exp: now + MEMBER_TTL_SECS,
+    };
+    metering_core::token::sign(&header(), &claims, key)
+}
+
 /// Opens a statement presented by the caller `caller_node` (proved by the
 /// transport): signed by the principal it names, for that caller, in date.
 pub(crate) fn verify(token: &str, caller_node: &str, now: i64) -> Result<HomeClaims> {
@@ -109,11 +155,82 @@ pub(crate) fn own(state: &crate::gateway::GatewayState) -> Option<String> {
     }
     // Visiting: the home network is in standby. Otherwise the live chain is home.
     let document = crate::webui::standby::standby_trust_document().unwrap_or_else(|| state.admin_trust.document());
-    let token = issue_for(&document, &state.authority_signing_key, &state.network.node_id, now).ok()?;
-    if let Ok(mut slot) = OWN.lock() {
-        *slot = Some((token.clone(), now + TTL_SECS));
+    if let Ok(token) = issue_for(&document, &state.authority_signing_key, &state.network.node_id, now) {
+        if let Ok(mut slot) = OWN.lock() {
+            *slot = Some((token.clone(), now + TTL_SECS));
+        }
+        return Some(token);
     }
-    Some(token)
+    // A member: the statement its principal gave it, while in date.
+    stored(state).filter(|token| verify(token, &state.network.node_id, now).is_ok())
+}
+
+fn stored(state: &crate::gateway::GatewayState) -> Option<String> {
+    let json = state.database.local_setting_json(STORED).ok()??;
+    serde_json::from_str(&json).ok()
+}
+
+/// `POST /api/internal/home-statement` (on the home principal): a statement
+/// for the member that signed the call.
+pub(crate) async fn internal_issue(
+    auth: crate::auth::InternalNodeAuth,
+    axum::extract::State(state): axum::extract::State<crate::gateway::GatewayState>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let refuse = |code: &str| {
+        (axum::http::StatusCode::FORBIDDEN, axum::Json(serde_json::json!({ "error": code }))).into_response()
+    };
+    let Some(caller) = auth.principal().cloned() else {
+        return refuse("signature_required");
+    };
+    let document = state.admin_trust.document();
+    let member = crate::admin_trust::control_issuer_is_admin(&document, &caller)
+        || crate::webui::is_approved_member(&state, &caller.node_id);
+    if !member {
+        return refuse("not_a_member");
+    }
+    match issue_for_member(&document, &state.authority_signing_key, &caller.node_id, &caller.pubkey, now()) {
+        Ok(token) => axum::Json(serde_json::json!({ "statement": token })).into_response(),
+        Err(_) => refuse("not_the_principal"),
+    }
+}
+
+/// Keeps a member's statement from its home principal while it is home: on
+/// start and every hour, renewed when less than half its life is left.
+pub(crate) fn spawn_keeper(state: crate::gateway::GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+        loop {
+            ticker.tick().await;
+            // Visiting: the home principal is out of reach.
+            if crate::webui::standby::standby_trust_document().is_some() {
+                continue;
+            }
+            let document = state.admin_trust.document();
+            if document.primary.node_id == state.network.node_id {
+                continue;
+            }
+            let fresh = stored(&state)
+                .and_then(|t| verify(&t, &state.network.node_id, now()).ok())
+                .is_some_and(|c| c.exp - now() > MEMBER_TTL_SECS / 2);
+            if fresh {
+                continue;
+            }
+            let Some(peer) = state.network.alive_peers().await.into_iter().find(|p| p.node_id == document.primary.node_id) else {
+                continue;
+            };
+            let answer = state
+                .control_post_json(&peer, "/api/internal/home-statement", &serde_json::json!({}), std::time::Duration::from_secs(5))
+                .await;
+            let Ok(answer) = answer else { continue };
+            let Ok(body) = answer.json::<serde_json::Value>().await else { continue };
+            if let Some(token) = body["statement"].as_str() {
+                if verify(token, &state.network.node_id, now()).is_ok() {
+                    let _ = state.database.save_local_setting(STORED, token);
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -178,6 +295,13 @@ mod tests {
         let token = metering_core::token::sign(&header(), &claims, &principal).unwrap();
         let opened = verify(&token, &id(&member), 10).unwrap();
         assert_eq!(opened.principal, id(&principal));
+        // What the principal issues for a member opens the same way.
+        let member_key = hex::encode(member.verifying_key().as_bytes());
+        let issued = sign_member(&principal, "home", vec![], &id(&member), &member_key, 10).unwrap();
+        let opened = verify(&issued, &id(&member), 20).unwrap();
+        assert_eq!((opened.exp, opened.principal.as_str()), (10 + MEMBER_TTL_SECS, id(&principal).as_str()));
+        // A key that is not the node's is refused.
+        assert!(sign_member(&principal, "home", vec![], &id(&principal), &member_key, 10).is_err());
         // The member's own key cannot sign as the principal.
         let forged = metering_core::token::sign(&header(), &claims, &member).unwrap();
         assert!(verify(&forged, &id(&member), 10).is_err());

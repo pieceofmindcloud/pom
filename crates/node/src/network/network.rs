@@ -1419,6 +1419,9 @@ pub struct Network {
     public_discovery: Arc<RwLock<HashMap<String, PeerInfo>>>,
     /// Advertised in every `Announce` so peers can name this machine without a
     /// second HTTP round-trip.
+    /// What a visitor may learn of this network (`set_visitor_view`):
+    /// 0 everyone, 1 entry nodes only, 2 admin entry nodes only.
+    visitor_view: Arc<std::sync::atomic::AtomicU8>,
     pub profile: Arc<std::sync::RwLock<crate::profile::NodeProfile>>,
     /// The name this machine goes by: `node_name` from the config, or the
     /// system hostname. Read with `hostname()`; the operator renames the
@@ -1962,6 +1965,7 @@ impl Network {
             gateway_quic_port: init.gateway_quic_port,
             public_discovery: Arc::new(RwLock::new(HashMap::new())),
             profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Worker)),
+            visitor_view: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             hostname: std::sync::RwLock::new(String::new()),
             advertise_addr: std::sync::RwLock::new(None),
             tp: std::sync::RwLock::new(None),
@@ -3112,6 +3116,44 @@ impl Network {
         ) == Some(crate::config::EnrollmentRole::Visitor)
     }
 
+    /// Under `inference_access = member_gateway_only` a visitor learns only
+    /// the network's entry nodes (`crate::delegation`): `Some(admins_only)`,
+    /// or `None` to let visitors learn every member.
+    pub(crate) fn set_visitor_view(&self, view: Option<bool>) {
+        let value = match view {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        };
+        self.visitor_view.store(value, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether `peer` is kept from visitors: not an entry node the policy
+    /// allows.
+    fn withheld_from_visitors(&self, peer: &PeerInfo) -> bool {
+        let view = self.visitor_view.load(std::sync::atomic::Ordering::Relaxed);
+        if view == 0 || self.peer_is_visitor(peer) {
+            return false;
+        }
+        let entry = peer
+            .inference_frame_capabilities
+            .iter()
+            .any(|c| c == crate::pipeline::CAP_GATEWAY_DELEGATE);
+        !entry || (view == 2 && !self.peer_is_admin(peer))
+    }
+
+    /// Whether this node is kept from visitors (see `withheld_from_visitors`).
+    fn self_withheld_from_visitors(&self) -> bool {
+        let view = self.visitor_view.load(std::sync::atomic::Ordering::Relaxed);
+        if view != 2 || self.is_visitor() {
+            return false;
+        }
+        match self.admission.as_ref() {
+            Some(admission) => !crate::admin_trust::is_admin_key(&admission.trust.document(), &self.node_id, &self.pubkey),
+            None => self.profile.read().is_ok_and(|p| *p != crate::profile::NodeProfile::Admin),
+        }
+    }
+
     /// Visitors never know each other: a visitor needs the admins and the
     /// workers that serve it, and another visitor is neither. So a visitor
     /// does not admit, list, probe, measure or gossip with one.
@@ -3129,10 +3171,12 @@ impl Network {
             .is_some_and(|requester| !self.peer_is_visitor(requester));
         // Nor where anyone answers anonymous tunnels: that only travels in
         // each node's own signed announce.
+        let to_visitor = peers.get(from).is_some_and(|requester| self.peer_is_visitor(requester));
         peers
             .values()
             .filter(|p| p.is_alive() && !self.hides(p))
             .filter(|p| lists_visitors || !self.peer_is_visitor(p))
+            .filter(|p| !to_visitor || !self.withheld_from_visitors(p))
             .cloned()
             .map(|mut p| {
                 if !lists_visitors {
@@ -3256,8 +3300,9 @@ impl Network {
 
         // Announce to known peers
         let peers = self.peers.read().await;
+        let withheld = self.self_withheld_from_visitors();
         for peer in peers.values() {
-            if peer.is_alive() && !self.hides(peer) {
+            if peer.is_alive() && !self.hides(peer) && !(withheld && self.peer_is_visitor(peer)) {
                 let addresses = peer.dialable_addrs();
                 self.send_to_candidates(&msg, &addresses).await?;
             }
@@ -3845,6 +3890,12 @@ impl Network {
                     return;
                 }
 
+                // A node kept from visitors answers none of them.
+                if self.self_withheld_from_visitors()
+                    && self.peers.read().await.get(&from).is_some_and(|p| self.peer_is_visitor(p))
+                {
+                    return;
+                }
                 // Immediately send our own Announce so the requester learns about
                 // us without waiting for the next gossip cycle. This happens even
                 // with no assignment — see `self_announce`.
@@ -6583,6 +6634,55 @@ mod tests {
         let mut to_worker = ids(admin.peer_list_for("worker").await);
         to_worker.sort();
         assert_eq!(to_worker, vec!["visitor-a", "visitor-b", "worker"]);
+    }
+
+    /// Under `member_gateway_only` a visitor is listed only the entry nodes
+    /// the policy allows, and a node kept from visitors does not announce to them.
+    #[tokio::test]
+    async fn visitors_learn_only_entry_nodes_under_member_gateway_only() {
+        use crate::profile::NodeProfile;
+        let as_role = |id: &str, profile: NodeProfile, entry: bool| {
+            let mut peer = dummy_peer(id, "127.0.0.1:9");
+            peer.profile = profile;
+            if entry {
+                peer.inference_frame_capabilities.push(crate::pipeline::CAP_GATEWAY_DELEGATE.into());
+            }
+            peer
+        };
+        let admin = Network::testkit("admin".into(), String::new(), vec![], None, None)
+            .await
+            .unwrap();
+        *admin.profile.write().unwrap() = NodeProfile::Admin;
+        let peers = [
+            as_role("visitor", NodeProfile::Visitor, false),
+            as_role("worker-entry", NodeProfile::Worker, true),
+            as_role("worker-plain", NodeProfile::Worker, false),
+            as_role("admin-b", NodeProfile::Admin, true),
+        ];
+        for peer in &peers {
+            admin.peers.write().await.insert(peer.node_id.clone(), peer.clone());
+        }
+        let ids = |peers: Vec<PeerInfo>| {
+            let mut ids: Vec<_> = peers.into_iter().map(|p| p.node_id).collect();
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids(admin.peer_list_for("visitor").await), vec!["admin-b", "worker-entry", "worker-plain"]);
+        admin.set_visitor_view(Some(false));
+        assert_eq!(ids(admin.peer_list_for("visitor").await), vec!["admin-b", "worker-entry"]);
+        admin.set_visitor_view(Some(true));
+        assert_eq!(ids(admin.peer_list_for("visitor").await), vec!["admin-b"]);
+        // A member still learns everyone.
+        assert_eq!(ids(admin.peer_list_for("worker-entry").await).len(), 4);
+        assert!(!admin.self_withheld_from_visitors());
+
+        let worker = Network::testkit("worker".into(), String::new(), vec![], None, None)
+            .await
+            .unwrap();
+        worker.set_visitor_view(Some(true));
+        assert!(worker.self_withheld_from_visitors());
+        worker.set_visitor_view(None);
+        assert!(!worker.self_withheld_from_visitors());
     }
 
     /// A visitor's anonymous relay admits whoever holds a pass of its network

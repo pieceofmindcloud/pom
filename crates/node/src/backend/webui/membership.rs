@@ -302,6 +302,12 @@ pub(crate) async fn apply_decision(state: &GatewayState, decision: AdmissionDeci
     } else if !state.network_chat.decide_admission(node_id, status) {
         return StatusCode::NOT_FOUND.into_response();
     }
+    if status == Some(AdmissionStatus::Approved) {
+        let account = state.network_chat.admission_of(node_id).and_then(|r| r.account);
+        if let Some(account) = account {
+            crate::payments::runtime::open_account(&account, decision.grant_micro.unwrap_or(0), node_id);
+        }
+    }
     Json(state.network_chat.admissions()).into_response()
 }
 

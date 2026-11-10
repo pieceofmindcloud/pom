@@ -9,7 +9,7 @@
  * (`crates/node/src/payments/runtime.rs`). See
  * `docs/superpowers/specs/2026-11-09-visitor-charging-design.md`.
  */
-import { Coins, Plus, Save, Trash2, Wallet } from "lucide-react";
+import { Check, Coins, Plus, Save, Trash2, Wallet, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, Empty, ErrorState, Field, Input, PageHeader, Panel, PanelHeader, Select, Skeleton } from "../components/ui";
@@ -24,7 +24,21 @@ type Overview = {
   inference_access: string;
   prices: Record<string, Price>;
   principal: boolean;
-  accounts: { account: string; balance_micro: number; reserved_micro: number }[];
+  accounts: {
+    account: string;
+    balance_micro: number;
+    reserved_micro: number;
+    visitors: { node_id: string; name: string; status: string }[];
+  }[];
+  requests: {
+    id: number;
+    account: string;
+    node_id: string;
+    amount_micro: number;
+    note: string | null;
+    status: string;
+    at: string;
+  }[];
   ledger: { account: string; kind: string; amount_micro: number; detail: string | null; at: string }[];
 };
 
@@ -111,6 +125,16 @@ export function Payments() {
     }
   }
 
+  async function decide(id: number, decision: "approve" | "decline") {
+    try {
+      await api.post("/api/ui/payments/decide", { id, decision });
+      toast.success(t(decision === "approve" ? "payments.requestApproved" : "payments.requestDeclined"));
+      await client.invalidateQueries({ queryKey: ["payments"] });
+    } catch (error) {
+      toast.fromError(t("payments.decideFailed"), error);
+    }
+  }
+
   if (overview.isLoading || info.isLoading) return <Skeleton className="h-60" />;
   if (overview.isError) {
     return <ErrorState title={t("payments.loadFailed")} error={overview.error} onRetry={() => void overview.refetch()} />;
@@ -168,12 +192,13 @@ export function Payments() {
           ) : (
             <table className="w-full text-sm">
               <thead className="text-left text-xs text-muted">
-                <tr><th>{t("payments.account")}</th><th>{t("payments.balance")}</th><th>{t("payments.reserved")}</th><th /></tr>
+                <tr><th>{t("payments.account")}</th><th>{t("payments.visitors")}</th><th>{t("payments.balance")}</th><th>{t("payments.reserved")}</th><th /></tr>
               </thead>
               <tbody>
                 {data.accounts.map((a) => (
                   <tr key={a.account} className="border-t border-line">
                     <td className="py-1.5 font-mono text-xs" title={a.account}>{short(a.account)}</td>
+                    <td className="text-xs">{a.visitors.map((v) => v.name || v.node_id.slice(0, 12)).join(", ") || "-"}</td>
                     <td className={a.balance_micro < 0 ? "text-rose" : undefined}>{credits(a.balance_micro)}</td>
                     <td>{credits(a.reserved_micro)}</td>
                     <td><Button size="sm" variant="ghost" onClick={() => setGrantAccount(a.account)}>{t("payments.grantTo")}</Button></td>
@@ -196,6 +221,42 @@ export function Payments() {
           </div>
         </div>
       </Panel>
+      {data.requests.length > 0 && (
+        <Panel>
+          <PanelHeader title={t("payments.requests")} subtitle={t("payments.requestsHint")} />
+          <div className="px-4 pb-4">
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs text-muted">
+                <tr><th>{t("payments.when")}</th><th>{t("payments.account")}</th><th>{t("payments.amount")}</th><th>{t("payments.note")}</th><th /></tr>
+              </thead>
+              <tbody>
+                {data.requests.map((r) => (
+                  <tr key={r.id} className="border-t border-line">
+                    <td className="py-1.5 text-xs">{new Date(r.at).toLocaleString()}</td>
+                    <td className="font-mono text-xs" title={`${r.account} · ${r.node_id}`}>{short(r.account)}</td>
+                    <td>{credits(r.amount_micro)}</td>
+                    <td className="text-xs">{r.note ?? ""}</td>
+                    <td className="text-right">
+                      {r.status === "pending" ? (
+                        <span className="inline-flex gap-1">
+                          <Button size="sm" variant="primary" icon={<Check className="h-3.5 w-3.5" />} disabled={!data.principal} onClick={() => void decide(r.id, "approve")}>
+                            {t("payments.approve")}
+                          </Button>
+                          <Button size="sm" variant="ghost" icon={<X className="h-3.5 w-3.5" />} disabled={!data.principal} onClick={() => void decide(r.id, "decline")}>
+                            {t("payments.decline")}
+                          </Button>
+                        </span>
+                      ) : (
+                        <Badge tone={r.status === "approved" ? "aqua" : "neutral"}>{t(`payments.status.${r.status}`)}</Badge>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
       <Panel>
         <PanelHeader title={t("payments.ledger")} />
         <div className="px-4 pb-4">

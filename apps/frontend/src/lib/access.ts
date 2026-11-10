@@ -38,6 +38,8 @@ const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/config/keys/connection": ["admin"],
   // Charging visitors is the principal's; the server enforces it.
   "/config/payments": ["admin"],
+  // A visitor's own credit on the network it visits.
+  "/config/credit": ["visitor"],
   // A signed-in person's own keys: no node profile opens it, only that
   // person's session (`canAccessRoute`).
   "/config/my-keys": [],
@@ -64,6 +66,8 @@ const INFER_ROUTES = [
   // Its own token usage and budget: every profile that runs inference has one.
   "/config/usage",
   "/config/budget",
+  // A visitor's credit on the network it visits.
+  "/config/credit",
   "/config/sharing",
   "/config/preferences",
   // The panel password belongs to every profile's own machine.

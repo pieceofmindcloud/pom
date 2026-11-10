@@ -42,6 +42,10 @@ pub(crate) async fn start_gateway_with_ready(
                 .layer(axum::extract::DefaultBodyLimit::max(32 << 20)),
         )
         .route("/v1/gateway/balance", post(crate::payments::runtime::visitor_balance))
+        .route("/v1/gateway/credit-request", post(crate::payments::runtime::visitor_credit_request))
+        .route("/api/internal/payments/credit-request", post(crate::payments::runtime::credit_request_route))
+        .route("/api/internal/home-statement", post(crate::home_statement::internal_issue))
+        .route("/api/internal/payments/price", post(crate::payments::runtime::price_route))
         .route("/api/internal/payments/lease", post(crate::payments::runtime::lease_route))
         .route("/api/internal/payments/settle", post(crate::payments::runtime::settle_route))
         .route("/api/internal/payments/balance", post(crate::payments::runtime::balance_route))
@@ -1429,6 +1433,7 @@ pub(super) async fn handle_generate(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(GenerateResponse {
+                    payment: None,
                     response: format!("Invalid JSON: {}", e),
                     source: "error".to_string(),
                     tokens_generated: 0,
@@ -1467,6 +1472,7 @@ pub(super) async fn handle_generate(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(GenerateResponse {
+                    payment: None,
                     response: error,
                     source: "error".to_string(),
                     tokens_generated: 0,
@@ -1504,6 +1510,7 @@ pub(super) async fn handle_generate(
                 StatusCode::PAYLOAD_TOO_LARGE
             },
             Json(GenerateResponse {
+                payment: None,
                 response: error,
                 source: "error".to_string(),
                 tokens_generated: 0,
@@ -1540,6 +1547,7 @@ pub(super) async fn handle_generate(
             (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(GenerateResponse {
+                    payment: None,
                     response: denial.message.clone(),
                     source: "error".to_string(),
                     tokens_generated: 0,
@@ -1591,6 +1599,7 @@ pub(super) async fn handle_generate(
             (
                 StatusCode::OK,
                 Json(GenerateResponse {
+                    payment: summary.payment.clone(),
                     response: text,
                     source: summary.source,
                     tokens_generated: summary.tokens_generated,
@@ -1610,6 +1619,7 @@ pub(super) async fn handle_generate(
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(GenerateResponse {
+                payment: None,
                 response: format!("Inference failed. Error: {e}."),
                 source: "none".to_string(),
                 tokens_generated: 0,

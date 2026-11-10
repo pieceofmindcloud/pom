@@ -812,6 +812,9 @@ pub struct GenerateResponse {
     #[serde(skip_serializing_if = "is_false")]
     pub partial: bool,
     pub trace: Option<crate::prefill::RequestTrace>,
+    /// What a visitor's charged request cost (see `GenSummary::payment`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment: Option<serde_json::Value>,
 }
 
 pub(super) fn is_false(value: &bool) -> bool {
@@ -1001,6 +1004,10 @@ pub struct GenSummary {
     pub legs: u32,
     /// Detailed per-request observations. It never affects planning.
     pub trace: Option<crate::prefill::RequestTrace>,
+    /// What a visitor's charged request cost (`{account, charged_micro,
+    /// balance_micro}`), set at the settlement (`crate::delegation::settle`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment: Option<serde_json::Value>,
 }
 
 /// Performance summary of a request, aggregated over the whole pipeline.
@@ -1254,6 +1261,7 @@ pub(super) fn summary_for(
     timings.client_ttft_ms = trace.client_ttft_ms;
     trace.refresh_telemetry(total_ms);
     GenSummary {
+        payment: None,
         source: format!(
             "pipeline:{}{}",
             plan.hop_chain(),

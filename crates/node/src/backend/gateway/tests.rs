@@ -1973,6 +1973,7 @@ mod tests {
     #[test]
     fn normal_api_generate_responses_keep_the_existing_shape() {
         let response = GenerateResponse {
+            payment: None,
             response: "ok".into(),
             source: "pipeline:head".into(),
             tokens_generated: 1,
@@ -1992,6 +1993,7 @@ mod tests {
     #[test]
     fn audit_status_distinguishes_length_from_transport_partial() {
         let summary = |finish_reason: Option<&str>, partial: bool| GenSummary {
+            payment: None,
             source: "pipeline:node-a".into(),
             tokens_generated: 4000,
             reasoning_tokens: 0,

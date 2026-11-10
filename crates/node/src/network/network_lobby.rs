@@ -207,6 +207,10 @@ pub enum LobbyRequest {
         identity: LobbyIdentity,
         card: LobbyCard,
         role: crate::config::EnrollmentRole,
+        /// The candidate's home statement (`crate::home_statement`): which
+        /// network a visitor's requests are charged to. Older nodes send none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        home: Option<String>,
     },
     /// A member asks the principal for the network's current connection key,
     /// because the one it holds stopped being accepted - it missed a
@@ -334,6 +338,10 @@ pub struct AdmissionRecord {
     pub requested_at: String,
     #[serde(default)]
     pub decided_at: Option<String>,
+    /// The account the candidate's home statement names (`net:<key>`), when
+    /// it sent one: the account its requests are charged to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// Admission records kept at once; the oldest decided ones go first. The
@@ -405,6 +413,7 @@ pub fn apply_admission_request(
         records.remove(oldest);
     }
     records.push(AdmissionRecord {
+        account: None,
         node_id: node_id.to_string(),
         card,
         role,

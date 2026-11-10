@@ -294,6 +294,7 @@ export const routeLoaders = {
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
   myMachine: () => import("./routes/MyMachine").then(({ MyMachine }) => MyMachine),
+  myCredit: () => import("./routes/MyCredit").then(({ MyCredit }) => MyCredit),
   payments: () => import("./routes/Payments").then(({ Payments }) => Payments),
   myBudget: () => import("./routes/MyBudget").then(({ MyBudget }) => MyBudget),
   myKeys: () => import("./routes/MyKeys").then(({ MyKeys }) => MyKeys),
@@ -329,6 +330,7 @@ const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
 const MyMachine = lazyRoute(routeLoaders.myMachine);
+const MyCredit = lazyRoute(routeLoaders.myCredit);
 const Payments = lazyRoute(routeLoaders.payments);
 const MyBudget = lazyRoute(routeLoaders.myBudget);
 const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
@@ -653,6 +655,7 @@ export default function App() {
                         <Route path="/config/network" element={<Page>{isDemoUser() ? <DemoNetwork /> : <NetworkSettings />}</Page>} />
                         <Route path="/config/network/participants" element={<Page><NetworkParticipants /></Page>} />
                         <Route path="/config/my-machine" element={<Page><MyMachine /></Page>} />
+                        <Route path="/config/credit" element={<Page><MyCredit /></Page>} />
                         <Route path="/config/payments" element={<Page><Payments /></Page>} />
                         <Route path="/config/usage" element={<Page><MyBudget /></Page>} />
                         <Route path="/config/my-keys" element={<Page><MyKeys /></Page>} />

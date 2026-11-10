@@ -306,6 +306,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::LocalOnly,
     },
+    RouteRule {
+        prefix: "/api/ui/payments/request",
+        method: None,
+        scope: RouteScope::LocalOnly,
+    },
     // A node's own token budget: reading it, spending a session reset,
     // asking the admins for more. A machine's own operator route.
     RouteRule {

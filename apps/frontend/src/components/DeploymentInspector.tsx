@@ -1008,6 +1008,44 @@ export function DeploymentInspector({
           </InspectorRow>
         )}
         {showHiddenStateDtype && hiddenStateField()}
+        {/* What visitors of a charging network pay (`docs/subsystems/payments.md`). */}
+        {(["in_micro_per_1k", "out_micro_per_1k"] as const).map((side) => {
+          const micro = value.pricing?.[side];
+          const label = t(side === "in_micro_per_1k" ? "inspector.priceIn" : "inspector.priceOut");
+          return (
+            <InspectorRow key={side} label={label} tip={t("inspector.priceHint")}>
+              {readOnly ? (
+                <span className="text-right font-mono">{micro == null ? "-" : micro / 1_000_000}</span>
+              ) : (
+                <Input
+                  compact
+                  name={`pricing.${side}`}
+                  inputMode="decimal"
+                  aria-label={label}
+                  placeholder="-"
+                  value={micro == null ? "" : String(micro / 1_000_000)}
+                  onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    const other = side === "in_micro_per_1k" ? "out_micro_per_1k" : "in_micro_per_1k";
+                    if (!raw && value.pricing?.[other] == null) {
+                      set({ pricing: null });
+                      return;
+                    }
+                    const parsed = Math.round(Number(raw || 0) * 1_000_000);
+                    if (!Number.isFinite(parsed)) return;
+                    set({
+                      pricing: {
+                        in_micro_per_1k: value.pricing?.in_micro_per_1k ?? 0,
+                        out_micro_per_1k: value.pricing?.out_micro_per_1k ?? 0,
+                        [side]: parsed,
+                      },
+                    });
+                  }}
+                />
+              )}
+            </InspectorRow>
+          );
+        })}
         {/* <BetaGroup>{...settings still being measured}</BetaGroup> */}
       </Section>
 

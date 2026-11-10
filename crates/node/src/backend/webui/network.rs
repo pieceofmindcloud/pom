@@ -215,6 +215,12 @@ pub(crate) async fn save_relay_policy(
     }
 }
 
+/// Saves and fans out `settings` from the principal (the payments runtime
+/// mirrors a deployment's price this way).
+pub(crate) async fn apply_network_settings(state: &GatewayState, settings: NetworkSettings) -> Result<usize, String> {
+    apply_network_settings_with_key(state, settings, true, None, None).await
+}
+
 async fn apply_network_settings_with_key(
     state: &GatewayState,
     mut settings: NetworkSettings,

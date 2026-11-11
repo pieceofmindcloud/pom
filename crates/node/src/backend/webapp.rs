@@ -48,8 +48,15 @@ where
         .fallback(fallback)
 }
 
-async fn root() -> Redirect {
-    Redirect::temporary("/admin-ui/")
+/// The query string goes along: a sign-in or a demo answer can land on `/`
+/// with something the screen reads (`?demo_cooldown=`), and dropping it sent
+/// a demo guest whose time ran out straight back to the guest sign-in, in a
+/// reload loop.
+async fn root(uri: axum::http::Uri) -> Redirect {
+    match uri.query().filter(|query| !query.is_empty()) {
+        Some(query) => Redirect::temporary(&format!("/admin-ui/?{query}")),
+        None => Redirect::temporary("/admin-ui/"),
+    }
 }
 
 async fn index() -> Response {
@@ -277,11 +284,22 @@ mod tests {
 
     #[tokio::test]
     async fn root_redirects_to_the_admin_ui_mount() {
-        let response = root().await.into_response();
+        let response = root("/".parse().unwrap()).await.into_response();
         assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(
             response.headers().get(header::LOCATION).unwrap(),
             "/admin-ui/"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_root_redirect_keeps_the_query_string() {
+        let response = root("/?demo_cooldown=120".parse().unwrap())
+            .await
+            .into_response();
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/admin-ui/?demo_cooldown=120"
         );
     }
 

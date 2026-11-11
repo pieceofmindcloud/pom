@@ -280,7 +280,7 @@ plugin never sees a cookie. Design:
   session like any other (provider `guest`), so it gets the same seats,
   redaction and quota. When a guest's seat runs out the session is revoked
   and, for `DEMO_GUEST_COOLDOWN` minutes, every session of that guest ends
-  and a new one is refused (`/?demo_cooldown=<secs>`). Anyone can change
+  and a new one is refused (`/admin-ui/?demo_cooldown=<secs>`; the `/` redirect keeps a query string, and a tab sent to the guest start that comes back without a session within 15 s stops at the gate instead of reloading). Anyone can change
   their fingerprint (another browser or address): the cool-down and the
   per-guest budget slow casual reuse, they are not identity.
 - **Demo seats** (`backend/demo_slots.rs`). In demo mode a signed-in person

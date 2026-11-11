@@ -676,7 +676,7 @@ async fn plugin_auth_response(
                 return (
                     StatusCode::SEE_OTHER,
                     [
-                        (header::LOCATION, format!("/?demo_cooldown={wait}")),
+                        (header::LOCATION, format!("/admin-ui/?demo_cooldown={wait}")),
                         (header::CACHE_CONTROL, "no-store".into()),
                     ],
                 )

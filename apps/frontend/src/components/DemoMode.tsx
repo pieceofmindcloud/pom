@@ -39,11 +39,36 @@ function storage(): Storage | null {
  * `/?demo_cooldown=<secs>` while the same visitor waits after their time ran
  * out; a tab whose time just ran out does not re-enter on its own either.
  */
-export function guestHold(): { cooldownSecs: number } | { expired: true } | null {
+export function guestHold(): { cooldownSecs: number } | { expired: true } | { stuck: true } | null {
   const raw = new URLSearchParams(window.location.search).get("demo_cooldown");
   const secs = raw ? Number(raw) : NaN;
   if (Number.isFinite(secs) && secs > 0) return { cooldownSecs: secs };
-  return takeDemoExpired() ? { expired: true } : null;
+  if (takeDemoExpired()) return { expired: true };
+  return recentGuestStart() ? { stuck: true } : null;
+}
+
+const GUEST_START_FLAG = "pom.demo.guestStart";
+/** A guest start this tab made this long ago and came back without a session is a loop, not a visit. */
+const GUEST_LOOP_MS = 15_000;
+
+function recentGuestStart(): boolean {
+  try {
+    const at = Number(window.sessionStorage.getItem(GUEST_START_FLAG));
+    return Number.isFinite(at) && at > 0 && Date.now() - at < GUEST_LOOP_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** Sends the tab to the guest start, noting when, so a start that does not
+ *  stick (no session after it) stops at the gate instead of reloading forever. */
+export function startGuestVisit(url: string) {
+  try {
+    window.sessionStorage.setItem(GUEST_START_FLAG, String(Date.now()));
+  } catch {
+    // without storage there is no guard, but the visit still opens
+  }
+  window.location.replace(url);
 }
 
 /** Whether the last visit of this tab ended because its time ran out. */

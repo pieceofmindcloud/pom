@@ -27,7 +27,7 @@ import { useI18n } from "./i18n/provider";
 import type { AdminAccessStatus } from "./lib/types";
 import { isDemoUser, loadSession } from "./lib/session";
 import { modelSearchRoute } from "./lib/modelSearch";
-import { DemoExpiredNotice, DemoNetwork, guestHold, DemoQueue, DemoWelcome, useDemoSeat } from "./components/DemoMode";
+import { DemoExpiredNotice, DemoNetwork, guestHold, startGuestVisit, DemoQueue, DemoWelcome, useDemoSeat } from "./components/DemoMode";
 import pomMark from "./assets/pom-mark-dark.png";
 import { BrandLanguageSwitch } from "./components/BrandLanguageSwitch";
 import { Panel, PanelHeader } from "./components/ui";
@@ -78,7 +78,7 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
   const [hold] = useState(guestHold);
   const guestUrl = access?.guest_url;
   useEffect(() => {
-    if (guestUrl && !hold && !operatorPath) window.location.replace(guestUrl);
+    if (guestUrl && !hold && !operatorPath) startGuestVisit(guestUrl);
   }, [guestUrl, hold, operatorPath]);
 
   /** Shakes the form on a refused password, except with reduced motion. */
@@ -173,7 +173,16 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
             <p role="status" className="pom-login-error" data-testid="demo-guest-hold">
               {"cooldownSecs" in hold
                 ? t("demo.guestCooldown", { minutes: Math.max(1, Math.ceil(hold.cooldownSecs / 60)) })
-                : t("demo.guestExpired")}
+                : "stuck" in hold
+                  ? (
+                    <>
+                      {t("demo.guestStuck")}{" "}
+                      <a className="underline" href={guestUrl} onClick={(event) => { event.preventDefault(); startGuestVisit(guestUrl); }}>
+                        {t("demo.guestRetry")}
+                      </a>
+                    </>
+                  )
+                  : t("demo.guestExpired")}
             </p>
           )
         ) : operatorPath === undefined && !access ? null : showProviders ? (

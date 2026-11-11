@@ -647,6 +647,8 @@ demo.welcomeStart,Start,Começar
 demo.welcomeTime,Your visit lasts {minutes} minutes. The clock in the top bar shows how much time you have left.,Sua visita dura {minutes} minutos. O relógio na barra de topo mostra quanto tempo ainda resta.
 demo.guestCooldown,Your demonstration time is over. You can start a new visit in {minutes} min.,Seu tempo de demonstração acabou. Você pode começar uma nova visita em {minutes} min.
 demo.guestExpired,Your demonstration time is over. Thanks for visiting!,Seu tempo de demonstração acabou. Obrigado pela visita!
+demo.guestRetry,Try again,Tentar de novo
+demo.guestStuck,The visit could not be opened in this browser.,Não foi possível abrir a visita neste navegador.
 demo.welcomeDiscord,Join the community on Discord:,Entre na comunidade no Discord:
 demo.welcomeStar,Did you like Piece of Mind? Please leave a star on GitHub:,Gostou do Piece of Mind? Deixe uma estrela no GitHub:
 demo.welcomeStarLink,github.com/pieceofmindcloud/pom,github.com/pieceofmindcloud/pom

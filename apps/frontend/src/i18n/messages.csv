@@ -962,6 +962,7 @@ deployStudio.markMachine,Mark {machine} for Split the layers,Marcar {machine} pa
 deployStudio.marked,marked,marcada
 deployStudio.projection,≈ {used} of {holds},≈ {used} de {holds}
 deployStudio.projectionHint,"Resident weights and KV cache of this machine''s ranges, against its GPUs'' total VRAM less the fit margin (the deploy releases the model it serves now).","Pesos residentes e cache KV das faixas desta máquina, contra a VRAM total das GPUs dela menos a margem do ajuste (a implantação libera o modelo que ela serve agora)."
+deployStudio.serviceNoRanges,"{service} does not split this model's architecture into layer ranges, so each machine runs the whole model (prefill and decode). To split the layers, deploy it with llama.cpp.","{service} não divide a arquitetura deste modelo em faixas de camadas, então cada máquina roda o modelo inteiro (prefill e decode). Para dividir as camadas, implante com o llama.cpp."
 deployStudio.splitLayers,Split the layers over {count} machines,Dividir as camadas entre {count} máquinas
 deployStudio.splitLayersHint,"Each machine serves its range from its own copy of the model, so nothing is copied.","Cada máquina serve sua faixa a partir da própria cópia do modelo, então nada é copiado."
 deployStudio.layerCount,{count} layers,{count} camadas

@@ -722,7 +722,14 @@ export function DeployModel() {
         ? (() => {
             const kept = memory.selection.filter((row) =>
               machineIds.includes(row.target_node_id) && row.start_layer >= 0 && row.end_layer < total && row.start_layer <= row.end_layer);
-            return kept.length > 0 ? kept : null;
+            if (kept.length === 0) return null;
+            if (rangesOnWhole) return kept;
+            // A service that runs this model whole: one whole row per machine,
+            // even if a split was remembered.
+            const seen = new Set<string>();
+            return kept
+              .filter((row) => !seen.has(row.target_node_id) && seen.add(row.target_node_id))
+              .map((row) => ({ ...row, start_layer: 0, end_layer: total - 1 }));
           })()
         : usableSelection(memory.selection, p.available, machineIds);
     if (!memory || !usable) {
@@ -734,7 +741,18 @@ export function DeployModel() {
         const picked = service && !splitRoles ? holders.slice(0, 1) : holders;
         if (picked.length > 0) {
           const ends = validEnds(total, p.layer_options?.cuts.map((cut) => cut.end_layer) ?? null);
-          setSelection(evenSplit(picked, total, ends).sort(byLayer));
+          // A service that does not cut this architecture into ranges runs the
+          // whole model on each machine (a prefill/decode split): never split
+          // its layers, the engine could not load a range.
+          setSelection((rangesOnWhole
+            ? evenSplit(picked, total, ends)
+            : picked.map((nodeId) => ({
+                start_layer: 0,
+                end_layer: total - 1,
+                target_node_id: nodeId,
+                n_gpu_layers: null,
+                offload_kqv: null,
+              }))).sort(byLayer));
           // on the map even when a split later leaves one without a range
           setPreferredNodeIds(picked);
         }
@@ -1727,6 +1745,7 @@ export function DeployModel() {
               marked={markedNodeIds}
               onToggleMarked={toggleMarked}
               balance={splitBalance}
+              serviceName={service?.name}
               onSplit={(nodeIds, ends) => {
                 if (wholeTotal == null) return;
                 // the unmarked machines keep their ranges and settings, and stay on the map
@@ -1891,6 +1910,7 @@ function MachinesTab({
   onToggleMarked,
   balance,
   onSplit,
+  serviceName,
 }: {
   machines: { node_id: string; label: string }[];
   rows: DeploySelection[];
@@ -1912,6 +1932,8 @@ function MachinesTab({
   /** Range sizes and machine capacities, for each machine's projected use. */
   balance?: SplitBalance;
   onSplit: (nodeIds: string[], ends: number[]) => void;
+  /** The inference service chosen, when it runs this model whole only. */
+  serviceName?: string;
 }) {
   const { t } = useI18n();
   if (machines.length === 0) {
@@ -1946,6 +1968,11 @@ function MachinesTab({
   };
   return (
     <div className="space-y-2 p-2">
+      {!rangesOnWhole && serviceName && (
+        <p data-testid="service-no-ranges" className="border border-amber/30 bg-amber/5 px-2 py-1.5 text-[0.6rem] leading-snug text-amber">
+          {t("deployStudio.serviceNoRanges", { service: serviceName })}
+        </p>
+      )}
       {rangesOnWhole && total != null && machines.length >= 2 && (
         <>
           <Button

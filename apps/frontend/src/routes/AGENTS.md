@@ -634,7 +634,10 @@ Per-file list:
   (`DeploymentInspector.inferenceService`) plus, in a separate card, the POM
   settings the service declares (`pomSettings`). The Machine tab leaves out
   GPU layers and KV cache on the GPU, which only llama.cpp reads. Deploy memory is keyed per
-  service. Test: `DeployModel.service.test.tsx`.
+  service. A service that does not cut the model's architecture into ranges (`stage_ranges`,
+  `serviceCutsRanges`) gives each machine the whole model (a prefill/decode split), on opening
+  and when a remembered split is restored, and the Machines tab says why it shows no range
+  controls (`service-no-ranges`). Test: `DeployModel.service.test.tsx`.
 - The global options conditioned by the model use `DeployPlan.capabilities`:
   `unsupported` stays hidden; `unknown` stays visible, disabled and
   explains the source and the reason. `no_embeddings` is the product exception:

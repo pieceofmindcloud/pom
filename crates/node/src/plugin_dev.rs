@@ -332,11 +332,11 @@ fn canonical_source(root: &Path, repository: &str) -> Result<Source, DevPluginEr
     if !cargo_manifest.starts_with(&source) || !cargo_manifest.is_file() {
         return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
     }
-    let (plugin_code, prepare) = validate_plugin_manifests(&source)?;
+    let (plugin_code, menu_label, prepare) = validate_plugin_manifests(&source)?;
     Ok(Source {
         repository: repository.to_owned(),
         plugin_code,
-        display_name: display_name_for_repository(repository),
+        display_name: menu_label.unwrap_or_else(|| display_name_for_repository(repository)),
         root: source,
         cargo_manifest,
         prepare,
@@ -460,8 +460,29 @@ fn rebuild_steps(
     Ok(out)
 }
 
-fn validate_plugin_manifests(root: &Path) -> Result<(String, Vec<PrepareStep>), DevPluginError> {
+/// The name the plugin gives itself: the label of its own menu entry (the one whose id is
+/// the plugin code, else the first), in English when present, as GitHub installs show it.
+fn menu_label(value: &serde_json::Value, plugin_code: &str) -> Option<String> {
+    let menu = value.get("menu")?.as_array()?;
+    let item = menu
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(plugin_code))
+        .or_else(|| menu.first())?;
+    let label = item.get("label")?.as_object()?;
+    label
+        .get("en")
+        .or_else(|| label.values().next())
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|label| !label.is_empty() && label.len() <= 200)
+        .map(str::to_owned)
+}
+
+type PluginManifests = (String, Option<String>, Vec<PrepareStep>);
+
+fn validate_plugin_manifests(root: &Path) -> Result<PluginManifests, DevPluginError> {
     let mut plugin_code = None;
+    let mut label = None;
     let mut prepare = Vec::new();
     for relative in [Path::new("manifest.json"), Path::new("ui/manifest.json")] {
         let path = root.join(relative);
@@ -496,6 +517,9 @@ fn validate_plugin_manifests(root: &Path) -> Result<(String, Vec<PrepareStep>), 
         {
             return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
         }
+        if relative == Path::new("ui/manifest.json") {
+            label = menu_label(&value, code);
+        }
         plugin_code = Some(code.to_owned());
         prepare.extend(rebuild_steps(root, &value)?);
     }
@@ -504,7 +528,7 @@ fn validate_plugin_manifests(root: &Path) -> Result<(String, Vec<PrepareStep>), 
     }
     let plugin_code =
         plugin_code.ok_or_else(|| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
-    Ok((plugin_code, prepare))
+    Ok((plugin_code, label, prepare))
 }
 
 pub(crate) fn list_mounted_sources(
@@ -1085,6 +1109,29 @@ mod tests {
         assert_eq!(listing.sources[1].repository, "pom-plugin-custom-tool");
         assert_eq!(listing.sources[1].plugin_code, "custom.tool-v2");
         assert_eq!(listing.sources[1].display_name, "Custom Tool");
+    }
+
+    #[test]
+    fn a_source_is_named_by_its_own_menu_label() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = make_source_with_identity(temp.path(), "pom-plugin-comfyui", "comfyui");
+        std::fs::write(
+            source.join("ui/manifest.json"),
+            serde_json::json!({
+                "schema": "pom-plugin-ui/v1",
+                "plugin_code": "comfyui",
+                "menu": [
+                    {"id": "other", "label": {"en": "Other"}},
+                    {"id": "comfyui", "label": {"pt-BR": "Estúdio", "en": "Image Studio"}}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let listing = list_mounted_sources(temp.path(), &[]);
+        assert_eq!(listing.sources.len(), 1);
+        assert_eq!(listing.sources[0].display_name, "Image Studio");
     }
 
     #[test]

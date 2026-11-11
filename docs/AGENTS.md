@@ -163,6 +163,11 @@ Notable pairs:
 - `2026-11-08-gpu-work-metering-design.md` and its plan - paying for GPU work:
   signed work receipts, gateway bundles, TOPLOC proofs, challenges and sampled
   re-execution per payout cycle; why zero-knowledge proofs were rejected.
+- `2026-11-09-visitor-charging-design.md` and its plan - charging visitor
+  networks with prepaid credit through member entry nodes.
+- `2026-11-10-validators-design.md` - validators (workers that re-run sampled
+  work, several per sample, paid a share) and keeping the first and last
+  layers on trusted machines so other machines see no prompts.
 
 Plans worth knowing: `2026-09-12-windows-crash-root-cause.md` (`model_loaded`
 tracing and the native `/health` boundaries),

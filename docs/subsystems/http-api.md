@@ -450,7 +450,7 @@ origin allowed to promote, resign and demote. There is no route that changes a n
 set when the network admits the machine, and changing it means leaving and
 asking for admission again. The authority offer states
 share `GET /api/transfer/offers` and its answers
-`POST /api/transfer/offers/{id}/accept|reject`, so the UI uses the same bell as
+`POST /api/transfer/offers/{id}/accept|reject` (an accept may carry `{ "dest_dir": <one of this node's model folders> }` for where a whole file lands; without it, the first folder), so the UI uses the same bell as
 slice offers. For a succession offer, `accept` requires the successor's signed
 acceptance; `reject` is refused because the offer only ends with a signed
 acceptance or an epoch advance. These endpoints are presentation contracts and

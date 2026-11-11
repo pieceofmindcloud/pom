@@ -427,6 +427,46 @@ fn has_gguf_name(path: &Path) -> bool {
             .is_some_and(crate::catalog::is_extensionless_name)
 }
 
+/// The names a transfer accepts: a GGUF name (`has_gguf_name`) or a
+/// `.safetensors` file (image models, which ComfyUI loads).
+fn has_transfer_name(path: &Path) -> bool {
+    has_gguf_name(path) || is_safetensors_name(path)
+}
+
+fn is_safetensors_name(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("safetensors"))
+}
+
+/// The header of a safetensors file: a little-endian u64 with the size of the
+/// JSON header that follows, then the JSON itself, which opens with `{`.
+fn ensure_safetensors(path: &Path) -> Result<(), String> {
+    use std::io::Read;
+    let mut head = [0u8; 9];
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    file.read_exact(&mut head)
+        .map_err(|_| format!("{} is too short to be a safetensors file", path.display()))?;
+    let header_len = u64::from_le_bytes(head[..8].try_into().expect("8 bytes"));
+    let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if head[8] != b'{' || header_len < 2 || header_len.saturating_add(8) > size {
+        return Err(format!("{} is not a safetensors file", path.display()));
+    }
+    Ok(())
+}
+
+/// What may leave this machine through a transfer: a GGUF (`ensure_gguf`) or
+/// a safetensors file whose name and header both say so.
+pub(crate) fn ensure_transferable(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("not a file: {}", path.display()));
+    }
+    if is_safetensors_name(path) {
+        return ensure_safetensors(path);
+    }
+    ensure_gguf(path)
+}
+
 /// Signature of a GGUF file: the first 4 bytes.
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 
@@ -472,8 +512,10 @@ fn valid_transfer_filename(raw: &str) -> Result<&str, String> {
     {
         return Err("the transfer accepts only a file name, without a path".to_string());
     }
-    if !has_gguf_name(path) {
-        return Err("only .gguf or extensionless files can be transferred".to_string());
+    if !has_transfer_name(path) {
+        return Err(
+            "only .gguf, .safetensors or extensionless files can be transferred".to_string(),
+        );
     }
     Ok(filename)
 }
@@ -551,7 +593,7 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
     };
     // Also on the grant path: it is the way a file outside
     // `models/` leaves, and it was the only door with no type check.
-    ensure_gguf(&path)?;
+    ensure_transferable(&path)?;
     if let Ok(Some(count)) = crate::multipart::declared_split_count(&path) {
         return Err(format!(
             "this file belongs to a multipart GGUF with {count} parts; transfer the complete set or slice it with POM before distributing"
@@ -1090,6 +1132,7 @@ async fn offer_target(state: &GatewayState, offer: &TransferOffer) -> Result<Off
         remote_path: offer.remote_path.clone(),
         grant: offer.grant.clone(),
         name: offer.name.clone(),
+        dest_dir: None,
     })
 }
 
@@ -1424,11 +1467,67 @@ async fn reject_offer(
     Json(json!({ "rejected": true })).into_response()
 }
 
+/// Optional body of an accept: which whole-model folder receives the file.
+#[derive(Debug, Default, Deserialize)]
+struct AcceptRequest {
+    #[serde(default)]
+    dest_dir: Option<String>,
+}
+
+/// Where a whole file received from a peer is written: one of this machine's
+/// whole-model folders, the one the operator chose on accepting or else the
+/// first configured. The slice folder no longer receives anything but the
+/// parts of an older admin's slicing (`OfferTarget::Part`).
+async fn receive_dir(state: &GatewayState, chosen: Option<&Path>) -> Result<PathBuf, String> {
+    let dirs = state.model_dirs().await;
+    match chosen {
+        Some(chosen) => dirs
+            .into_iter()
+            .find(|dir| dir == chosen)
+            .ok_or_else(|| {
+                format!(
+                    "{} is not one of this machine's model folders",
+                    chosen.display()
+                )
+            }),
+        None => dirs
+            .into_iter()
+            .next()
+            .ok_or_else(|| "this machine has no model folder to receive the file".to_string()),
+    }
+}
+
 async fn accept_offer(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     AxumPath(id): AxumPath<String>,
+    body: axum::body::Bytes,
 ) -> Response {
+    let accept: AcceptRequest = if body.is_empty() {
+        AcceptRequest::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(accept) => accept,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("invalid accept body: {e}") })),
+                )
+                    .into_response()
+            }
+        }
+    };
+    let chosen_dir = accept
+        .dest_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from);
+    if let Some(dir) = chosen_dir.as_deref() {
+        if let Err(e) = receive_dir(&state, Some(dir)).await {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
+        }
+    }
     if state
         .admin_trust
         .pending_transfer()
@@ -1451,6 +1550,17 @@ async fn accept_offer(
     };
 
     let target = match offer_target(&state, &offer).await {
+        Ok(OfferTarget::Standalone {
+            remote_path,
+            grant,
+            name,
+            ..
+        }) => OfferTarget::Standalone {
+            remote_path,
+            grant,
+            name,
+            dest_dir: chosen_dir,
+        },
         Ok(a) => a,
         Err(e) => {
             // The offer could not even start: whoever offered needs to know, or
@@ -1567,6 +1677,7 @@ async fn start_pull(
             remote_path: req.remote_path,
             grant: None,
             name: req.name,
+            dest_dir: None,
         },
     };
 
@@ -1684,17 +1795,22 @@ async fn catalog_send_path(state: &GatewayState, filename: &str) -> Result<PathB
         tokio::task::spawn_blocking(move || crate::catalog::discover(&model_dirs, &shard_dir))
             .await
             .map_err(|e| format!("failed to query the local catalog: {e}"))?;
-    let matches: Vec<PathBuf> = catalog
+    // Whole models, vision projectors, MTP drafts and GGUF image files: every
+    // file the Models screen lists may be offered. `ensure_transferable`
+    // still refuses anything that is neither a GGUF nor a safetensors file.
+    let mut matches: Vec<PathBuf> = catalog
         .models
         .into_iter()
-        .filter(|model| {
-            Path::new(&model.path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                == Some(filename)
+        .map(|model| model.path)
+        .chain(catalog.sidecars.into_iter().map(|sidecar| sidecar.path))
+        .chain(catalog.image_files.into_iter().map(|file| file.path))
+        .filter(|path| {
+            Path::new(path).file_name().and_then(|name| name.to_str()) == Some(filename)
         })
-        .map(|model| PathBuf::from(model.path))
+        .map(PathBuf::from)
         .collect();
+    matches.sort();
+    matches.dedup();
     match matches.as_slice() {
         [] => Err(format!("file not found in the local catalog: {filename}")),
         [path] => local_send_path(path.to_string_lossy().as_ref()),
@@ -1712,7 +1828,7 @@ fn local_send_path(requested: &str) -> Result<PathBuf, String> {
     if !full.is_file() {
         return Err(format!("not a file: {requested}"));
     }
-    ensure_gguf(&full)?;
+    ensure_transferable(&full)?;
     Ok(full)
 }
 
@@ -2041,6 +2157,9 @@ enum OfferTarget {
         remote_path: String,
         grant: Option<String>,
         name: String,
+        /// The whole-model folder the file is written to; `None` is the first
+        /// one configured (`receive_dir`).
+        dest_dir: Option<PathBuf>,
     },
     Part {
         sha256: String,
@@ -2085,6 +2204,7 @@ async fn spawn_download(
             remote_path,
             grant,
             name,
+            dest_dir,
         } => {
             let loc = match grant {
                 Some(g) => vec![("grant", g.clone())],
@@ -2092,7 +2212,7 @@ async fn spawn_download(
             };
             (
                 loc,
-                state.shard_dir().await.join("received"),
+                receive_dir(&state, dest_dir.as_deref()).await?,
                 name.clone(),
                 None,
             )
@@ -3419,7 +3539,7 @@ mod offer_latency_tests {
         let state = sender_state(port).await;
         let dir = std::env::temp_dir().join(format!("pom-accept-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        state.auth.write().await.shard_dir = Some(dir.to_string_lossy().into());
+        state.auth.write().await.model_dirs = Some(vec![dir.to_string_lossy().into()]);
 
         let started = Instant::now();
         let job_id = spawn_download(
@@ -3430,6 +3550,7 @@ mod offer_latency_tests {
                 remote_path: "/qualquer/fatia.gguf".into(),
                 grant: None,
                 name: "fatia.gguf".into(),
+                dest_dir: None,
             },
             "peer-b".into(),
         )
@@ -3685,6 +3806,7 @@ mod part_fetch_tests {
             ConnectionAuth,
             State(state.clone()),
             AxumPath("of-1".to_string()),
+            axum::body::Bytes::new(),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -4130,7 +4252,7 @@ mod verdict_tests {
             offers[0].id.clone()
         };
 
-        let resp = accept_offer(ConnectionAuth, State(ksia.clone()), AxumPath(offer_id)).await;
+        let resp = accept_offer(ConnectionAuth, State(ksia.clone()), AxumPath(offer_id), axum::body::Bytes::new()).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         // The download finishes, and the **send** too: it was this second close that
@@ -4373,5 +4495,40 @@ mod offer_etag_tests {
         let third = list_offers(ConnectionAuth, HeaderMap::new(), State(state)).await;
         assert_eq!(third.status(), StatusCode::OK);
         assert_ne!(third.headers().get(ETAG), Some(&etag));
+    }
+}
+
+#[cfg(test)]
+mod safetensors_tests {
+    use super::*;
+
+    fn safetensors_file(dir: &Path, name: &str, header: &str) -> PathBuf {
+        let path = dir.join(name);
+        let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&[0u8; 16]);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_safetensors_image_model_may_be_transferred_and_a_fake_one_may_not() {
+        let dir = std::env::temp_dir().join(format!("pom-st-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let real = safetensors_file(&dir, "vae.safetensors", r#"{"__metadata__":{}}"#);
+        assert!(ensure_transferable(&real).is_ok());
+        assert_eq!(valid_transfer_filename("vae.safetensors").unwrap(), "vae.safetensors");
+
+        let fake = dir.join("fake.safetensors");
+        std::fs::write(&fake, b"not a safetensors file at all").unwrap();
+        assert!(ensure_transferable(&fake).is_err());
+
+        // The name still decides: safetensors content under another extension is refused.
+        let renamed = safetensors_file(&dir, "vae.bin", r#"{"a":1}"#);
+        assert!(ensure_transferable(&renamed).is_err());
+        assert!(valid_transfer_filename("vae.bin").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -3,8 +3,17 @@
 > **Deprecated.** Deployments no longer copy files between machines: a plan
 > that would is refused by name (`deploy::planning::copies_refusal`), each
 > machine serves from its own copy of the model (downloaded there through
-> `model_provider_backend`, or placed by hand and rescanned), and the screens
-> no longer offer sending. `/api/transfer/*` is still served, with
+> `model_provider_backend`, or placed by hand and rescanned). The one manual
+> send left is the Models screen's "Send to…" beside each GGUF (whole model,
+> vision projector, MTP draft, GGUF image file): an operator's offer the other
+> machine accepts, never part of a deploy. `catalog_send_path` resolves the
+> name among the catalog's models, sidecars and image files, and
+> `ensure_transferable` accepts a GGUF or a `.safetensors` file (name and
+> header both checked). The receiver writes a whole file into one of its
+> whole-model folders: `dest_dir` in the optional accept body, checked
+> against `model_dir_paths` (`receive_dir`), or the first folder. The slice
+> folder left the Storage screen; `shard_dir` is still read from `pom.json`
+> for older slice sets, TP shards and an older admin's slice parts. `/api/transfer/*` is still served, with
 > `Deprecation: true` on every answer, so an older admin can deploy to this
 > node for one more release; then `transfer.rs` and this document go away.
 
@@ -19,9 +28,9 @@ Where the file lands depends on what it is. A **part** of a slicing goes to
 `<shard_dir>/<model>-<short hash of the original>/<sha256>.gguf`, with the
 manifest `<model>-<short hash of the original>.pom` written in the same folder
 before the bytes, and is checked against the hash that was requested. A file
-that is not part of any manifest - a whole model - lands in
-`<shard_dir>/received/` ("received") and only takes its final name when the
-MD5 matches.
+that is not part of any manifest - a whole model, a sidecar, an image
+model - lands in a whole-model folder (`receive_dir`) and only takes its
+final name when the MD5 matches.
 
 When receiving a v1 manifest, the peer merges by `pom_id`: local parts are
 kept and missing remote parts are added. This applies to both `parts` and
@@ -76,7 +85,7 @@ the other side answers**. `spawn_download`:
 
 1. Registers the job right away (`bytes_total` 0, indeterminate bar, detail
    "checking the file at the source"). The destination directory - the model
-   folder for a part; `<shard_dir>/received/` for a loose file - is the only
+   folder for a part; a whole-model folder for a loose file - is the only
    thing that has to succeed immediately.
 2. In a background task, `fetch_manifest` asks for size + MD5 at
    `/api/transfer/manifest` (`MANIFEST_TIMEOUT` = 30 min - a digest is a read

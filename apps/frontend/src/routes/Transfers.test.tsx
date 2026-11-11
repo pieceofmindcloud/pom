@@ -22,6 +22,7 @@ vi.mock("../lib/queries", () => ({
   useModelDownloads: vi.fn(() => queryResult([])),
   useServingMachines: () => [],
   useOffers: vi.fn(() => queryResult({ offers: [] })),
+  usePaths: vi.fn(() => queryResult({ model_dirs: [] })),
   useTransfers: vi.fn(() => queryResult(transfersState.value)),
   useCluster: vi.fn(() => queryResult({ peers: [{ node_id: "atena", is_self: false, short_id: "b2c3", addr: "10.0.0.2:8080", node: { hostname: "atena" } }] })),
   useLocalCatalog: vi.fn(() => queryResult({ models: [], shard_sets: [] })),

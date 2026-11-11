@@ -65,7 +65,7 @@ describe("ModelPaths", () => {
     await waitFor(() => expect(rescanModels).toHaveBeenCalledWith());
   });
 
-  it("shows the slice storage limit and current usage", () => {
+  it("has no slice folder: received files go to a model folder", () => {
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
@@ -76,9 +76,8 @@ describe("ModelPaths", () => {
 
     expect(screen.getByText("Armazenamento")).toBeTruthy();
     expect(screen.getByDisplayValue("/data/workspace")).toBeTruthy();
-    expect((screen.getByRole("spinbutton") as HTMLInputElement).value).toBe("100");
-    expect(screen.getByText("25 GB usados de 100 GB")).toBeTruthy();
-    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("25");
+    expect(screen.queryByText("Pasta de fatias")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
   });
 
   it("persists the shared workspace path with the other storage settings", async () => {
@@ -150,9 +149,7 @@ describe("ModelPaths", () => {
 
     expect(screen.getByText("Definido por POM_MODEL_DIRS")).toBeTruthy();
     expect(screen.getByText(/A variável de ambiente POM_MODEL_DIRS define este valor/)).toBeTruthy();
-    expect(screen.getByText(/A variável de ambiente POM_SHARD_DIR define este valor/)).toBeTruthy();
     expect((screen.getByDisplayValue("/data/models") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByDisplayValue("/models/slices") as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByDisplayValue("/data/workspace") as HTMLInputElement).disabled).toBe(false);
   });
 });

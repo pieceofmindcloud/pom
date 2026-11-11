@@ -525,8 +525,11 @@ boundary.
   served one more release for older admins, then removed (deploys no longer copy:
   `deploy::planning::copies_refusal`). Slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
-  accept only a catalog basename in `filename`, resolve it server-side and
-  require `.gguf` or no extension. Manifest v1 are merged by `pom_id` on the receiving peer,
+  accept only a catalog basename in `filename` (models, sidecars, image
+  files), resolve it server-side and require `.gguf`, `.safetensors` or no
+  extension (`ensure_transferable`). A whole file received lands in a
+  whole-model folder (`receive_dir`: the accept body's `dest_dir` or the
+  first); only slice parts still go under `shard_dir`. Manifest v1 are merged by `pom_id` on the receiving peer,
   preserving the local `parts` and `tp_parts`. **The verdict goes back to whoever
   offered** (`receive_answer`), and every outcome passes through
   `TransferState::finish`, which stamps `finished_at`. A job carries the slice's label

@@ -700,10 +700,11 @@ Per-file list:
   mechanism (`docs/subsystems/plugins-ui.md`). `App.tsx` shows the fallback
   `../components/EnterpriseFeatureShowcase.tsx` when the plugin is not active.
 ## Settings leaves
-- `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
-  `POST /api/ui/paths`. The Storage screen (`Armazenamento`) rejects a slice folder equal to
-  or inside a whole-model folder, shows current usage and the slice limit, and
-  keeps `/config/folders` as an alias. **Rescan folders** calls `rescanModels()` for a file
+- `ModelPaths.tsx` - edits `model_dirs` and the workspace via
+  `POST /api/ui/paths`. The Storage screen (`Armazenamento`) has no slice
+  folder any more (virtual slices serve ranges from the whole model); it still
+  posts back the `shard_dir`/`shard_max_gb` it read, so an older value in
+  `pom.json` is kept. It keeps `/config/folders` as an alias. **Rescan folders** calls `rescanModels()` for a file
   placed by hand.
 - `NetworkSettings.tsx` - This node's membership and network information
   screen. Its `NetworkParticipants` export reuses the known-node area at
@@ -783,6 +784,8 @@ Per-file list:
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
   ones. The model downloads moved to the Hugging Face plugin's Downloads tab.
+  With more than one model folder, a whole-file offer gets a folder select and
+  the accept posts `{ dest_dir }`; a slice part (`pom`) does not.
   State classification from `../lib/transferStatus`. `cancelled` is
   shown as **refused**, in amber, and not as a red failure: it was someone's decision,
   not an error. Slices appear by model and layer range
@@ -812,8 +815,13 @@ Per-file list:
   active mmproj or active MTP file warns that it interrupts that resource.
   The Image tab lists `CatalogResponse.image_files` (`ImageModelRow`: name,
   path, source, translated category, family, dtype, size, delete only - image
-  files are not sliced, and Send stays GGUF-only until the transfer gate
-  accepts them).
+  files are not sliced).
+  Every row of the four tabs whose file is a GGUF or `.safetensors` (not a
+  multipart model) carries "Send to…" (`../components/SendToSelect`):
+  the other machines that do not list a file of that name, and picking one
+  posts the offer to `/api/transfer/send`. While a transfer runs or an offer
+  waits (`useTransfers`, `useOffers`), a fifth "Transfers" tab appears and
+  renders `Transfers embedded` (no header); it disappears when nothing moves.
 - Searching Hugging Face, the downloads and the token are not here: they are
   the Search Models screen of the Hugging Face plugin (`pom-plugin-hugging-face`,
   route `/huggingface/models`), which calls the node's

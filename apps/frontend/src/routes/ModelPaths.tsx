@@ -7,7 +7,7 @@
  * the second field from looking like one more entry in the first list.
  */
 import { AnimatePresence, motion } from "framer-motion";
-import { FolderTree, HardDriveDownload, Lock, Plus, RefreshCw, RotateCcw, Save, Trash2 } from "lucide-react";
+import { FolderTree, Lock, Plus, RefreshCw, RotateCcw, Save, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   Badge,
@@ -22,7 +22,6 @@ import {
   Skeleton,
 } from "../components/ui";
 import { api, rescanModels } from "../lib/api";
-import { bytes } from "../lib/format";
 import { useInvalidate, usePaths } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { PathsResponse } from "../lib/types";
@@ -222,61 +221,6 @@ export function ModelPaths() {
               </div>
             </Panel>
 
-            <Panel>
-              <PanelHeader
-                title={t("paths.shardFolder")}
-                subtitle={t("paths.shardDetail")}
-              />
-              <div className="space-y-3 px-5 py-4">
-                <Field
-                  label={t("paths.path")}
-                  hint={t("paths.defaultHint", { path: paths.data.default_shard_dir })}
-                >
-                  <Input
-                    value={shardDir}
-                    spellCheck={false}
-                    disabled={Boolean(paths.data.shard_dir_env)}
-                    onChange={(e) => setShardDir(e.target.value)}
-                    placeholder={paths.data.default_shard_dir}
-                  />
-                </Field>
-                {paths.data.shard_dir_env && (
-                  <Footnote icon={<Lock className="h-3.5 w-3.5" />}>
-                    {t("paths.fromEnvNote", { name: paths.data.shard_dir_env })}
-                  </Footnote>
-                )}
-                <Field label={t("paths.maxShardGb")} hint={t("paths.maxShardGbHint")}>
-                  <Input
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={shardMaxGb}
-                    onChange={(e) => setShardMaxGb(e.target.value)}
-                  />
-                </Field>
-                <div className="space-y-1.5" aria-label={t("paths.usageAria")}>
-                  <div className="flex items-baseline justify-between gap-3 text-xs">
-                    <span className="text-muted">
-                      {bytes(paths.data.shard_dir.used_bytes)} {t("paths.usedOf")} {bytes(paths.data.shard_dir.max_bytes ?? 0)}
-                    </span>
-                    <span className="font-mono text-faint">
-                      {(paths.data.shard_dir.usage_percent ?? 0).toFixed(1)}%
-                    </span>
-                  </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-line" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(paths.data.shard_dir.usage_percent ?? 0, 100)}>
-                    <div
-                      className={`h-full rounded-full transition-[width] ${
-                        (paths.data.shard_dir.usage_percent ?? 0) >= 90 ? "bg-rose" : "bg-aqua"
-                      }`}
-                      style={{ width: `${Math.min(paths.data.shard_dir.usage_percent ?? 0, 100)}%` }}
-                    />
-                  </div>
-                </div>
-                <Footnote icon={<HardDriveDownload className="h-3.5 w-3.5" />}>
-                  {t("paths.received")}
-                </Footnote>
-              </div>
-            </Panel>
           </div>
 
           <Panel className="self-start">

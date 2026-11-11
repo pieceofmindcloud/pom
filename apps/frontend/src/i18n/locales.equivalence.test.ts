@@ -19,6 +19,11 @@ const dump = reference as ReferenceDump;
 const copyUpdates: Record<string, string> = {
   // The model downloads moved to the Hugging Face plugin; Transfers keeps
   // only an older admin's file transfers and left the menu.
+  // A received file lands in a whole-model folder the receiver picks.
+  "en:transfers.receivedDetail":
+    "Received files go into one of this machine's model folders; with more than one you pick it before accepting.",
+  "pt-BR:transfers.receivedDetail":
+    "Os arquivos recebidos vão para uma das pastas de modelos desta máquina; com mais de uma você escolhe antes de aceitar.",
   "en:transfers.title": "Transfers",
   "pt-BR:transfers.title": "Transferências",
   "en:transfers.subtitle":
@@ -157,7 +162,9 @@ const removed = (key: string) =>
   /^nav\.(remoteModels|fullModels|transfers)$/.test(key) ||
   // The inference engine selector, retired with the own MoE engine: llama.cpp runs every model.
   /^inspector\.(engine\.(auto|dense|moe)|inferenceMode|inferenceModeHint)$/.test(key) ||
-  key === "deployStudio.moeNeedsMetadata";
+  key === "deployStudio.moeNeedsMetadata" ||
+  // The slice folder left the Storage screen with virtual slices.
+  /^paths\.(maxShardGb|maxShardGbHint|received|shardDetail|shardFolder|defaultHint|usageAria|usedOf)$/.test(key);
 const moved = (key: string) =>
   key.startsWith("chat.telemetry.") || MOVED_TO_PLUGINS.has(key) || removed(key);
 

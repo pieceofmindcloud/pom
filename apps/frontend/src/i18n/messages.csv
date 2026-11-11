@@ -1710,6 +1710,12 @@ models.sidecarEmptyMtpDetail,No MTP draft GGUF files were found in the catalogue
 models.sidecarEmptyMtpTitle,No MTP draft files,Nenhum arquivo de rascunho MTP
 models.send,Send,Enviar
 models.sendAria,Send {name},Enviar {name}
+models.sendOfferFailed,The offer was not sent,A oferta não saiu
+models.sendOfferSent,Offer sent,Oferta enviada
+models.sendOfferSentDetail,"The owner of the other machine must accept before any bytes leave this machine.","O dono da outra máquina precisa aceitar; só então os bytes saem daqui."
+models.sendTo,Send to…,Enviar para…
+models.sendToAria,Send {name} to,Enviar {name} para
+models.sending,Sending offer…,Enviando oferta…
 models.size,Size,Tamanho
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
 myMachine.nameHint,"Leave it empty to go by the system's hostname. The name is only a label: the machine's identity is its key.","Deixe vazio para usar o hostname do sistema. O nome é só um rótulo: a identidade da máquina é a chave dela."
@@ -2183,7 +2189,6 @@ paths.addFolder,Add another folder,Mais uma pasta
 paths.addMissing,"{count, plural, =1 {Add the missing folder} other {Add missing folders}}","{count, plural, =1 {Adicionar a que falta} other {Adicionar as que faltam}}"
 paths.autoDetect,automatic detection,detecção automática
 paths.customList,your list,lista sua
-paths.defaultHint,Blank restores the default: {path},Em branco volta para o padrão: {path}
 paths.detected,Detected on this machine,Detectadas nesta máquina
 paths.detectedSubtitle,What automatic detection would find.,O que a detecção automática encontraria.
 paths.emptyList,"An empty list means do not search anywhere, not detect again. Saving it leaves the full-model catalog empty.","Lista vazia significa não procurar em lugar nenhum, e não detectar de novo. Salvar assim deixa o catálogo de modelos inteiros vazio."
@@ -2193,23 +2198,16 @@ paths.fromEnvBadge,Set by {name},Definido por {name}
 paths.fromEnvNote,"The {name} environment variable sets this value and takes precedence over pom.json. To change it, change the variable and restart the node.","A variável de ambiente {name} define este valor e vence o pom.json. Para mudar, altere a variável e reinicie o nó."
 paths.fullDetail,"Read only. Each folder is read for what it is: an Ollama store, an LM Studio library, or a regular GGUF folder.","Só leitura. Cada pasta é lida pelo que ela é: store do Ollama, biblioteca do LM Studio, ou pasta comum de GGUF."
 paths.fullModels,Full models,Modelos inteiros
-paths.maxShardGb,Maximum slice storage (GB),Máximo da pasta de fatias (GB)
-paths.maxShardGbHint,Only the slice folder is limited. Old generated slices are removed when a new one needs space.,Só a pasta de fatias tem limite. Fatias antigas são removidas quando uma nova precisa de espaço.
 paths.missing,does not exist,não existe
 paths.noneDetected,Neither LM Studio nor Ollama was found here.,Nem LM Studio nem Ollama foram encontrados aqui.
 paths.path,Path,Caminho
-paths.received,Files arriving from another machine go into this folder''s received/ subfolder.,Os arquivos que chegam de outra máquina vão para a subpasta received/ desta.
 paths.removeFolderAria,Remove {path},Remover {path}
 paths.save,Save,Salvar
 paths.saveFailed,The folders were not saved,As pastas não foram salvas
 paths.saved,Folders saved,Pastas salvas
 paths.savedDetail,The scan restarts in the background.,A varredura recomeça em segundo plano.
-paths.shardDetail,"One folder only. It receives local slicing and incoming files, and is the only folder a peer may pull a file from.","Uma só pasta. Ela recebe o fatiamento local e os arquivos recebidos, e é a única de onde um peer pode puxar um arquivo."
-paths.shardFolder,Shard folder,Pasta de fatias
 paths.subtitle,"Model folders, slice storage and the disk limit for generated slices.","Pastas de modelos, armazenamento de fatias e limite de disco para fatias novas."
 paths.title,Storage,Armazenamento
-paths.usageAria,Slice folder disk usage,Uso em disco da pasta de fatias
-paths.usedOf,used of,usados de
 paths.validation,"Saving a folder that does not exist yet creates it (only from an absolute path). A path that points to a file is refused.","Salvar uma pasta que ainda não existe cria a pasta (só a partir de um caminho absoluto). Um caminho que aponta para um arquivo é recusado."
 paths.workspaceDetail,"One shared root for user projects and dynamic data from every plugin. It is separate from whole-model and slice folders.","Uma raiz compartilhada para projetos do usuário e dados dinâmicos de todos os plugins. Ela é separada das pastas de modelos inteiros e fatias."
 paths.workspaceFolder,Project workspace,Workspace de projetos
@@ -3036,6 +3034,7 @@ transfers.columnItem,Item,Item
 transfers.columnProgress,Progress,Andamento
 transfers.columnState,State,Estado
 transfers.completed,completed,concluída
+transfers.destFolder,Save into folder,Salvar na pasta
 transfers.failed,failed,falhou
 transfers.finished,Finished,Terminadas
 transfers.from,from,de
@@ -3047,7 +3046,7 @@ transfers.offerFailed,The offer could not be answered,A oferta não pôde ser re
 transfers.offerRejected,Offer rejected,Oferta recusada
 transfers.offersFromMachine,"{count}{count, plural, =1 { offer from another machine} other { offers from another machine}}","{count}{count, plural, =1 { oferta de outra máquina} other { ofertas de outra máquina}}"
 transfers.progressDetail,"Progress comes from the node, so reloading does not lose the bar.","O andamento vem do nó, então recarregar a página não perde a barra."
-transfers.receivedDetail,Received files go into the configured shard folder''s received/ subfolder.,Os arquivos recebidos vão para a subpasta received/ da pasta de fatias configurada.
+transfers.receivedDetail,Received files go into one of this machine's model folders; with more than one you pick it before accepting.,Os arquivos recebidos vão para uma das pastas de modelos desta máquina; com mais de uma você escolhe antes de aceitar.
 transfers.receivingFrom,receiving from {host},recebendo de {host}
 transfers.reject,Reject,Recusar
 transfers.remaining,remaining,faltam

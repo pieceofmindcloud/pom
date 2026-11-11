@@ -106,6 +106,9 @@ const { catalogData, deleteModelMock, catalogRefetch } = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/queries", () => ({
+  useTransfers: () => ({ data: { jobs: [] } }),
+  useOffers: () => ({ data: { offers: [] } }),
+  useClusterCatalog: () => ({ data: { peers: [] } }),
   useLocalCatalog: () => ({
     data: catalogData,
     isLoading: false,

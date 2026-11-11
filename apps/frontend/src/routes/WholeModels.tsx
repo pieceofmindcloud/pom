@@ -1,4 +1,7 @@
 import { FolderSearch, RefreshCw, Trash2 } from "lucide-react";
+import { SendToSelect } from "../components/SendToSelect";
+import { Transfers } from "./Transfers";
+import { isActiveTransfer } from "../lib/transferStatus";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   Badge,
@@ -13,7 +16,7 @@ import {
 } from "../components/ui";
 import { bytes, num, optionalBasename } from "../lib/format";
 import { deleteModel } from "../lib/deleteModel";
-import { useLocalCatalog } from "../lib/queries";
+import { useLocalCatalog, useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import {
   isWholeModel,
@@ -163,6 +166,7 @@ export function ModelRow({
       <td className="whitespace-nowrap px-5 py-3.5">
         {/* A demonstration visitor sees the catalog, not its actions. */}
         <div className={isDemoUser() ? "hidden" : "flex shrink-0 items-center gap-2"}>
+          {!model.multipart && <SendToSelect path={model.path} name={model.name} />}
           <Button
             size="sm"
             variant="ghost"
@@ -279,7 +283,9 @@ export function ImageModelRow({
         <Mono>{bytes(file.size_bytes)}</Mono>
       </td>
       <td className="whitespace-nowrap px-5 py-3.5">
-        {!isDemoUser() && <Button
+        {!isDemoUser() && <div className="flex shrink-0 items-center gap-2">
+        <SendToSelect path={file.path} name={file.name} />
+        <Button
           size="sm"
           variant="ghost"
           icon={<Trash2 className="h-3.5 w-3.5" />}
@@ -287,7 +293,8 @@ export function ImageModelRow({
           onClick={() => void onDelete(file.path, file.name)}
         >
           {t("models.deleteButton")}
-        </Button>}
+        </Button>
+        </div>}
       </td>
     </tr>
   );
@@ -315,15 +322,18 @@ function SidecarRow({
       <td className="whitespace-nowrap px-5 py-3.5"><Mono>{bytes(sidecar.size_bytes)}</Mono></td>
       <td className="whitespace-nowrap px-5 py-3.5">
         {!isDemoUser() && (
-          <Button
-            size="sm"
-            variant="ghost"
-            icon={<Trash2 className="h-3.5 w-3.5" />}
-            aria-label={t("models.deleteAria", { name: sidecar.file_name })}
-            onClick={() => void onDelete(sidecar.path, sidecar.file_name)}
-          >
-            {t("models.deleteButton")}
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            <SendToSelect path={sidecar.path} name={sidecar.file_name} />
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Trash2 className="h-3.5 w-3.5" />}
+              aria-label={t("models.deleteAria", { name: sidecar.file_name })}
+              onClick={() => void onDelete(sidecar.path, sidecar.file_name)}
+            >
+              {t("models.deleteButton")}
+            </Button>
+          </div>
         )}
       </td>
     </tr>
@@ -453,11 +463,19 @@ export function WholeModels() {
   const imageFiles = catalog.data?.image_files ?? [];
   const sidecars = catalog.data?.sidecars ?? [];
   const [params, setParams] = useSearchParams();
+  // The Transfers tab shows only while a file is moving or an offer waits.
+  const transfers = useTransfers();
+  const offers = useOffers();
+  const transferring =
+    (transfers.data?.jobs ?? []).some((job) => isActiveTransfer(job.state)) ||
+    (offers.data?.offers ?? []).some((offer) => !offer.kind || offer.kind === "slice");
   const requestedKind = params.get("kind");
   const kind = requestedKind === "image" || requestedKind === "mmproj" || requestedKind === "mtp"
     ? requestedKind
-    : "llm";
-  const chooseKind = (next: "llm" | "image" | "mmproj" | "mtp") => {
+    : requestedKind === "transfers" && transferring
+      ? "transfers"
+      : "llm";
+  const chooseKind = (next: "llm" | "image" | "mmproj" | "mtp" | "transfers") => {
     const updated = new URLSearchParams(params);
     if (next === "llm") updated.delete("kind");
     else updated.set("kind", next);
@@ -486,6 +504,7 @@ export function WholeModels() {
           { value: "image", label: t("models.kindImage") },
           { value: "mmproj", label: t("models.mmproj") },
           { value: "mtp", label: t("models.kindMtp") },
+          ...(transferring ? [{ value: "transfers" as const, label: t("transfers.title") }] : []),
         ]}
         value={kind}
         onChange={chooseKind}
@@ -507,6 +526,7 @@ export function WholeModels() {
           </div>
         )}
 
+        {kind === "transfers" && <Transfers embedded />}
         {catalog.data && kind === "image" && <ImageModelTable files={imageFiles} onDelete={deletion.remove} />}
         {catalog.data && kind === "mmproj" && <SidecarTable sidecars={sidecars} kind="mmproj" onDelete={deletion.remove} />}
         {catalog.data && kind === "mtp" && <SidecarTable sidecars={sidecars} kind="mtp" onDelete={deletion.remove} />}

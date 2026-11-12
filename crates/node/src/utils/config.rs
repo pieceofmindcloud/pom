@@ -191,6 +191,13 @@ pub struct NetworkSettings {
     /// other. The principal enforces it, as the hub every message crosses.
     #[serde(default)]
     pub chat_visitors: bool,
+    /// Whether the network lets a member run as a demonstration
+    /// (`DEMO_MODE`). Set only by the principal, from its own
+    /// `DEMO_MODE_ACTIVE` environment variable, in what it sends the members
+    /// (`user_session::demo_mode_active_env`); what an edit sends is ignored.
+    /// Absent (an older principal) reads as false: no demonstration.
+    #[serde(default)]
+    pub demo_mode_active: bool,
     /// How much of `location` is published; applied before it is stored.
     #[serde(default)]
     pub location_precision: LocationPrecision,
@@ -1279,6 +1286,15 @@ fn migrate_admin_access_token(value: Option<String>) -> Result<(Option<String>, 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn network_settings_from_an_older_principal_allow_no_demonstration() {
+        let settings: NetworkSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!settings.demo_mode_active);
+        let settings: NetworkSettings =
+            serde_json::from_value(serde_json::json!({ "demo_mode_active": true })).unwrap();
+        assert!(settings.demo_mode_active);
+    }
     #[test]
     fn the_project_root_prefers_the_explicit_home_then_the_project_then_the_default_home() {
         use super::resolve_project_root;

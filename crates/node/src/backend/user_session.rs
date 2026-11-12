@@ -85,8 +85,10 @@ fn truthy(value: &str) -> bool {
     )
 }
 
-/// `DEMO_MODE=1` (or the brand's `POM_DEMO_MODE`), read once per process.
-pub fn demo_mode() -> bool {
+/// `DEMO_MODE=1` (or the brand's `POM_DEMO_MODE`), read once per process:
+/// this node asks to run as a demonstration. It runs as one only while the
+/// network's principal allows it (`demo_mode`).
+pub fn demo_requested() -> bool {
     static DEMO: OnceLock<bool> = OnceLock::new();
     *DEMO.get_or_init(|| {
         let on = std::env::var("DEMO_MODE")
@@ -94,10 +96,53 @@ pub fn demo_mode() -> bool {
             .or_else(|| crate::brand::env("DEMO_MODE").ok())
             .is_some_and(|value| truthy(&value));
         if on {
-            tracing::info!("demo mode: signed-in users see a redacted, read-only surface");
+            tracing::info!("demo mode requested: it starts once the network's principal allows it (DEMO_MODE_ACTIVE)");
         }
         on
     })
+}
+
+/// Whether the network's principal allows a demonstration, as last heard
+/// from it (or, on the principal, its own `DEMO_MODE_ACTIVE`). False until
+/// then: a node never starts as a demonstration on its own say.
+static DEMO_AUTHORIZED: AtomicBool = AtomicBool::new(false);
+
+/// Records the principal's answer; the demonstration starts or stops with it.
+pub fn set_demo_authorized(allowed: bool) {
+    let before = DEMO_AUTHORIZED.swap(allowed, Ordering::AcqRel);
+    if before != allowed && demo_requested() {
+        if allowed {
+            tracing::info!("demo mode: the network's principal allows it; signed-in users see a redacted, read-only surface");
+        } else {
+            tracing::warn!("demo mode: the network's principal does not allow it (DEMO_MODE_ACTIVE); demonstration visits are refused");
+        }
+    }
+}
+
+/// `DEMO_MODE_ACTIVE=true` (or the brand's `POM_DEMO_MODE_ACTIVE`) on the
+/// network's principal: the members may run as demonstrations. Read once per
+/// process and sent in every answer of the principal's network settings.
+pub fn demo_mode_active_env() -> bool {
+    static ACTIVE: OnceLock<bool> = OnceLock::new();
+    *ACTIVE.get_or_init(|| {
+        std::env::var("DEMO_MODE_ACTIVE")
+            .ok()
+            .or_else(|| crate::brand::env("DEMO_MODE_ACTIVE").ok())
+            .is_some_and(|value| truthy(&value))
+    })
+}
+
+/// A demonstration is running: this node asked for one (`DEMO_MODE`) and the
+/// network's principal allows it (`DEMO_MODE_ACTIVE`).
+pub fn demo_mode() -> bool {
+    demo_requested() && DEMO_AUTHORIZED.load(Ordering::Acquire)
+}
+
+/// Asked to be a demonstration, but the principal has not allowed it (yet):
+/// a person's session is refused instead of falling back to the ordinary
+/// user surface.
+fn demo_waiting_for_principal() -> bool {
+    demo_requested() && !demo_mode()
 }
 
 /// `DEMO_NO_AUTH=1` (or the brand's `POM_DEMO_NO_AUTH`) on a demonstration
@@ -107,20 +152,19 @@ pub fn demo_mode() -> bool {
 /// Without `DEMO_MODE` it does nothing.
 pub fn demo_no_auth() -> bool {
     static NO_AUTH: OnceLock<bool> = OnceLock::new();
-    *NO_AUTH.get_or_init(|| {
+    let set = *NO_AUTH.get_or_init(|| {
         let set = std::env::var("DEMO_NO_AUTH")
             .ok()
             .or_else(|| crate::brand::env("DEMO_NO_AUTH").ok())
             .is_some_and(|value| truthy(&value));
-        if set && !demo_mode() {
+        if set && !demo_requested() {
             tracing::warn!("DEMO_NO_AUTH is ignored without DEMO_MODE");
+        } else if set {
+            tracing::info!("demo mode without sign-in: every visitor gets a guest session once the demonstration runs");
         }
-        let on = set && demo_mode();
-        if on {
-            tracing::info!("demo mode without sign-in: every visitor gets a guest session");
-        }
-        on
-    })
+        set
+    });
+    set && demo_mode()
 }
 
 /// Where a visitor starts a guest session, while some plugin offers guests
@@ -1247,6 +1291,15 @@ pub(crate) async fn after_gate(
         request.extensions_mut().insert(principal);
         return next.run(request).await;
     };
+    // A demonstration node the principal has not allowed serves no person:
+    // never the ordinary user surface in its place.
+    if demo_waiting_for_principal() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "demo_not_authorized" })),
+        )
+            .into_response();
+    }
     let demo = demo_mode();
     // A demonstration node opens to a few people at a time: past the seats,
     // a person waits in the queue and reaches only who they are and the

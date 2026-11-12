@@ -6,6 +6,10 @@
 # take one of DEMO_MAX_SESSIONS seats for DEMO_SESSION_TIME minutes, and wait
 # in a queue when every seat is taken. Screens are read-only for them.
 #
+# The demonstration starts only while the network's principal allows it: set
+# DEMO_MODE_ACTIVE=true in the principal's environment. Until then a visitor
+# gets 503 demo_not_authorized.
+#
 # Each person's files live in <workspace_root>/users/<hash>. That folder is
 # bound to the host's /tmp, so whatever a visitor writes is disposable and
 # goes away with the host's /tmp. The node's workspace_root must be

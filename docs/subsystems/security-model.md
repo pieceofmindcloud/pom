@@ -258,6 +258,19 @@ plugin never sees a cookie. Design:
   with a per-address lock-out after three failures (doubling up to 15 min) and
   a global one past 30 failures a minute. That session ends after 30 minutes
   idle.
+- **Demo mode needs the principal** (`user_session::demo_mode`). `DEMO_MODE=1`
+  only asks for it (`demo_requested`): the demonstration runs while the
+  network's principal allows it, set by `DEMO_MODE_ACTIVE=true` in the
+  principal's environment (no screen sets it). The principal puts it in
+  `NetworkSettings.demo_mode_active` of the network settings it answers and
+  fans out (`/api/cluster/network-settings`), whatever an edit sent; a member
+  records what it receives from the principal (`set_demo_authorized`), and the
+  principal reads its own variable. Until then, and when the principal stops
+  allowing it, a person's session gets 503 `demo_not_authorized` (never the
+  ordinary user surface) and the guest sign-in is off. A node asked to be a
+  demonstration keeps fetching the principal's settings instead of stopping
+  after the first sync, so a withdrawal reaches it. An older principal sends no
+  field, which reads as false.
 - **Demo mode** (`DEMO_MODE=1`) removes own API keys and redacts from what a
   user session reads every address-shaped field and value and every node id
   (replaced by a stable per-process alias), on the dashboard reads, the

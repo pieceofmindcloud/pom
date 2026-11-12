@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
+import { isUserSession } from "./session";
 import type { EnrollmentRole, LobbyCard } from "./types";
 
 export type AdmissionStatus = "pending" | "approved" | "rejected";
@@ -47,7 +48,8 @@ export function useAdmissions(enabled: boolean) {
   return useQuery({
     queryKey: ["network-admissions"],
     queryFn: () => api.get<AdmissionRecord[]>("/api/ui/network/admissions"),
-    enabled,
+    // A signed-in person never decides admissions: the node refuses the route.
+    enabled: enabled && !isUserSession(),
     refetchInterval: 5000,
     retry: false,
   });
@@ -58,6 +60,7 @@ export function useAdmissionRequests() {
   return useQuery({
     queryKey: ["network-admission-requests"],
     queryFn: () => api.get<AdmissionRequest[]>("/api/ui/network-chat/lobby/requests"),
+    enabled: !isUserSession(),
     refetchInterval: 10000,
     retry: false,
   });

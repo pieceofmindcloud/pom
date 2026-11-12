@@ -169,6 +169,10 @@ export function useAdminSurface() {
         await api.get<unknown>("/api/ui/node", { auth: false });
         return "available";
       } catch (error) {
+        // A demonstration visitor waiting for a seat holds a session: the node
+        // answers 423 (`demo_queue`) to everything but the queue itself, and
+        // the shell draws the queue past the gate.
+        if (error instanceof ApiError && error.status === 423) return "available";
         let access: AdminAccessStatus | null = null;
         try {
           access = await api.get<AdminAccessStatus>("/api/access", { auth: false });
@@ -568,7 +572,8 @@ export function useSidecarLinks(enabled = true) {
 export function useImageDeployments() {
   return useQuery({
     queryKey: keys.imageDeployments,
-    enabled: !isUserSession(),
+    // A demonstration visitor sees what the network serves, read-only.
+    enabled: !isUserSession() || isDemoUser(),
     queryFn: () => api.get<{ deployments: ImageDeployment[] }>("/api/ui/image-deployments"),
     refetchInterval: 10_000,
   });
@@ -621,7 +626,8 @@ export function useCacheTypes() {
 export function useJobs(enabled = true) {
   return useQuery({
     queryKey: keys.jobs,
-    enabled,
+    // A signed-in person (a demonstration visitor) runs no jobs: the node refuses the route.
+    enabled: enabled && !isUserSession(),
     queryFn: () =>
       optional(
         api.getConditional<{ jobs: Job[] }>("/api/ui/jobs", { auth: false }),
@@ -670,8 +676,8 @@ export function useTransfers(enabled = true) {
     queryKey: keys.transfers,
     queryFn: () =>
       optional(api.get<{ jobs: TransferJob[] }>("/api/transfer/jobs"), { jobs: [] }),
-    enabled,
-    refetchInterval: enabled ? 2000 : false,
+    enabled: enabled && !isUserSession(),
+    refetchInterval: enabled && !isUserSession() ? 2000 : false,
   });
 }
 
@@ -687,7 +693,7 @@ export function useTransfers(enabled = true) {
 export function useOffers(enabled = true) {
   return useQuery({
     queryKey: keys.offers,
-    enabled,
+    enabled: enabled && !isUserSession(),
     queryFn: () =>
       optional(
         api.getConditional<{ offers: NetworkOffer[] }>("/api/transfer/offers"),

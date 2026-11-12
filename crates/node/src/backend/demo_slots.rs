@@ -75,6 +75,7 @@ impl SeatStatus {
                     "expires_at": unix_now + remaining,
                     "session_secs": ttl.as_secs(),
                     "max_sessions": max,
+                    "active_sessions": active_count(),
                 })
             }
             SeatStatus::Queued { position, waiting, eta } => json!({
@@ -84,6 +85,7 @@ impl SeatStatus {
                 "eta_secs": eta.as_secs(),
                 "session_secs": ttl.as_secs(),
                 "max_sessions": max,
+                "active_sessions": active_count(),
             }),
             SeatStatus::Expired => json!({ "state": "expired" }),
         }
@@ -300,6 +302,11 @@ pub fn cooldown_left(user_id: &str) -> Option<u64> {
     let until = *at + guest_cooldown();
     let now = Instant::now();
     (until > now).then(|| (until - now).as_secs().max(1))
+}
+
+/// How many seats are held right now, for the visitor's top bar.
+pub fn active_count() -> usize {
+    seats().lock().map(|seats| seats.active.len()).unwrap_or(0)
 }
 
 pub fn release(session: &str) {

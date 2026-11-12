@@ -253,7 +253,8 @@ export function PublicNetworks() {
    * operator presses the button, and it never leaves the browser.
    */
   const ownLocation = networkInfo.data?.network.location ?? null;
-  const viewerLocation: ViewerLocation | null = browserLocation ?? (ownLocation ? { latitude: ownLocation.latitude, longitude: ownLocation.longitude } : null);
+  const ownUsable = ownLocation && Number.isFinite(ownLocation.latitude) && Number.isFinite(ownLocation.longitude);
+  const viewerLocation: ViewerLocation | null = browserLocation ?? (ownUsable ? { latitude: ownLocation.latitude, longitude: ownLocation.longitude } : null);
   const radiusKm = viewerLocation ? withinKm : 0;
 
   // Any change of what is asked starts again from the first page.

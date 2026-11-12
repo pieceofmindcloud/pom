@@ -319,11 +319,20 @@ plugin never sees a cookie. Design:
   queue and reach only `/api/ui/me`, `/api/ui/demo/session` and sign-out (423
   `demo_queue` elsewhere); `GET /api/ui/demo/session` answers the seat
   (`state`, `remaining_secs`, `expires_at`) or the place (`position`,
-  `waiting`, `eta_secs`, estimated from the seats' remaining times). A queued
+  `waiting`, `eta_secs`, estimated from the seats' remaining times), plus
+  `active_sessions`, the seats held now, which the top bar shows beside the
+  clock. The queue screen (and a guest start that came back without a
+  session) reloads itself every 5 minutes to try again; a visit whose time
+  ran out does not, so a tab left open never signs back in. After signing out,
+  a guest tab stays at the gate ("You left the demonstration") until the
+  visitor asks for a new visit. A queued
   place nobody polls for 45 s is dropped. Sign-out frees the seat at once; an
   expired seat revokes the session and its chat tokens (401
   `demo_session_expired`). One person holds one seat across browsers. The
-  state is in memory: a restart empties it.
+  state is in memory: a restart empties it. The Chat's image generation
+  (`POST /api/ui/chat/image`, `GET /api/ui/chat/image/:hash`) is on the
+  user surface, and a demonstration visitor also reads
+  `GET /api/ui/image-deployments` (the Dashboard's image models).
 - **A person's folder.** `<workspace_root>/users/<hash>` (`user_folder`: 16 hex
   of SHA-256 over plugin and user id), created on first use. The plugin proxy
   sends it to the plugin as `x-pom-user` (the hash) and

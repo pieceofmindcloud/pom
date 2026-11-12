@@ -1017,7 +1017,9 @@ component on this node (`release` takes an optional `component`).
 `{deploy_id, job_id}` and runs a `deploy` job),
 `POST /api/ui/image-deploy/:deploy_id/{add,remove,redeploy}`,
 `GET /api/ui/image-deployments` and `POST /api/ui/image-undeploy`
-(`AnyAdmin`) plan, deploy, change, list and undeploy an image model as a
+(`AnyAdmin`, except the list's GET, `ServingMember`: a worker's Dashboard
+shows the image models without any image plugin on it, since the view asks
+every peer) plan, deploy, change, list and undeploy an image model as a
 pipeline of stages with replicas; undeploy and the list work from any admin
 node. The contracts are
 `deployment.md`, section 1.7. A plugin reaches the same list, survey, deploy

@@ -27,7 +27,7 @@ import { useI18n } from "./i18n/provider";
 import type { AdminAccessStatus } from "./lib/types";
 import { isDemoUser, loadSession } from "./lib/session";
 import { modelSearchRoute } from "./lib/modelSearch";
-import { DemoExpiredNotice, DemoNetwork, guestHold, startGuestVisit, DemoQueue, DemoWelcome, useDemoSeat } from "./components/DemoMode";
+import { DemoExpiredNotice, DemoNetwork, guestHold, startGuestVisit, DemoQueue, DemoWelcome, useDemoSeat, useQueueReload } from "./components/DemoMode";
 import pomMark from "./assets/pom-mark-dark.png";
 import { BrandLanguageSwitch } from "./components/BrandLanguageSwitch";
 import { Panel, PanelHeader } from "./components/ui";
@@ -77,6 +77,8 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
   /** `DEMO_NO_AUTH`: why this guest stays here instead of going in. */
   const [hold] = useState(guestHold);
   const guestUrl = access?.guest_url;
+  // A visit that could not open (a full demonstration among the causes) tries again by itself.
+  useQueueReload(Boolean(guestUrl && hold && "stuck" in hold && !operatorPath), () => guestUrl && startGuestVisit(guestUrl));
   useEffect(() => {
     if (guestUrl && !hold && !operatorPath) startGuestVisit(guestUrl);
   }, [guestUrl, hold, operatorPath]);
@@ -173,6 +175,15 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
             <p role="status" className="pom-login-error" data-testid="demo-guest-hold">
               {"cooldownSecs" in hold
                 ? t("demo.guestCooldown", { minutes: Math.max(1, Math.ceil(hold.cooldownSecs / 60)) })
+                : "signedOut" in hold
+                  ? (
+                    <>
+                      {t("demo.signedOut")}{" "}
+                      <a className="underline" href={guestUrl} onClick={(event) => { event.preventDefault(); startGuestVisit(guestUrl); }}>
+                        {t("demo.newVisit")}
+                      </a>
+                    </>
+                  )
                 : "stuck" in hold
                   ? (
                     <>

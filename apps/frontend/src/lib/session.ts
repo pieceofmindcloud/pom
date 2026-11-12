@@ -27,6 +27,8 @@ export interface DemoSeat {
   eta_secs?: number;
   session_secs?: number;
   max_sessions?: number;
+  /** Seats held right now across the demonstration. */
+  active_sessions?: number;
 }
 
 export interface SessionInfo {
@@ -70,7 +72,15 @@ export async function loadSession(): Promise<SessionInfo> {
   return current;
 }
 
+/** Set by `signOut`: the gate does not open a new guest visit by itself (`DEMO_NO_AUTH`). */
+export const SIGNED_OUT_FLAG = "pom.demo.signedOut";
+
 export async function signOut() {
+  try {
+    window.sessionStorage.setItem(SIGNED_OUT_FLAG, "1");
+  } catch {
+    // without storage, a guest node opens a new visit after signing out
+  }
   try {
     const { api } = await import("./api");
     await api.post("/api/ui/logout", {});

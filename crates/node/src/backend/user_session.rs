@@ -864,6 +864,14 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
     if post && matches!(path, "/api/ui/chat-key" | "/api/ui/logout") {
         return true;
     }
+    // The Chat's image generation: running a workflow listed in the
+    // capabilities, and reading back the images it stored on this node.
+    if post && path == "/api/ui/chat/image" {
+        return true;
+    }
+    if get && path.strip_prefix("/api/ui/chat/image/").is_some_and(|hash| !hash.is_empty() && !hash.contains('/')) {
+        return true;
+    }
     // A demonstration node shows, read-only, what the operator has: the
     // installed plugins and the catalog, the models and slices, the
     // network it is in, and the person's own budget.
@@ -886,6 +894,8 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
             // The Deploy screen's catalog, played with but never deployed.
             "/api/ui/cache-types",
             "/api/ui/model-sidecar-links",
+            // The image models the network serves, on the Dashboard.
+            "/api/ui/image-deployments",
         ];
         if demo_get.contains(&path) || path.starts_with("/api/ui/plugin-catalog/") {
             return true;
@@ -947,6 +957,7 @@ fn redacted_path(path: &str, demo: bool) -> bool {
                 | "/api/ui/network-chat"
                 | "/api/ui/deploy/plan"
                 | "/api/ui/model-sidecar-links"
+                | "/api/ui/image-deployments"
         )
     {
         return true;
@@ -1403,8 +1414,8 @@ pub(crate) fn demo_previews_deploy(
     path: &str,
 ) -> bool {
     profile == crate::profile::NodeProfile::Worker
-        && method == Method::POST
-        && path == "/api/ui/deploy/plan"
+        && ((method == Method::POST && path == "/api/ui/deploy/plan")
+            || (method == Method::GET && path == "/api/ui/image-deployments"))
         && demo_mode()
 }
 
@@ -1500,6 +1511,9 @@ mod tests {
         assert!(user_may_call(&Method::POST, "/api/ui/chat-key", true));
         assert!(!user_may_call(&Method::GET, "/api/ui/connection", false));
         assert!(!user_may_call(&Method::POST, "/api/ui/leave", true));
+        assert!(user_may_call(&Method::POST, "/api/ui/chat/image", true));
+        assert!(user_may_call(&Method::GET, "/api/ui/chat/image/abc123", false));
+        assert!(!user_may_call(&Method::GET, "/api/ui/chat/image/a/b", true));
         assert!(!user_may_call(&Method::GET, "/admin/api-keys", false));
         assert!(!user_may_call(&Method::POST, "/api/ui/deploy", false));
         assert!(!user_may_call(&Method::POST, "/api/ui/cluster", false));

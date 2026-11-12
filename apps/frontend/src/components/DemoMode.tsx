@@ -12,7 +12,7 @@ import { Clock, Globe2, Hourglass, LogOut, MessageCircle, Star, Users } from "lu
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../lib/api";
 import { useCluster, useNetworkInfo, useNode } from "../lib/queries";
-import { isDemoUser, sessionInfo, signOut, type DemoSeat } from "../lib/session";
+import { isDemoUser, sessionInfo, signOut, SIGNED_OUT_FLAG, type DemoSeat } from "../lib/session";
 import { useI18n } from "../i18n/provider";
 import { Modal } from "./Confirm";
 import { Badge, Button, KeyValue, Panel, PanelHeader } from "./ui";
@@ -39,11 +39,12 @@ function storage(): Storage | null {
  * `/?demo_cooldown=<secs>` while the same visitor waits after their time ran
  * out; a tab whose time just ran out does not re-enter on its own either.
  */
-export function guestHold(): { cooldownSecs: number } | { expired: true } | { stuck: true } | null {
+export function guestHold(): { cooldownSecs: number } | { expired: true } | { signedOut: true } | { stuck: true } | null {
   const raw = new URLSearchParams(window.location.search).get("demo_cooldown");
   const secs = raw ? Number(raw) : NaN;
   if (Number.isFinite(secs) && secs > 0) return { cooldownSecs: secs };
   if (takeDemoExpired()) return { expired: true };
+  if (takeSignedOut()) return { signedOut: true };
   return recentGuestStart() ? { stuck: true } : null;
 }
 
@@ -69,6 +70,14 @@ export function startGuestVisit(url: string) {
     // without storage there is no guard, but the visit still opens
   }
   window.location.replace(url);
+}
+
+/** Whether this tab just signed out: it stays at the gate until the visitor asks for a new visit. */
+function takeSignedOut(): boolean {
+  const store = storage();
+  const signedOut = store?.getItem(SIGNED_OUT_FLAG) === "1";
+  store?.removeItem(SIGNED_OUT_FLAG);
+  return signedOut;
 }
 
 /** Whether the last visit of this tab ended because its time ran out. */
@@ -148,19 +157,48 @@ export function DemoClock() {
   }, [left]);
   if (!isDemoUser() || left === null) return null;
   const tone = left <= 60 ? "rose" : left <= 300 ? "amber" : "iris";
+  const online = seat?.active_sessions;
   return (
+    <span className="flex items-center gap-1.5">
+    {online !== undefined && (
+      <Badge tone="aqua" data-testid="demo-online">
+        <span
+          title={t("demo.onlineTitle")}
+          aria-label={t("demo.onlineLabel", { count: online, max: seat?.max_sessions ?? online })}
+          className="flex items-center gap-1"
+        >
+          <Users className="h-3 w-3" aria-hidden="true" />
+          <span className="font-mono">{online}/{seat?.max_sessions ?? online}</span>
+        </span>
+      </Badge>
+    )}
     <Badge tone={tone} data-testid="demo-clock">
       <span title={t("demo.clockTitle")} aria-label={t("demo.clockLabel", { time: clock(left) })} className="flex items-center gap-1">
         <Clock className="h-3 w-3" aria-hidden="true" />
         <span className="font-mono">{clock(left)}</span>
       </span>
     </Badge>
+    </span>
   );
+}
+
+/** How often a waiting page reloads by itself and tries for a seat again. */
+export const DEMO_QUEUE_RELOAD_MS = 5 * 60_000;
+
+/** Reloads the page every `DEMO_QUEUE_RELOAD_MS` while `enabled`. */
+export function useQueueReload(enabled: boolean, reload: () => void = () => window.location.reload()) {
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = window.setTimeout(reload, DEMO_QUEUE_RELOAD_MS);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
 }
 
 /** In place of the whole panel while every seat is taken. */
 export function DemoQueue({ seat }: { seat: DemoSeat }) {
   const { t } = useI18n();
+  useQueueReload(true);
   const position = seat.position ?? 1;
   const waiting = seat.waiting ?? position;
   return (
@@ -185,6 +223,7 @@ export function DemoQueue({ seat }: { seat: DemoSeat }) {
             </span>
           </div>
           <p className="pom-login-error" style={{ opacity: 0.6 }}>{t("demo.queueKeepOpen")}</p>
+          <p className="pom-login-error" style={{ opacity: 0.6 }}>{t("demo.queueAutoRefresh", { minutes: DEMO_QUEUE_RELOAD_MS / 60_000 })}</p>
           <button className="pom-login-button" type="button" onClick={() => void signOut()}>
             {t("demo.leaveQueue")}
           </button>

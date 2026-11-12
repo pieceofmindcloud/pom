@@ -95,12 +95,24 @@ pub struct KnownNetworksQuery {
     pub sort: KnownNetworksSort,
     /// The point distances are measured from; without it `distance` sorts
     /// like `recent` and `within_km` is ignored.
+    /// A value that is not a finite number (`latitude=` or `undefined` from
+    /// an older screen) counts as absent instead of refusing the listing.
+    #[serde(default, deserialize_with = "lenient_f64")]
     pub latitude: Option<f64>,
+    #[serde(default, deserialize_with = "lenient_f64")]
     pub longitude: Option<f64>,
+    #[serde(default, deserialize_with = "lenient_f64")]
     pub within_km: Option<f64>,
     /// 1-based.
     pub page: Option<usize>,
     pub page_size: Option<usize>,
+}
+
+fn lenient_f64<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(raw
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite()))
 }
 
 #[derive(Debug, Serialize)]
@@ -318,6 +330,16 @@ pub(super) async fn known_networks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_coordinate_that_is_not_a_number_counts_as_absent() {
+        let uri: axum::http::Uri = "/x?latitude=undefined&longitude=&within_km=50&page=1".parse().unwrap();
+        let Query(query) = Query::<KnownNetworksQuery>::try_from_uri(&uri).unwrap();
+        assert_eq!(query.latitude, None);
+        assert_eq!(query.longitude, None);
+        assert_eq!(query.within_km, Some(50.0));
+        assert_eq!(query.page, Some(1));
+    }
 
     fn network(fingerprint: &str, name: &str, city: &str, latitude: f64) -> PublicNetworkView {
         PublicNetworkView {

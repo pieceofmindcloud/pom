@@ -566,6 +566,14 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::AnyAdmin,
     },
+    // Reading what image models the network serves is the Dashboard's, on a
+    // worker too (it asks each peer, so no local image plugin is needed);
+    // changing them stays an admin's.
+    RouteRule {
+        prefix: "/api/ui/image-deployments",
+        method: Some(Method::GET),
+        scope: RouteScope::ServingMember,
+    },
     RouteRule {
         prefix: "/api/ui/image-deployments",
         method: None,
@@ -881,6 +889,7 @@ mod policy_tests {
             RouteScope::PrincipalOnly
         );
         assert_eq!(scope_of("/api/ui/deployments"), RouteScope::ServingMember);
+        assert_eq!(scope_of("/api/ui/image-deployments"), RouteScope::ServingMember);
         assert_eq!(
             route_scope(&Method::POST, "/api/ui/deployments"),
             RouteScope::AnyAdmin

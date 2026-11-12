@@ -688,7 +688,7 @@ demo.expired,Your demonstration time is over. Sign in again to join the queue.,S
 demo.guestCooldown,Your demonstration time is over. You can start a new visit in {minutes} min.,Seu tempo de demonstração acabou. Você pode começar uma nova visita em {minutes} min.
 demo.guestExpired,Your demonstration time is over. Thanks for visiting!,Seu tempo de demonstração acabou. Obrigado pela visita!
 demo.guestRetry,Try again,Tentar de novo
-demo.guestStuck,The visit could not be opened in this browser.,Não foi possível abrir a visita neste navegador.
+demo.guestStuck,"The demonstration may be full right now: it opens to a few users at a time, for a limited time each. This page tries again every 5 minutes.","A demonstração pode estar cheia agora: ela atende poucos usuários por vez, por tempo limitado cada. Esta página tenta de novo a cada 5 minutos."
 demo.leaveQueue,Leave the queue,Sair da fila
 demo.networkEyebrow,Current network,Rede atual
 demo.networkLocation,Location,Localização
@@ -697,11 +697,11 @@ demo.networkModel,Model in service,Modelo em serviço
 demo.networkNoSlice,no slice,sem fatia
 demo.networkOrganization,Organization,Organização
 demo.networkVisibility,Visibility,Visibilidade
-demo.queueDetail,"This server runs on a few machines, so it opens to {seats} people at a time, for {minutes} minutes each. Your turn comes up automatically.","Este servidor roda em poucas máquinas, então atende {seats} pessoas por vez, por {minutes} minutos cada. A sua vez chega automaticamente."
+demo.queueDetail,"Our demonstration environment is limited to {seats} simultaneous users, and each one has {minutes} minutes to come in and try the tool. You are in a queue waiting for your turn.","Nosso ambiente de demonstração está limitado a {seats} usuários simultâneos e cada um tem {minutes} minutos para entrar e testar a ferramenta. Você está numa fila aguardando a sua vez."
 demo.queueEta,Estimated wait: about {minutes} min,Espera estimada: cerca de {minutes} min
 demo.queueKeepOpen,Keep this page open to hold your place.,Mantenha esta página aberta para não perder o lugar.
 demo.queuePosition,You are number {position} of {waiting} waiting,Você é o número {position} de {waiting} aguardando
-demo.queueTitle,The demonstration is full right now,A demonstração está cheia no momento
+demo.queueTitle,"You are in the queue for the demonstration","Você está na fila da demonstração"
 demo.readOnly,Read-only on this demonstration server,Somente visualização neste servidor de demonstração
 demo.welcomeDisabled,"Several features are disabled here: installing plugins, slicing and transferring models, and changing the network or its settings. Screens show what exists, read-only.","Diversas funcionalidades estão desabilitadas aqui: instalar plugins, fatiar e transferir modelos e alterar a rede ou suas configurações. As telas mostram o que existe, somente para visualização."
 demo.welcomeDiscord,Join the community on Discord:,Entre na comunidade no Discord:
@@ -711,6 +711,11 @@ demo.welcomeStarLink,github.com/pieceofmindcloud/pom,github.com/pieceofmindcloud
 demo.welcomeStart,Start,Começar
 demo.welcomeTime,Your visit lasts {minutes} minutes. The clock in the top bar shows how much time you have left.,Sua visita dura {minutes} minutos. O relógio na barra de topo mostra quanto tempo ainda resta.
 demo.welcomeTitle,Welcome to the POM demonstration,Bem-vindo à demonstração do POM
+demo.queueAutoRefresh,"This page refreshes by itself every {minutes} minutes and tries to let you in again.","Esta página se atualiza sozinha a cada {minutes} minutos e tenta deixar você entrar de novo."
+demo.onlineTitle,"People using the demonstration now","Pessoas usando a demonstração agora"
+demo.onlineLabel,"{count} of {max} people using the demonstration now","{count} de {max} pessoas usando a demonstração agora"
+demo.newVisit,Start a new visit,Começar uma nova visita
+demo.signedOut,You left the demonstration.,Você saiu da demonstração.
 deploy.adaptivePrefillChunksHint,"The gateway picks each prompt's chunk size, between 32 tokens and the prefill chunk above, from what it measured on the route (64 at least while the MoE expert cache is on). Off, every prompt goes in chunks of exactly the prefill chunk.","O gateway escolhe o tamanho do pedaço de cada prompt, entre 32 tokens e o pedaço de prefill acima, pelo que mediu na rota (no mínimo 64 com o cache de experts do MoE ligado). Desligado, todo prompt vai em pedaços de exatamente o pedaço de prefill."
 deploy.addNode,Add,Adicionar
 deploy.addNodeCacheK,KV cache K,Cache KV K

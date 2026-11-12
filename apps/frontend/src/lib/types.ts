@@ -1350,7 +1350,8 @@ export interface ImageDeploymentVersion {
   stages: Array<{
     component: ImageStageName;
     file: ImageFileIdentity;
-    replicas: Array<{ node_id: string; hostname: string; path: string }>;
+    replicas: Array<{ node_id: string; hostname: string; path: string; lora_paths?: string[] }>;
+    loras?: ImageLoraChoice[];
   }>;
 }
 
@@ -1370,10 +1371,18 @@ export interface ImageDeployment {
   versions?: ImageDeploymentVersion[];
 }
 
+/** A LoRA applied over the diffusion model, with its strength. */
+export interface ImageLoraChoice {
+  file: ImageFileIdentity;
+  strength: number;
+}
+
 export interface ImageStageRequest {
   component: ImageStageName;
   file: ImageFileIdentity;
   node_ids: string[];
+  /** The diffusion stage only: every machine of the stage must hold each one. */
+  loras?: ImageLoraChoice[];
 }
 
 export interface ImagePlanRequest {
@@ -1388,6 +1397,7 @@ export interface ImageMachineVerdict {
   ok: boolean;
   reason?: string;
   path?: string;
+  lora_paths?: string[];
 }
 
 export interface ImageStagePlan {
@@ -1395,6 +1405,7 @@ export interface ImageStagePlan {
   file: ImageFileIdentity;
   chosen: ImageMachineVerdict[];
   alternatives: ImageMachineVerdict[];
+  loras?: ImageLoraChoice[];
 }
 
 /** `POST /api/ui/image-deploy/plan`. */

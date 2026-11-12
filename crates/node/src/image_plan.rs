@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::components::MachineFacts;
-use crate::image_records::{FileIdentity, STAGES};
+use crate::image_records::{FileIdentity, LoraChoice, STAGES};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StageRequest {
@@ -14,6 +14,10 @@ pub(crate) struct StageRequest {
     pub file: FileIdentity,
     #[serde(default)]
     pub node_ids: Vec<String>,
+    /// LoRAs applied over the model (the diffusion stage only): every machine
+    /// of the stage must hold each one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loras: Vec<LoraChoice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,6 +38,9 @@ pub(crate) struct MachineVerdict {
     /// The file on this machine's disk; absent when it would receive a copy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// The stage's LoRAs on this machine's disk, in the stage's order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lora_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,6 +49,8 @@ pub(crate) struct StagePlan {
     pub file: FileIdentity,
     pub chosen: Vec<MachineVerdict>,
     pub alternatives: Vec<MachineVerdict>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loras: Vec<LoraChoice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,6 +110,7 @@ fn verdict(
     machine: &MachineFacts,
     component: &str,
     file: &FileIdentity,
+    loras: &[LoraChoice],
     machines: &[MachineFacts],
 ) -> (MachineVerdict, Option<Copy>) {
     let refuse = |reason: String| {
@@ -111,6 +121,7 @@ fn verdict(
                 ok: false,
                 reason: Some(reason),
                 path: None,
+                lora_paths: Vec::new(),
             },
             None,
         )
@@ -119,6 +130,21 @@ fn verdict(
         None => return refuse("does not run ComfyUI".into()),
         Some(status @ ("error" | "waiting")) => return refuse(format!("ComfyUI is {status}")),
         Some(_) => {}
+    }
+    // A LoRA is never copied: the machine holds each one, as a LoRA, or it
+    // cannot serve this stage.
+    let mut lora_paths = Vec::new();
+    for lora in loras {
+        match holding(machine, &lora.file) {
+            Some(found) if found.category == "lora" => lora_paths.push(found.path.clone()),
+            Some(found) => {
+                return refuse(format!(
+                    "{} is a {}, not a LoRA",
+                    lora.file.name, found.category
+                ))
+            }
+            None => return refuse(format!("does not hold the LoRA {}", lora.file.name)),
+        }
     }
     if let Some(found) = holding(machine, file) {
         if !fits(component, &found.category) {
@@ -134,6 +160,7 @@ fn verdict(
                 ok: true,
                 reason: None,
                 path: Some(found.path.clone()),
+                lora_paths,
             },
             None,
         );
@@ -161,6 +188,7 @@ fn verdict(
                 ok: true,
                 reason: Some(format!("would receive {}", file.name)),
                 path: None,
+                lora_paths,
             },
             Some(Copy {
                 component: component.to_owned(),
@@ -190,6 +218,24 @@ pub(crate) fn plan_image(request: &ImagePlanRequest, machines: &[MachineFacts]) 
             blocked.push(format!("{} is chosen twice", stage.component));
             continue;
         }
+        if !stage.loras.is_empty() && stage.component != "diffusion" {
+            blocked.push(format!(
+                "only the diffusion takes LoRAs, not the {}",
+                stage.component
+            ));
+        }
+        let mut lora_names = std::collections::BTreeSet::new();
+        for lora in &stage.loras {
+            if !lora_names.insert(lora.file.name.as_str()) {
+                blocked.push(format!("the LoRA {} is chosen twice", lora.file.name));
+            }
+            if !lora.strength.is_finite() || lora.strength.abs() > 10.0 {
+                blocked.push(format!(
+                    "the LoRA {} needs a strength between -10 and 10",
+                    lora.file.name
+                ));
+            }
+        }
         requests.push(stage);
     }
     requests.sort_by_key(|stage| STAGES.iter().position(|s| *s == stage.component));
@@ -210,11 +256,18 @@ pub(crate) fn plan_image(request: &ImagePlanRequest, machines: &[MachineFacts]) 
                     ok: false,
                     reason: Some("is not on the network".into()),
                     path: None,
+                    lora_paths: Vec::new(),
                 });
                 blocked.push(format!("{node_id} is not on the network"));
                 continue;
             };
-            let (verdict, copy) = verdict(machine, &stage.component, &stage.file, machines);
+            let (verdict, copy) = verdict(
+                machine,
+                &stage.component,
+                &stage.file,
+                &stage.loras,
+                machines,
+            );
             if let Some(reason) = verdict.reason.as_ref().filter(|_| !verdict.ok) {
                 blocked.push(format!(
                     "{} cannot serve the {}: {reason}",
@@ -222,7 +275,8 @@ pub(crate) fn plan_image(request: &ImagePlanRequest, machines: &[MachineFacts]) 
                 ));
             }
             if verdict.ok {
-                let mb = stage.file.size_bytes.div_ceil(1024 * 1024);
+                let lora_bytes: u64 = stage.loras.iter().map(|l| l.file.size_bytes).sum();
+                let mb = (stage.file.size_bytes + lora_bytes).div_ceil(1024 * 1024);
                 match needs.iter_mut().find(|(id, _)| id == node_id) {
                     Some((_, need)) => *need += mb,
                     None => needs.push((node_id.clone(), mb)),
@@ -233,13 +287,14 @@ pub(crate) fn plan_image(request: &ImagePlanRequest, machines: &[MachineFacts]) 
         }
         let alternatives = machines
             .iter()
-            .map(|m| verdict(m, &stage.component, &stage.file, machines).0)
+            .map(|m| verdict(m, &stage.component, &stage.file, &stage.loras, machines).0)
             .collect();
         stages.push(StagePlan {
             component: stage.component.clone(),
             file: stage.file.clone(),
             chosen,
             alternatives,
+            loras: stage.loras.clone(),
         });
     }
     if !copies.is_empty() && !request.allow_transfers {
@@ -295,6 +350,7 @@ impl DeployBody {
                             size_bytes: 0,
                         },
                         node_ids: vec![choice.node_id],
+                        loras: Vec::new(),
                     });
                 }
                 ImagePlanRequest {
@@ -361,7 +417,13 @@ pub(crate) async fn deploy_stages(
                 node_id: verdict.node_id.clone(),
                 path: path.clone(),
             };
-            let body = crate::components::assignment_of(deploy_id, &plan.name, &choice);
+            let body = assignment_with_loras(
+                deploy_id,
+                &plan.name,
+                &choice,
+                &stage.loras,
+                &verdict.lora_paths,
+            );
             match call(verdict.node_id.clone(), APPLY_PATH, body).await {
                 Ok(()) => {
                     applied.push((verdict.node_id.clone(), stage.component.clone()));
@@ -369,6 +431,7 @@ pub(crate) async fn deploy_stages(
                         node_id: verdict.node_id.clone(),
                         hostname: verdict.hostname.clone(),
                         path,
+                        lora_paths: verdict.lora_paths.clone(),
                     });
                 }
                 Err(error) => {
@@ -408,6 +471,7 @@ pub(crate) async fn deploy_stages(
             component: stage.component.clone(),
             file: stage.file.clone(),
             replicas,
+            loras: stage.loras.clone(),
         });
     }
     let mut deployments = crate::image_records::load_image_deployments(db);
@@ -421,6 +485,27 @@ pub(crate) async fn deploy_stages(
     ));
     crate::image_records::save_image_deployments(db, &deployments);
     Ok(failed)
+}
+
+/// The plugin's assignment of one replica: the component's file and, on the
+/// diffusion, its LoRAs on this machine with their strengths (`options.loras`,
+/// read by the plugin's `pom_components._diffusion`).
+fn assignment_with_loras(
+    deploy_id: &str,
+    name: &str,
+    choice: &crate::components::ComponentChoice,
+    loras: &[LoraChoice],
+    lora_paths: &[String],
+) -> serde_json::Value {
+    let mut body = crate::components::assignment_of(deploy_id, name, choice);
+    if !loras.is_empty() && loras.len() == lora_paths.len() {
+        body["options"]["loras"] = loras
+            .iter()
+            .zip(lora_paths)
+            .map(|(lora, path)| serde_json::json!({ "path": path, "strength": lora.strength }))
+            .collect();
+    }
+    body
 }
 
 pub(crate) fn new_deploy_id() -> String {
@@ -479,6 +564,7 @@ pub(crate) async fn add_replica(
             component: component.to_owned(),
             file: stage.file.clone(),
             node_ids: vec![node_id.to_owned()],
+            loras: stage.loras.clone(),
         }],
         allow_transfers: false,
     };
@@ -500,7 +586,13 @@ pub(crate) async fn add_replica(
         node_id: node_id.to_owned(),
         path: path.clone(),
     };
-    let body = crate::components::assignment_of(deploy_id, &record.name, &choice);
+    let body = assignment_with_loras(
+        deploy_id,
+        &record.name,
+        &choice,
+        &stage.loras,
+        &verdict.lora_paths,
+    );
     call(node_id.to_owned(), APPLY_PATH, body)
         .await
         .map_err(|error| refused(502, format!("{}: {error}", verdict.hostname)))?;
@@ -510,6 +602,7 @@ pub(crate) async fn add_replica(
             node_id: node_id.to_owned(),
             hostname: verdict.hostname.clone(),
             path,
+            lora_paths: verdict.lora_paths.clone(),
         });
     }
     let version = deployments[index].push_version(stages, by);
@@ -577,19 +670,26 @@ pub(crate) async fn redeploy_version(
         .find(|v| v.version == version)
         .cloned()
         .ok_or_else(|| refused(400, format!("version {version} does not exist")))?;
-    let pairs = |stages: &[crate::image_records::ImageStage]| -> Vec<(String, String, String)> {
+    type Pair = (String, String, String, Vec<LoraChoice>, Vec<String>);
+    let pairs = |stages: &[crate::image_records::ImageStage]| -> Vec<Pair> {
         stages
             .iter()
             .flat_map(|s| {
-                s.replicas
-                    .iter()
-                    .map(|r| (s.component.clone(), r.node_id.clone(), r.path.clone()))
+                s.replicas.iter().map(|r| {
+                    (
+                        s.component.clone(),
+                        r.node_id.clone(),
+                        r.path.clone(),
+                        s.loras.clone(),
+                        r.lora_paths.clone(),
+                    )
+                })
             })
             .collect()
     };
     let live = pairs(&record.active().stages);
     let wanted = pairs(&target.stages);
-    for (component, node_id, _) in live
+    for (component, node_id, ..) in live
         .iter()
         .filter(|p| !wanted.iter().any(|w| w.0 == p.0 && w.1 == p.1))
     {
@@ -600,13 +700,13 @@ pub(crate) async fn redeploy_version(
         )
         .await;
     }
-    for (component, node_id, path) in &wanted {
+    for (component, node_id, path, loras, lora_paths) in &wanted {
         let choice = crate::components::ComponentChoice {
             component: component.clone(),
             node_id: node_id.clone(),
             path: path.clone(),
         };
-        let body = crate::components::assignment_of(deploy_id, &record.name, &choice);
+        let body = assignment_with_loras(deploy_id, &record.name, &choice, loras, lora_paths);
         call(node_id.clone(), APPLY_PATH, body)
             .await
             .map_err(|error| refused(502, format!("{node_id}: {error}")))?;
@@ -778,6 +878,7 @@ mod tests {
             component: component.into(),
             file: f,
             node_ids: nodes.iter().map(|n| (*n).into()).collect(),
+            loras: Vec::new(),
         }
     }
 
@@ -972,6 +1073,130 @@ mod tests {
             .filter(|(_, path, _)| *path == APPLY_PATH)
             .map(|(node, _, body)| (node.clone(), body["component"].as_str().unwrap().to_owned()))
             .collect()
+    }
+
+    /// A network where only machine b holds the turbo LoRA.
+    fn lora_network() -> Vec<MachineFacts> {
+        let mut machines = network();
+        machines[1].files.push(ImageFileFact {
+            path: "/loras/turbo.safetensors".into(),
+            size_bytes: GB / 2,
+            category: "lora".into(),
+        });
+        machines
+    }
+
+    fn with_lora(mut request: ImagePlanRequest, strength: f32) -> ImagePlanRequest {
+        let diffusion = request
+            .stages
+            .iter_mut()
+            .find(|s| s.component == "diffusion")
+            .unwrap();
+        diffusion.loras = vec![LoraChoice {
+            file: file("turbo.safetensors", GB / 2),
+            strength,
+        }];
+        request
+    }
+
+    #[test]
+    fn a_diffusion_machine_must_hold_each_lora() {
+        let plan = plan_image(&with_lora(zimage(&["b"]), 0.8), &lora_network());
+        assert!(plan.blocked.is_empty(), "{:?}", plan.blocked);
+        let diffusion = plan
+            .stages
+            .iter()
+            .find(|s| s.component == "diffusion")
+            .unwrap();
+        assert_eq!(diffusion.chosen[0].lora_paths, ["/loras/turbo.safetensors"]);
+        assert_eq!(diffusion.loras.len(), 1);
+
+        let plan = plan_image(&with_lora(zimage(&["b", "c"]), 0.8), &lora_network());
+        assert!(
+            plan.blocked
+                .iter()
+                .any(|r| r.contains("host-c")
+                    && r.contains("does not hold the LoRA turbo.safetensors")),
+            "{:?}",
+            plan.blocked
+        );
+    }
+
+    #[test]
+    fn only_the_diffusion_takes_loras_and_a_strength_is_bounded() {
+        let mut request = zimage(&["b"]);
+        request.stages[0].loras = vec![LoraChoice {
+            file: file("turbo.safetensors", GB / 2),
+            strength: 1.0,
+        }];
+        let plan = plan_image(&request, &lora_network());
+        assert!(
+            plan.blocked
+                .iter()
+                .any(|r| r.contains("only the diffusion takes LoRAs")),
+            "{:?}",
+            plan.blocked
+        );
+
+        let plan = plan_image(&with_lora(zimage(&["b"]), 50.0), &lora_network());
+        assert!(
+            plan.blocked
+                .iter()
+                .any(|r| r.contains("strength between -10 and 10")),
+            "{:?}",
+            plan.blocked
+        );
+    }
+
+    #[tokio::test]
+    async fn the_loras_go_to_the_plugin_and_into_the_record() {
+        let (_dir, db) = db();
+        let plan = plan_image(&with_lora(zimage(&["b"]), 0.75), &lora_network());
+        let (call, calls) = targets(&[]);
+        deploy_stages(&db, &plan, &call, "img-1", "me", &|_| {})
+            .await
+            .unwrap();
+        let bodies = calls.lock().unwrap().clone();
+        let diffusion = bodies
+            .iter()
+            .find(|(_, path, body)| *path == APPLY_PATH && body["component"] == "diffusion")
+            .map(|(_, _, body)| body.clone())
+            .unwrap();
+        assert_eq!(
+            diffusion["options"]["loras"],
+            serde_json::json!([{ "path": "/loras/turbo.safetensors", "strength": 0.75 }])
+        );
+        let vae = bodies
+            .iter()
+            .find(|(_, path, body)| *path == APPLY_PATH && body["component"] == "vae")
+            .map(|(_, _, body)| body.clone())
+            .unwrap();
+        assert!(vae["options"].get("loras").is_none());
+        let record = &crate::image_records::load_image_deployments(&db)[0];
+        let stage = record
+            .active()
+            .stages
+            .iter()
+            .find(|s| s.component == "diffusion")
+            .unwrap();
+        assert_eq!(stage.loras[0].strength, 0.75);
+        assert_eq!(stage.replicas[0].lora_paths, ["/loras/turbo.safetensors"]);
+    }
+
+    #[test]
+    fn a_record_from_before_loras_still_reads() {
+        let stage: crate::image_records::ImageStage = serde_json::from_value(serde_json::json!({
+            "component": "diffusion",
+            "file": { "name": "z.safetensors", "size_bytes": 1 },
+            "replicas": [{ "node_id": "b", "path": "/m/z.safetensors" }]
+        }))
+        .unwrap();
+        assert!(stage.loras.is_empty() && stage.replicas[0].lora_paths.is_empty());
+        let written = serde_json::to_value(&stage).unwrap();
+        assert!(
+            written.get("loras").is_none(),
+            "a stage without LoRAs is written as before"
+        );
     }
 
     #[tokio::test]

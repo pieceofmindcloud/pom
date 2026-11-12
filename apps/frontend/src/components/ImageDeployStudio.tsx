@@ -12,12 +12,15 @@ import { ApiError } from "../lib/api";
 import { megabytes } from "../lib/format";
 import {
   IMAGE_STAGES,
+  addLora,
   deployImage,
   dropOnStage,
   emptyChoices,
   planImage,
   planRequest,
   removeFromStage,
+  removeLora,
+  setLoraStrength,
   type StageChoices,
 } from "../lib/imagePipeline";
 import { useCluster, useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
@@ -63,18 +66,84 @@ export function prefill(files: NetworkImageFile[], diffusion: NetworkImageFile, 
   return next;
 }
 
+/** The diffusion stage's LoRAs: add one of the network's LoRA files, set each strength, remove. */
+export function DiffusionLoras({
+  loras,
+  files,
+  onChange,
+}: {
+  loras: StageChoices;
+  files: NetworkImageFile[];
+  onChange: (next: StageChoices) => void;
+}) {
+  const { t } = useI18n();
+  const chosen = loras.diffusion.loras ?? [];
+  const available = files.filter(
+    (f) => f.category === "lora" && !chosen.some((l) => l.file.name === f.identity.name && l.file.size_bytes === f.identity.size_bytes),
+  );
+  if (chosen.length === 0 && available.length === 0) return null;
+  return (
+    <div className="mb-2 space-y-1.5 rounded-lg border border-line bg-ink/60 p-2" data-testid="diffusion-loras">
+      <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{t("imageStudio.loras")}</p>
+      {chosen.map((lora, index) => (
+        <div key={`${lora.file.name}|${lora.file.size_bytes}`} className="flex items-center gap-1.5" data-testid={`lora-${lora.file.name}`}>
+          <span className="min-w-0 flex-1 truncate font-mono text-[0.64rem] text-fg" title={lora.file.name}>{lora.file.name}</span>
+          <Input
+            type="number"
+            min={-10}
+            max={10}
+            step={0.05}
+            value={String(lora.strength)}
+            aria-label={t("imageStudio.loraStrength", { name: lora.file.name })}
+            title={t("imageStudio.loraStrength", { name: lora.file.name })}
+            onChange={(event) => {
+              const value = Number.parseFloat(event.target.value);
+              if (Number.isFinite(value)) onChange(setLoraStrength(loras, index, value));
+            }}
+            className="h-6 !w-[4.5rem] px-1 text-[0.64rem]"
+          />
+          <button type="button" aria-label={t("imageStudio.removeLora", { name: lora.file.name })} onClick={() => onChange(removeLora(loras, index))} className="rounded p-0.5 text-muted hover:text-fg">
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      ))}
+      {available.length > 0 && (
+        <Select
+          aria-label={t("imageStudio.addLora")}
+          value=""
+          onChange={(event) => {
+            const file = available.find((f) => f.key === event.target.value);
+            if (file) onChange(addLora(loras, file.identity));
+          }}
+          className="h-7 text-[0.66rem]"
+        >
+          <option value="">{t("imageStudio.addLora")}</option>
+          {available.map((f) => (
+            <option key={f.key} value={f.key}>{f.identity.name}</option>
+          ))}
+        </Select>
+      )}
+    </div>
+  );
+}
+
 export function ImageStageCanvas({
   plan,
   choices,
   labelOf,
   onDrop,
   onRemove,
+  files = [],
+  onChoices,
 }: {
   plan: ImagePlan | undefined;
   choices: StageChoices;
   labelOf: (nodeId: string) => string;
   onDrop: (stage: ImageStageName, nodeId: string) => void;
   onRemove: (stage: ImageStageName, nodeId: string) => void;
+  /** The network's image files, for the diffusion stage's LoRA picker. */
+  files?: NetworkImageFile[];
+  onChoices?: (next: StageChoices) => void;
 }) {
   const { t } = useI18n();
   const [over, setOver] = useState<ImageStageName | null>(null);
@@ -102,6 +171,9 @@ export function ImageStageCanvas({
             <p className="mb-2 truncate font-mono text-[0.68rem] text-muted" title={file?.name}>
               {file ? `${file.name} · ${megabytes(file.size_bytes / (1024 * 1024))}` : t("imageDeploy.chooseFile")}
             </p>
+            {stage === "diffusion" && file && onChoices && (
+              <DiffusionLoras loras={choices} files={files} onChange={onChoices} />
+            )}
             <div className="flex flex-1 flex-col gap-2">
               {choices[stage].nodeIds.map((nodeId) => {
                 const verdict = stagePlan?.chosen.find((v) => v.node_id === nodeId);
@@ -248,6 +320,8 @@ export function ImageDeployStudio({ modeBar }: { modeBar: React.ReactNode }) {
           labelOf={labelOf}
           onDrop={(stage, nodeId) => setChoices((current) => dropOnStage(current, stage, nodeId))}
           onRemove={(stage, nodeId) => setChoices((current) => removeFromStage(current, stage, nodeId))}
+          files={files}
+          onChoices={setChoices}
         />
       </div>
 

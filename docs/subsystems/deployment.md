@@ -402,7 +402,11 @@ serves, so components are a registry of their own.
   `ComponentAssignment` `{deploy_id, name, component, paths, plugin_code,
   options}`. Every path must be one of this node's image files (the catalog's
   `image_files`, without a `metadata_error`); `component` is `diffusion`,
-  `text_encoder` or `vae`. The node opens the plugin if it is on demand and asks
+  `text_encoder` or `vae`. The diffusion may carry `options.loras`
+  (`[{path, strength}]`): each path is one of this node's image files too and
+  each strength is within -10..10, and any other component with `loras` is
+  refused. The plugin applies them over the model in order
+  (`pom_components._diffusion`, as ComfyUI's `LoraLoaderModelOnly`). The node opens the plugin if it is on demand and asks
   `component.serve`; a refusal (`{"status": "refused", "error"}`, or no answer)
   is 502 with the reason and nothing is stored. Accepted, the assignment is kept
   in the `pom.db` setting `served_components`, replacing the same component of
@@ -416,14 +420,17 @@ serves, so components are a registry of their own.
   order, `text_encoder`, `diffusion`, `vae` (`image_records.rs`, `STAGES`).
   Each stage names one file (`FileIdentity`: name and size, the identity across
   machines) and one or more replicas (`{node_id, hostname, path}`); one machine
-  may serve several stages. The deploying node keeps it in the `pom.db` setting
+  may serve several stages. The diffusion stage may name `loras`
+  (`[{file, strength}]`, `LoraChoice`), and each of its replicas then keeps
+  `lora_paths`, the LoRAs on that machine in the same order; both fields are
+  left out of a stage without LoRAs, so a record reads and writes as before. The deploying node keeps it in the `pom.db` setting
   `image_deployments` with its versions (`versions`, `active_version`); a record
   from before the stages (one machine per component in `components`) loads as
   version 1, and `components` keeps being written (the first replica of each
   stage) so an older node still lists it. It is not an LLM `Deployment`: a new
   `DeploymentKind` would make older nodes fail to read every deployment.
 - **Planning.** `POST /api/ui/image-deploy/plan` `{name, stages: [{component,
-  file, node_ids}], allow_transfers}` (any admin, `image_plan.rs`,
+  file, node_ids, loras?}], allow_transfers}` (any admin, `image_plan.rs`,
   `plan_image`) surveys every machine (`components::survey_machines`: its
   `image_files` with sizes, whether it publishes an `image` service and its
   status, its free VRAM/RAM from `/api/ui/node`) and answers, touching nothing,
@@ -431,7 +438,11 @@ serves, so components are a registry of their own.
   (`alternatives`): `does not run ComfyUI`, `ComfyUI is <status>` (`error`,
   `waiting`), `does not hold <file>`, `holds another <file> (<size> bytes)`,
   `<file> is a <category>, not a <component>` (a `checkpoint` fits all three),
-  or ok with the path; `memory` per machine (free memory and the sum of the
+  `does not hold the LoRA <file>`, `<file> is a <category>, not a LoRA` (a
+  LoRA is never copied: every machine of the diffusion holds each one, found by
+  name and size with the `lora` category), or ok with the path and
+  `lora_paths`; `blocked` also names LoRAs on another stage, a LoRA chosen twice
+  and a strength outside -10..10; `memory` per machine (free memory and the sum of the
   files it would load); `copies` (a chosen machine without the file when
   another holds it); and `blocked`. Copies are not made yet (`transfer.rs`
   serves GGUF only): without `allow_transfers` the deploy answers 409

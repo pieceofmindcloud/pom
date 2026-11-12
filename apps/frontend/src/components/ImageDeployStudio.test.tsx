@@ -19,6 +19,7 @@ const catalog = {
         { name: "org/z/qwen.safetensors", path: "/m/qwen.safetensors", size_bytes: 8, category: "text_encoder", metadata_error: null },
         { name: "org/z/ae.safetensors", path: "/m/ae.safetensors", size_bytes: 3, category: "vae", metadata_error: null },
         { name: "org/z/z_image.safetensors", path: "/m/z_image.safetensors", size_bytes: 12, category: "diffusion", metadata_error: null },
+        { name: "org/l/turbo_8step.safetensors", path: "/l/turbo_8step.safetensors", size_bytes: 2, category: "lora", metadata_error: null },
       ],
     },
   ],
@@ -143,5 +144,28 @@ describe("ImageDeployStudio", () => {
     const body = post.mock.calls.find(([url]) => url === "/api/ui/image-deploy")![1] as { stages: Array<{ component: string; node_ids: string[] }> };
     expect(body.stages.map((s) => s.component)).toEqual(["text_encoder", "diffusion", "vae"]);
     expect(body.stages.every((s) => s.node_ids.includes("a"))).toBe(true);
+  });
+
+  it("adds a LoRA to the diffusion, sets its strength and sends it with the stage", async () => {
+    wrap(<ImageDeployStudio modeBar={null} />);
+    const diffusion = await screen.findByLabelText("Diffusion model");
+    await waitFor(() => expect(diffusion.querySelectorAll("option").length).toBeGreaterThan(1));
+    fireEvent.change(diffusion, { target: { value: "z_image.safetensors|12" } });
+    const add = await screen.findByLabelText("Add a LoRA…");
+    expect(Array.from(add.querySelectorAll("option")).map((o) => o.textContent)).toContain("turbo_8step.safetensors");
+    fireEvent.change(add, { target: { value: "turbo_8step.safetensors|2" } });
+    const strength = await screen.findByLabelText("Strength of turbo_8step.safetensors");
+    fireEvent.change(strength, { target: { value: "0.8" } });
+    drop(screen.getByTestId("stage-diffusion"), "a");
+    await waitFor(() => {
+      const planned = post.mock.calls.filter(([url]) => url === "/api/ui/image-deploy/plan").pop()?.[1] as {
+        stages: Array<{ component: string; loras?: Array<{ file: { name: string }; strength: number }> }>;
+      };
+      const stage = planned?.stages.find((s) => s.component === "diffusion");
+      expect(stage?.loras).toEqual([{ file: { name: "turbo_8step.safetensors", size_bytes: 2 }, strength: 0.8 }]);
+    });
+    expect(screen.queryByLabelText("Add a LoRA…")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Remove turbo_8step.safetensors"));
+    expect(await screen.findByLabelText("Add a LoRA…")).toBeTruthy();
   });
 });

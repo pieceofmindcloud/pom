@@ -8,7 +8,7 @@ order: 110
 ---
 
 :::lead
-Implantações é o histórico: cada implantação que a rede registrou, da ativação mais recente para a mais antiga, com as máquinas que ela usa, se está no ar e qual responde quando uma requisição dá só o nome do modelo.
+Implantações é o histórico, aberto pelo botão Histórico ao lado de Implantar na tela Implantar: cada implantação que a rede registrou, da ativação mais recente para a mais antiga, com as máquinas que ela usa, se está no ar e qual responde quando uma requisição dá só o nome do modelo.
 :::
 
 ![Implantações: uma linha por implantação, com o formato, as máquinas, a última ativação, o estado e as ações.](../images/pt-BR/deployments.webp)

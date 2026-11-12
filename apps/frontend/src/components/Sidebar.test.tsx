@@ -73,7 +73,7 @@ describe("Sidebar", () => {
   it("collapses to icon buttons and exposes child destinations in a hover flyout", () => {
     render(
       <MemoryRouter
-        initialEntries={["/deployments"]}
+        initialEntries={["/config/network"]}
         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
       >
         <LocaleProvider initialLocale="pt-BR">
@@ -91,8 +91,8 @@ describe("Sidebar", () => {
     const scroller = screen.getByRole("navigation").querySelector(".overflow-y-auto") as HTMLElement;
     expect(scroller.className).toContain("overscroll-y-contain");
     expect(scroller.className).toContain("overflow-x-hidden");
-    expect(screen.getByRole("button", { name: "Implantações" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Histórico" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Minha Rede" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Informações da rede" })).toBeTruthy();
     expect(window.localStorage.getItem("pom.sidebar.collapsed")).toBe("true");
   });
 
@@ -108,11 +108,11 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Minimizar menu" }));
-    const deployments = screen.getByRole("button", { name: "Implantações" });
-    fireEvent.click(deployments);
-    expect(deployments.getAttribute("aria-expanded")).toBe("true");
-    fireEvent.click(screen.getByRole("link", { name: "Histórico" }));
-    expect(screen.getByTestId("route").textContent).toBe("/deployments");
+    const network = screen.getByRole("button", { name: "Minha Rede" });
+    fireEvent.click(network);
+    expect(network.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(screen.getByRole("link", { name: "Informações da rede" }));
+    expect(screen.getByTestId("route").textContent).toBe("/config/network");
   });
 
   it("offers no destination before the node says which profile this is", () => {
@@ -204,8 +204,7 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.queryByText("Implantar na rede")).toBeNull();
-    expect(screen.queryByText("Implantações")).toBeNull();
+    expect(screen.queryByText("Implantar")).toBeNull();
     expect(screen.getByText("Business Pack")).toBeTruthy();
     // What nobody restricted stays in place.
     expect(screen.getByText("Painel")).toBeTruthy();
@@ -227,9 +226,8 @@ describe("Sidebar", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Implantações" }));
-    expect(screen.getByText("Implantar na rede")).toBeTruthy();
-    expect(screen.getByText("Histórico")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Implantar" }).getAttribute("href")).toBe("/deploy");
+    expect(screen.queryByText("Histórico")).toBeNull();
     expect(screen.getByText("Business Pack")).toBeTruthy();
     expect(screen.getByTestId("network-chat-unread").textContent).toBe("2");
   });

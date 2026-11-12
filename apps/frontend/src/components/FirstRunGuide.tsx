@@ -48,7 +48,6 @@ const PLAN: Record<HintStepId, StepPlan> = {
   },
   deploy_model: {
     path: "/deploy",
-    section: "nav.deployments",
     targets: [
       { selector: '[data-guide="deploy-running"]', hint: "deployWait" },
       { selector: '[data-guide="deploy-run"]', hint: "deployRun" },

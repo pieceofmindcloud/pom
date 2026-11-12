@@ -194,8 +194,9 @@ Per-file list:
   at the end of the `Topbar` and renders only inside the macOS app.
 ## App chrome
 
-- `nav.ts` - `NAV`: the menu as data. The Deployments section uses `Rocket` (it was
-  `Boxes`, the same icon as Models), the History uses `History` and Logs has separate
+- `nav.ts` - `NAV`: the menu as data. Deploy (`nav.deployments`) is a single entry to
+  `/deploy` with `Rocket`; History (`/deployments`) has no menu entry and opens
+  from the History button beside Deploy on that screen. Logs has separate
   leaves for requests and deployment; Network Chat is its own
   entry, and Models is one entry with no submenu (the search is the Hugging Face
   plugin's Search Models; `PLUGIN_ICONS` has `search` for it). The submenu does not

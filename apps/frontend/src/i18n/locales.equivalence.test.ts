@@ -17,6 +17,9 @@ const dump = reference as ReferenceDump;
 // The dump is the frozen pre-ICU baseline. Keep intentional product-copy
 // revisions here rather than rewriting the generated 1.8 MB single-line file.
 const copyUpdates: Record<string, string> = {
+  // Deploy is a single menu entry; History opens from the deploy screen.
+  "en:nav.deployments": "Deploy",
+  "pt-BR:nav.deployments": "Implantar",
   // The model downloads moved to the Hugging Face plugin; Transfers keeps
   // only an older admin's file transfers and left the menu.
   // A received file lands in a whole-model folder the receiver picks.

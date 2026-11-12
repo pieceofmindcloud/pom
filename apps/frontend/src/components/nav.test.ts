@@ -16,14 +16,11 @@ describe("navigation structure", () => {
     )).toBe(false);
   });
 
-  it("nests network deployment and history under Deployments", () => {
+  it("shows Deploy as a single entry that opens the deploy screen", () => {
     const deployments = NAV.find((section) => section.labelKey === "nav.deployments");
 
-    expect(deployments?.to).toBeUndefined();
-    expect(deployments?.children?.map((child) => [child.labelKey, child.to])).toEqual([
-      ["nav.deploy", "/deploy"],
-      ["nav.history", "/deployments"],
-    ]);
+    expect(deployments?.to).toBe("/deploy");
+    expect(deployments?.children).toBeUndefined();
     expect(NAV.some((section) => section.labelKey === "nav.deploy")).toBe(false);
   });
 

@@ -81,16 +81,9 @@ export const NAV: NavSection[] = [
   // Searching and downloading models is the Hugging Face plugin's own menu
   // entry (Search Models), not a child of this one.
   { labelKey: "nav.models", icon: Boxes, to: "/models" },
-  {
-    labelKey: "nav.deployments",
-    icon: Rocket,
-    children: [
-      { labelKey: "nav.deploy", to: "/deploy", icon: Rocket },
-      // Separate from "deploy" on purpose: one creates, the other shows and
-      // adjusts what already exists. They are two different moments of the same work.
-      { labelKey: "nav.history", to: "/deployments", icon: History },
-    ],
-  },
+  // A single entry: the deploy screen links to the history of what is
+  // already deployed (/deployments) from a button beside Deploy.
+  { labelKey: "nav.deployments", icon: Rocket, to: "/deploy" },
   {
     labelKey: "nav.logs",
     icon: ListTree,

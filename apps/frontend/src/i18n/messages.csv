@@ -1755,7 +1755,7 @@ nav.connectionKeys,Connection keys,Chaves de conexão
 nav.dashboard,Dashboard,Painel
 nav.deploy,Deploy to network,Implantar na rede
 nav.deploymentLogs,Deployment logs,Logs da implantação
-nav.deployments,Deployments,Implantações
+nav.deployments,Deploy,Implantar
 nav.documentation,Documentation,Documentação
 nav.history,History,Histórico
 nav.inProgress,In progress,Em andamento

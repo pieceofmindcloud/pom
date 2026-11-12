@@ -184,11 +184,9 @@ the boundary.
 
 `src/components/nav.ts` holds the menu as data (`NAV`: sections and leaves with
 `labelKey`, route and `end`), consumed by the Sidebar and by the router in
-`src/App.tsx`. `Deployments` uses the rocket (`Rocket`) and `History` the clock
-(`History`): both sections used to use `Boxes`, the same icon as `Models`, and
-two sections with the same drawing cannot be told apart at a glance. The
-`/deploy` leaf keeps `Rocket` without clashing with the section, because the
-Sidebar draws no leaf icons. `Models` is one entry with no submenu; the
+`src/App.tsx`. `Deploy` (`nav.deployments`) is a single entry to `/deploy` with the rocket
+(`Rocket`). The History (`/deployments`) has no menu entry: the deploy screen
+opens it from the History button to the left of Deploy. `Models` is one entry with no submenu; the
 search is the Hugging Face plugin's own `Search Models` entry. The side menu can be minimized: in
 that state it only shows icons, with a 64px brand header to line up with the
 toolbar. Sections with leaves show a submenu on hover, focus or click; picking a

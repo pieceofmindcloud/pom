@@ -716,6 +716,8 @@ demo.onlineTitle,"People using the demonstration now","Pessoas usando a demonstr
 demo.onlineLabel,"{count} of {max} people using the demonstration now","{count} de {max} pessoas usando a demonstração agora"
 demo.newVisit,Start a new visit,Começar uma nova visita
 demo.signedOut,You left the demonstration.,Você saiu da demonstração.
+demo.infoTitle,About this demonstration,Sobre esta demonstração
+demo.welcomeSite,Learn more about the project:,Conheça mais sobre o projeto:
 deploy.adaptivePrefillChunksHint,"The gateway picks each prompt's chunk size, between 32 tokens and the prefill chunk above, from what it measured on the route (64 at least while the MoE expert cache is on). Off, every prompt goes in chunks of exactly the prefill chunk.","O gateway escolhe o tamanho do pedaço de cada prompt, entre 32 tokens e o pedaço de prefill acima, pelo que mediu na rota (no mínimo 64 com o cache de experts do MoE ligado). Desligado, todo prompt vai em pedaços de exatamente o pedaço de prefill."
 deploy.addNode,Add,Adicionar
 deploy.addNodeCacheK,KV cache K,Cache KV K

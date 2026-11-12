@@ -673,7 +673,11 @@ async fn chat_completions(
         .map(ChatToolDef::into_tool_def)
         .collect();
     let signatures = ToolSignatures::of(&tools);
-    let preferred_head = req.inference_head.clone();
+    // A demonstration page reads node ids as aliases and sends one back.
+    let preferred_head = match req.inference_head.as_deref() {
+        Some(head) => Some(crate::user_session::unalias_node(&state, head).await),
+        None => None,
+    };
     let (mut prompt, images) = match render_prompt_with_images(&req.messages, &tools) {
         Ok(rendered) => rendered,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),

@@ -832,10 +832,26 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
             "/api/ui/network/info",
             "/api/ui/quota",
             "/api/ui/demo/session",
+            // The Networks screen, read-only: the networks this node knows and
+            // the relay choices its quick setup walks through.
+            "/api/ui/networks/known",
+            "/api/ui/networks/pinned",
+            "/api/ui/network/relay",
+            // The network Chat; sending goes through `demo_network_chat_post`.
+            "/api/ui/network-chat",
+            // The Deploy screen's catalog, played with but never deployed.
+            "/api/ui/cache-types",
+            "/api/ui/model-sidecar-links",
         ];
         if demo_get.contains(&path) || path.starts_with("/api/ui/plugin-catalog/") {
             return true;
         }
+    }
+    // The Deploy screen surveys a model's plan (a read); `/api/ui/deploy`
+    // itself stays refused. The network Chat takes a text message, rewritten
+    // by `demo_network_chat_post` before it reaches the Chat.
+    if demo && post && matches!(path, "/api/ui/deploy/plan" | "/api/ui/network-chat") {
+        return true;
     }
     // Previewing a slicing plan only reads GGUF headers: the Slice screen
     // shows it, while starting the job stays refused.
@@ -876,6 +892,19 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
 /// telemetry name the machines.
 fn redacted_path(path: &str, demo: bool) -> bool {
     if demo && (path.starts_with("/api/ui/requests") || path.contains("/rpc/")) {
+        return true;
+    }
+    if demo
+        && matches!(
+            path,
+            "/api/ui/networks/known"
+                | "/api/ui/networks/pinned"
+                | "/api/ui/network/relay"
+                | "/api/ui/network-chat"
+                | "/api/ui/deploy/plan"
+                | "/api/ui/model-sidecar-links"
+        )
+    {
         return true;
     }
     matches!(
@@ -925,6 +954,22 @@ fn address_key(key: &str) -> bool {
         || key == "lon"
 }
 
+fn machine_name_key(key: &str) -> bool {
+    matches!(key, "hostname" | "hostnames" | "host_name")
+}
+
+/// The real node id behind an alias a demonstration page sent back (the
+/// Chat's `inference_head`), among this node and the live peers; anything
+/// else comes back as it was.
+pub async fn unalias_node(state: &GatewayState, id: &str) -> String {
+    if !demo_mode() || !id.starts_with("node-") {
+        return id.to_owned();
+    }
+    let mut ids = vec![state.network.node_id.clone()];
+    ids.extend(state.network.alive_peers().await.into_iter().map(|peer| peer.node_id));
+    ids.into_iter().find(|node_id| alias(node_id) == id).unwrap_or_else(|| id.to_owned())
+}
+
 fn looks_like_address(value: &str) -> bool {
     let value = value.trim();
     value.parse::<IpAddr>().is_ok()
@@ -967,7 +1012,10 @@ pub fn redact(value: &mut Value, demo: bool) {
                 // An address keeps its key and its type, so the interface
                 // (which reads `hostname.trim()`, `addrs.length`, ...) still
                 // draws: text becomes "hidden", a list empty, anything else null.
-                if demo && address_key(&lower) {
+                // A machine's name is how a person tells the machines apart
+                // (the Chat's head choice, the maps): it stays, unless the
+                // value itself is an address (`redact` of the string below).
+                if demo && address_key(&lower) && !machine_name_key(&lower) {
                     if let Some(slot) = map.get_mut(&key) {
                         *slot = match slot {
                             Value::String(_) => Value::String("hidden".into()),
@@ -1050,6 +1098,13 @@ async fn redact_response(response: Response, path: &str, demo: bool) -> Response
     let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    if path == "/api/ui/network-chat" {
+        // The lobby is the node admin's: a visit sees the members' room only.
+        if let Some(map) = value.as_object_mut() {
+            map.insert("lobbyEnabled".into(), Value::Bool(false));
+            map.insert("lobbyGuests".into(), Value::Array(Vec::new()));
+        }
+    }
     if path == "/api/ui/plugins/ui" {
         keep_user_plugins(&mut value, demo);
         // Manifests name no machine, and their screenshots are https URLs.
@@ -1269,6 +1324,12 @@ pub(crate) async fn after_gate(
     if path.starts_with("/api/ui/my-keys") {
         return crate::user_keys::handle(state, user, request).await;
     }
+    if demo && path == "/api/ui/network-chat" && method == Method::POST {
+        return demo_network_chat_post(state, request).await;
+    }
+    if demo && path == "/api/ui/network-chat" && demo_chat_reads_lobby(request.uri().query()) {
+        return not_found();
+    }
     let user = user.clone();
     request.extensions_mut().insert(principal.clone());
     request.extensions_mut().insert(user);
@@ -1277,6 +1338,92 @@ pub(crate) async fn after_gate(
         return redact_response(response, &path, demo).await;
     }
     response
+}
+
+/// A demonstration node is a worker, and a worker refuses the deploy routes:
+/// this lets its Deploy screen survey a model's plan, a read that loads and
+/// copies nothing. Deploying (`/api/ui/deploy`) stays refused on a worker, and
+/// the session gate keeps the survey to the people of the demonstration.
+pub(crate) fn demo_previews_deploy(
+    profile: crate::profile::NodeProfile,
+    method: &Method,
+    path: &str,
+) -> bool {
+    profile == crate::profile::NodeProfile::Worker
+        && method == Method::POST
+        && path == "/api/ui/deploy/plan"
+        && demo_mode()
+}
+
+/// Longest text a demonstration visitor may post to the network Chat.
+const DEMO_CHAT_TEXT_LIMIT: usize = 2000;
+
+/// A demonstration visitor's message to the network Chat. The visitor holds
+/// no API key of this node and reads node ids only as aliases, so the browser's
+/// frame cannot pass `network_chat_action`: this takes only the text of a text
+/// message, marks it as a demo visitor's, and posts it as this node to the
+/// network room. Files, typing, notices and direct messages are refused.
+async fn demo_network_chat_post(state: &GatewayState, request: Request) -> Response {
+    let Ok(bytes) = axum::body::to_bytes(request.into_body(), 64 * 1024).await else {
+        return demo_chat_refused("the message is too large");
+    };
+    let Ok(body) = serde_json::from_slice::<Value>(&bytes) else {
+        return demo_chat_refused("the message is not JSON");
+    };
+    let Some(text) = demo_chat_text(&body) else {
+        return demo_chat_refused("a demonstration visit sends text messages only");
+    };
+    let action = crate::network_chat::ChatAction::Text {
+        message_id: uuid::Uuid::new_v4().to_string(),
+        room_id: crate::network_chat::NETWORK_CHAT_ROOM.to_owned(),
+        sender_node_id: state.network.node_id.clone(),
+        recipient_node_id: None,
+        text: format!("[demo] {text}"),
+        sent_at: chrono::Utc::now(),
+    };
+    let chat = crate::network_chat::ChatRequest { action, api_key: String::new(), relayed: false };
+    match state.network_chat.submit(chat).await {
+        Ok(response) if response.accepted => Json(response).into_response(),
+        Ok(response) => (StatusCode::FORBIDDEN, Json(response)).into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// The text of a demonstration visitor's frame, when it is a text message to
+/// the whole network room within the limit.
+fn demo_chat_text(body: &Value) -> Option<String> {
+    let action = body.get("action")?;
+    if action.get("kind")?.as_str()? != "text" {
+        return None;
+    }
+    let room = action.get("room_id").and_then(Value::as_str).unwrap_or(crate::network_chat::NETWORK_CHAT_ROOM);
+    if room != crate::network_chat::NETWORK_CHAT_ROOM {
+        return None;
+    }
+    if action.get("recipient_node_id").is_some_and(|value| !value.is_null()) {
+        return None;
+    }
+    let text = action.get("text")?.as_str()?.trim();
+    if text.is_empty() || text.chars().count() > DEMO_CHAT_TEXT_LIMIT {
+        return None;
+    }
+    Some(text.to_owned())
+}
+
+/// Whether a network Chat read asks for a room other than the members' one.
+fn demo_chat_reads_lobby(query: Option<&str>) -> bool {
+    query.unwrap_or_default().split('&').any(|pair| {
+        pair.split_once('=')
+            .is_some_and(|(key, value)| key == "room" && value != crate::network_chat::NETWORK_CHAT_ROOM)
+    })
+}
+
+fn demo_chat_refused(reason: &str) -> Response {
+    (StatusCode::FORBIDDEN, Json(json!({ "accepted": false, "error": reason }))).into_response()
 }
 
 /// The caller of a plugin RPC or a request-log query, for the plugin: a
@@ -1326,10 +1473,50 @@ mod tests {
         assert!(!user_may_call(&Method::POST, "/api/ui/slice", true));
         assert!(!user_may_call(&Method::POST, "/api/transfer/send", true));
         assert!(!user_may_call(&Method::POST, "/api/ui/network/settings", true));
-        assert!(!user_may_call(&Method::GET, "/api/ui/network-chat", true));
+        assert!(!user_may_call(&Method::GET, "/api/ui/network-chat", false));
         assert!(!user_may_call(&Method::GET, "/api/ui/cluster-logs", true));
         assert!(user_may_call(&Method::GET, "/api/ui/demo/session", true));
         assert!(!user_may_call(&Method::GET, "/api/ui/demo/session", false));
+    }
+
+    #[test]
+    fn demo_plays_with_networks_chat_and_deploy_but_changes_nothing() {
+        for path in ["/api/ui/networks/known", "/api/ui/networks/pinned", "/api/ui/network/relay", "/api/ui/network-chat"] {
+            assert!(user_may_call(&Method::GET, path, true), "{path}");
+            assert!(!user_may_call(&Method::GET, path, false), "{path}");
+        }
+        assert!(user_may_call(&Method::POST, "/api/ui/deploy/plan", true));
+        assert!(user_may_call(&Method::POST, "/api/ui/network-chat", true));
+        assert!(!user_may_call(&Method::POST, "/api/ui/deploy/plan", false));
+        for (method, path) in [
+            (Method::POST, "/api/ui/deploy"),
+            (Method::GET, "/api/ui/deployments/x/versions"),
+            (Method::POST, "/api/ui/network/settings"),
+            (Method::POST, "/api/ui/network/relay"),
+            (Method::POST, "/api/ui/networks/custom"),
+            (Method::POST, "/api/ui/network/join"),
+            (Method::POST, "/api/ui/network-chat/lobby"),
+            (Method::GET, "/api/ui/network/trust-anchor"),
+        ] {
+            assert!(!user_may_call(&method, path, true), "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn a_demo_visitor_posts_text_to_the_network_room_only() {
+        let frame = |kind: &str, room: &str, recipient: Value, text: &str| {
+            json!({"action": {"kind": kind, "room_id": room, "recipient_node_id": recipient, "text": text}})
+        };
+        assert_eq!(demo_chat_text(&frame("text", "network", Value::Null, "  hi  ")).as_deref(), Some("hi"));
+        assert!(demo_chat_text(&frame("file", "network", Value::Null, "hi")).is_none());
+        assert!(demo_chat_text(&frame("typing", "network", Value::Null, "hi")).is_none());
+        assert!(demo_chat_text(&frame("text", "lobby", Value::Null, "hi")).is_none());
+        assert!(demo_chat_text(&frame("text", "network", json!("abc"), "hi")).is_none());
+        assert!(demo_chat_text(&frame("text", "network", Value::Null, "   ")).is_none());
+        assert!(demo_chat_text(&frame("text", "network", Value::Null, &"x".repeat(2001))).is_none());
+        assert!(demo_chat_reads_lobby(Some("room=lobby")));
+        assert!(!demo_chat_reads_lobby(Some("room=network")));
+        assert!(!demo_chat_reads_lobby(None));
     }
 
     #[test]
@@ -1382,7 +1569,11 @@ mod tests {
         assert_eq!(demo["peers"][0]["advertise_addr"], "hidden");
         let mut node = json!({"hostname": "box", "listen_addrs": ["10.0.0.1:1"], "lat": 1.5});
         redact(&mut node, true);
-        assert_eq!(node, json!({"hostname": "hidden", "listen_addrs": [], "lat": null}));
+        // The machine's name stays: it is how a person tells the machines apart.
+        assert_eq!(node, json!({"hostname": "box", "listen_addrs": [], "lat": null}));
+        let mut address_name = json!({"hostname": "10.0.0.9"});
+        redact(&mut address_name, true);
+        assert_eq!(address_name["hostname"], "hidden");
     }
 
     #[test]

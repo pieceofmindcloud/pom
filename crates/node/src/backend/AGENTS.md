@@ -651,7 +651,10 @@ boundary.
   `/api/access.auth_providers`), the public `/auth/<code>/*` forwarder
   (`auth_http`), the operator path and its throttle (`before_gate`), the user
   surface allowlist, redaction and session chat tokens (`after_gate`, called
-  by `gateway::require_admin_for_surface`), `DEMO_MODE`, a person's quota
+  by `gateway::require_admin_for_surface`), `DEMO_MODE` (with the demo's
+  network Chat post, `demo_network_chat_post`, the deploy survey a worker lets
+  through, `demo_previews_deploy`, and `unalias_node` for the Chat's head
+  choice, called by `openai.rs`), a person's quota
   (`user_quota`) and workspace folder (`user_workspace`). `demo_slots.rs` is the
   demo seats and queue (`DEMO_MAX_SESSIONS`, `DEMO_SESSION_TIME`) and the guest
   cool-down of `DEMO_NO_AUTH` (`note_expired`, `cooldown_left`), consulted by

@@ -71,8 +71,10 @@ function suggestedRelay(status: RelayStatus): RelayChoice {
   };
 }
 
-export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
+export function NetworkQuickSetup({ open, network, onClose, onSaved, t, readOnly = false }: {
   open: boolean;
+  /** A demonstration visit: every step can be walked, the last one cannot save. */
+  readOnly?: boolean;
   /** The settings as the node has them now; the window starts from them. */
   network: NetworkSettings | null;
   onClose: () => void;
@@ -146,7 +148,7 @@ export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
       <div className="flex items-center gap-2">
         {index > 0 && <Button onClick={() => setStep(steps[index - 1])} disabled={saving} icon={<ChevronLeft className="h-3.5 w-3.5" />}>{t("common.previous")}</Button>}
         {last
-          ? <Button variant="primary" loading={saving} onClick={() => void save()} icon={<Rocket className="h-3.5 w-3.5" />}>{t(publicNetwork ? "quickSetup.publish" : "quickSetup.save")}</Button>
+          ? <Button variant="primary" loading={saving} disabled={readOnly} title={readOnly ? t("demo.cannotSave") : undefined} onClick={() => { if (!readOnly) void save(); }} icon={<Rocket className="h-3.5 w-3.5" />}>{t(publicNetwork ? "quickSetup.publish" : "quickSetup.save")}</Button>
           : <Button variant="primary" disabled={Boolean(blocked)} title={blocked ?? undefined} onClick={() => setStep(steps[index + 1])}>{t("common.next")}<ChevronRight className="h-3.5 w-3.5" /></Button>}
       </div>
     </div>
@@ -191,6 +193,7 @@ export function NetworkQuickSetup({ open, network, onClose, onSaved, t }: {
           </dl>
         )}
         {step === "review" && <p className="text-xs text-faint">{t(publicNetwork ? "quickSetup.publishNote" : "quickSetup.saveNote")}</p>}
+        {step === "review" && readOnly && <p data-testid="quick-setup-demo" className="rounded-md border border-amber/30 bg-amber/[0.06] px-3 py-2 text-xs text-amber">{t("demo.cannotSave")}</p>}
         {failure && <p role="alert" className="rounded-md border border-rose/30 bg-rose/[0.06] px-3 py-2 text-xs text-rose">{t("network.infoSaveFailed")}: {failure}</p>}
       </div>
     </Modal>

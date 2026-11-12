@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { isDemoUser } from "../lib/session";
 import type { ReactNode } from "react";
 import { ChevronLeft, ChevronRight, CircleCheck, CircleHelp, CircleX, Gauge, Globe2, House, LoaderCircle, LocateFixed, Lock, LogIn, LogOut, Maximize2, MessageCircle, Plus, RefreshCw, Search, Share2, SlidersHorizontal, Trash2, WandSparkles, Laptop, Waypoints, X } from "lucide-react";
 import { ConnectionBadge } from "../components/ConnectionStatus";
@@ -387,7 +388,12 @@ export function PublicNetworks() {
    * discovery off or hidden is how a new installation starts.
    */
   const ownSettings = networkInfo.data?.network ?? null;
-  const canQuickSetup = isPrincipal && Boolean(networkInfo.data?.can_edit) && ownSettings !== null && ownSettings.visibility !== "public";
+  // A demonstration visit walks the quick setup but never saves it, and has no
+  // action that adds, shares, joins, leaves or removes a network.
+  const demo = isDemoUser();
+  const canQuickSetup = demo
+    ? ownSettings !== null
+    : isPrincipal && Boolean(networkInfo.data?.can_edit) && ownSettings !== null && ownSettings.visibility !== "public";
   const membershipOf = (kind: RowKind): Membership => kind !== "own" ? "none" : isPrincipal ? "principal" : "member";
   const total = known?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -484,7 +490,7 @@ export function PublicNetworks() {
           label={t("publicNetworks.openLobbies")}
           className="shrink-0"
           actions={!activeLobby && <>
-            <Button size="sm" variant="primary" loading={importing} aria-label={t("publicNetworks.add")} title={t("publicNetworks.addDetail")} onClick={() => setGuide({ direction: "add" })} icon={<Plus className="h-3.5 w-3.5" />}><span className="hidden sm:inline">{t("publicNetworks.add")}</span></Button>
+            {!demo && <Button size="sm" variant="primary" loading={importing} aria-label={t("publicNetworks.add")} title={t("publicNetworks.addDetail")} onClick={() => setGuide({ direction: "add" })} icon={<Plus className="h-3.5 w-3.5" />}><span className="hidden sm:inline">{t("publicNetworks.add")}</span></Button>}
             {canQuickSetup && <Button size="sm" variant="primary" aria-label={t("quickSetup.action")} title={t("quickSetup.action")} onClick={() => setQuickSetupOpen(true)} icon={<WandSparkles className="h-3.5 w-3.5" />}><span className="hidden sm:inline">{t("quickSetup.action")}</span></Button>}
             <Button size="sm" loading={refreshing} aria-label={t("publicNetworks.refresh")} title={t("publicNetworks.refresh")} onClick={() => void refreshLive()} icon={<RefreshCw className="h-3.5 w-3.5" />}><span className="hidden sm:inline">{t("publicNetworks.refresh")}</span></Button>
           </>}
@@ -597,6 +603,7 @@ export function PublicNetworks() {
       <NetworkQuickSetup
         open={quickSetupOpen}
         network={ownSettings}
+        readOnly={demo}
         onClose={() => setQuickSetupOpen(false)}
         onSaved={(saved, relayFailed) => {
           setQuickSetupOpen(false);
@@ -693,7 +700,7 @@ function NetworkRow({ layout = "row", network, kind, visibility, selected, cache
   const distanceText = distance !== null
     ? <p className="mt-1 whitespace-nowrap text-[0.65rem] text-lime">{t((network.location?.accuracy_m ?? 0) >= 1000 ? "publicNetworks.distanceApproximate" : "publicNetworks.distance", { value: distance.toFixed(0) })}</p>
     : null;
-  const actions = <div className="flex flex-wrap items-center justify-end gap-2">{onQuickSetup && <Button size="sm" variant="primary" data-testid="network-quick-setup-row" onClick={(event) => { event.stopPropagation(); onQuickSetup(); }} icon={<WandSparkles className="h-3.5 w-3.5" />}>{t("quickSetup.action")}</Button>}<MembershipAction network={network} membership={membership} leaving={leaving} onChat={onChat} onLeave={onLeave} t={t} />{kind === "own" && <Button size="sm" variant="outline" aria-label={t("publicNetworks.exportTrust", { name: network.name || network.cluster_id })} title={t("publicNetworks.exportTrustDetail")} disabled={!network.trust_document} onClick={(event) => { event.stopPropagation(); onExport(); }} icon={<Share2 className="h-3.5 w-3.5" />}>{t("publicNetworks.share")}</Button>}{kind === "custom" && <Button size="sm" variant="ghost" aria-label={t("publicNetworks.removeNamed", { name: network.name || network.cluster_id })} title={t("publicNetworks.remove")} onClick={(event) => { event.stopPropagation(); onRemove(); }} icon={<Trash2 className="h-3.5 w-3.5" />} />}</div>;
+  const actions = <div className="flex flex-wrap items-center justify-end gap-2">{onQuickSetup && <Button size="sm" variant="primary" data-testid="network-quick-setup-row" onClick={(event) => { event.stopPropagation(); onQuickSetup(); }} icon={<WandSparkles className="h-3.5 w-3.5" />}>{t("quickSetup.action")}</Button>}{!isDemoUser() && <><MembershipAction network={network} membership={membership} leaving={leaving} onChat={onChat} onLeave={onLeave} t={t} />{kind === "own" && <Button size="sm" variant="outline" aria-label={t("publicNetworks.exportTrust", { name: network.name || network.cluster_id })} title={t("publicNetworks.exportTrustDetail")} disabled={!network.trust_document} onClick={(event) => { event.stopPropagation(); onExport(); }} icon={<Share2 className="h-3.5 w-3.5" />}>{t("publicNetworks.share")}</Button>}{kind === "custom" && <Button size="sm" variant="ghost" aria-label={t("publicNetworks.removeNamed", { name: network.name || network.cluster_id })} title={t("publicNetworks.remove")} onClick={(event) => { event.stopPropagation(); onRemove(); }} icon={<Trash2 className="h-3.5 w-3.5" />} />}</>}</div>;
   // A count the network does not publish is a dash, not a sentence.
   const vram = stats?.vramTotalMb != null ? `${(stats.vramTotalMb / 1024).toFixed(1)} GB` : "-";
   const nodes = stats ? t("publicNetworks.nodeCount", { count: stats.nodeCount }) : "-";
@@ -779,17 +786,17 @@ function NetworkSidePanel({ row, membership, leaving, onClose, onExpand, onLobby
       </div>
       <div className="shrink-0 space-y-2 border-t border-line bg-raised/60 px-3 py-2.5" data-testid="network-panel-actions">
         {onQuickSetup && <Button size="sm" variant="primary" className="w-full" onClick={onQuickSetup} icon={<WandSparkles className="h-3.5 w-3.5" />}>{t("quickSetup.action")}</Button>}
-        {membership === "none" && (
+        {membership === "none" && !isDemoUser() && (
           <div className="flex flex-wrap gap-2">
             {(!closed || !network.lobby_chat) && <Button size="sm" variant="primary" disabled={closed} title={closed ? t("publicNetworks.closedDetail") : undefined} onClick={() => onLobby(true)} icon={<LogIn className="h-3.5 w-3.5" />}>{t("publicNetworks.askToJoin")}</Button>}
             {network.lobby_chat && <Button size="sm" variant={closed ? "primary" : "outline"} onClick={() => onLobby(false)} icon={<MessageCircle className="h-3.5 w-3.5" />}>{t("publicNetworks.lobby")}</Button>}
           </div>
         )}
-        {membership === "member" && <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={onLeave} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button>}
+        {membership === "member" && !isDemoUser() && <Button size="sm" variant="danger" loading={leaving} disabled={leaving} onClick={onLeave} icon={<LogOut className="h-3.5 w-3.5" />}>{t("network.leave")}</Button>}
         <div className="flex flex-wrap gap-1">
           <Button size="sm" variant="ghost" onClick={onExpand} icon={<Maximize2 className="h-3.5 w-3.5" />}>{t("publicNetworks.moreDetails")}</Button>
-          {kind === "own" && <Button size="sm" variant="ghost" disabled={!network.trust_document} title={t("publicNetworks.exportTrustDetail")} onClick={onExport} icon={<Share2 className="h-3.5 w-3.5" />}>{t("publicNetworks.share")}</Button>}
-          {kind === "custom" && <Button size="sm" variant="ghost" onClick={onRemove} icon={<Trash2 className="h-3.5 w-3.5" />}>{t("publicNetworks.remove")}</Button>}
+          {kind === "own" && !isDemoUser() && <Button size="sm" variant="ghost" disabled={!network.trust_document} title={t("publicNetworks.exportTrustDetail")} onClick={onExport} icon={<Share2 className="h-3.5 w-3.5" />}>{t("publicNetworks.share")}</Button>}
+          {kind === "custom" && !isDemoUser() && <Button size="sm" variant="ghost" onClick={onRemove} icon={<Trash2 className="h-3.5 w-3.5" />}>{t("publicNetworks.remove")}</Button>}
         </div>
       </div>
     </aside>

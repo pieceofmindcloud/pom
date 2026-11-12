@@ -261,13 +261,30 @@ plugin never sees a cookie. Design:
 - **Demo mode** (`DEMO_MODE=1`) removes own API keys and redacts from what a
   user session reads every address-shaped field and value and every node id
   (replaced by a stable per-process alias), on the dashboard reads, the
-  request log and plugin RPC answers. It also shows a person, read-only, the
+  request log and plugin RPC answers. A machine's name (`hostname`) stays, so
+  a person can tell the machines apart, unless the value is itself an address;
+  an alias the page sends back as the Chat's `inference_head` is resolved to
+  the real node among this node and its live peers (`unalias_node`). It also shows a person, read-only, the
   installed plugins and the catalog (`GET /api/ui/plugins`,
   `/api/ui/plugins/github-repositories`, `/api/ui/plugin-catalog`), the local
   catalog (`GET /api/ui/models`), a slicing preview (`POST /api/ui/slice/plan`;
   starting a job stays refused), the current network (`/api/ui/network/info`,
   redacted) and their own budget (`GET /api/ui/quota`, answered from the
-  sign-in plugin's `rpc.me`). Plugins listed in `DEMO_PLUGINS` (every active
+  sign-in plugin's `rpc.me`), the Networks screen (`GET /api/ui/networks/known`,
+  `/api/ui/networks/pinned`, `/api/ui/network/relay`, redacted; adding,
+  sharing, joining, leaving and saving the quick setup stay refused), the
+  network Chat (`GET /api/ui/network-chat`, the members' room only: a `room`
+  other than it answers 404 and the snapshot never carries the lobby) and
+  the Deploy screen's survey (`POST /api/ui/deploy/plan`, `GET
+  /api/ui/cache-types`, `/api/ui/model-sidecar-links`; `/api/ui/deploy` and
+  the history stay refused). A demonstration node is a worker, which refuses
+  the deploy routes, so the gateway lets that one survey through on a worker
+  in demo mode (`demo_previews_deploy`). A person's message to the network
+  Chat (`POST /api/ui/network-chat`) never reaches `network_chat_action`: the
+  session gate takes only the text of a text message to the members' room,
+  up to 2000 characters, prefixes it with `[demo] ` and posts it as this node
+  (`demo_network_chat_post`); files, typing, notices and direct messages are
+  refused. Plugins listed in `DEMO_PLUGINS` (every active
   one when unset) open their assets, RPCs and web proxy to a person; the
   sign-in plugin's `auth` screen and its `rpc.auth.*` never do.
 - **Demo without sign-in** (`DEMO_NO_AUTH=1`, only with `DEMO_MODE`). A

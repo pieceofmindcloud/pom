@@ -680,6 +680,8 @@ dashboard.usedOf,{used} of {total},{used} de {total}
 dashboard.versionProperties,Deployment version properties,Propriedades da versão da implantação
 dashboard.vram,VRAM · {name},VRAM · {name}
 dashboard.wiredMemory,Wired memory (Metal buffers),Memória wired (buffers do Metal)
+demo.cannotDeploy,A demonstration visit can build a deployment but not deploy it.,"Uma visita de demonstração pode montar uma implantação, mas não implantá-la."
+demo.cannotSave,A demonstration visit can walk through every step but cannot save.,"Uma visita de demonstração pode passar por todas as etapas, mas não pode salvar."
 demo.clockLabel,Demonstration time left: {time},Tempo restante da demonstração: {time}
 demo.clockTitle,Time left in this demonstration,Tempo restante nesta demonstração
 demo.expired,Your demonstration time is over. Sign in again to join the queue.,Seu tempo de demonstração acabou. Entre de novo para voltar à fila.

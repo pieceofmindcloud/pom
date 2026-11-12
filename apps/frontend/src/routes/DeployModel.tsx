@@ -96,6 +96,7 @@ import type {
   TpLaunch,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { isDemoUser } from "../lib/session";
 
 const rangeKey = (start: number, end: number) => `${start}-${end}`;
 
@@ -1303,7 +1304,9 @@ export function DeployModel() {
   /** In Pipeline mode a machine without the model is not sent a copy: it
    *  downloads the model (Download here on its card) or gets the file placed.
    *  The ranges the plan would copy name those machines. */
-  const canDeploy = !!p && rows.length > 0 && !checking && !running;
+  // A demonstration visit builds the map but never deploys it.
+  const demo = isDemoUser();
+  const canDeploy = !demo && !!p && rows.length > 0 && !checking && !running;
   const bottomMachines = liveMachines.filter(
     (machine) => !mapNodeIds.has(machine.node_id) && (!service || service.nodeIds.includes(machine.node_id)),
   );
@@ -1513,27 +1516,32 @@ export function DeployModel() {
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
               />
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              icon={<History className="h-3.5 w-3.5" />}
-              onClick={() => navigate("/deployments")}
-            >
-              {t("nav.history")}
-            </Button>
+            {!demo && (
+              <Button
+                variant="outline"
+                size="sm"
+                icon={<History className="h-3.5 w-3.5" />}
+                onClick={() => navigate("/deployments")}
+              >
+                {t("nav.history")}
+              </Button>
+            )}
             <Button
               variant="primary"
               size="sm"
               icon={<Rocket className="h-3.5 w-3.5" />}
               loading={running || checking}
               disabled={!canDeploy}
+              title={demo ? t("demo.cannotDeploy") : undefined}
               data-guide={running ? "deploy-running" : canDeploy ? "deploy-run" : undefined}
               onClick={() => void checkAndDeploy()}
             >
               {t("deployStudio.deploy")}
             </Button>
           </div>
-          {whyNot && <p className="mt-2 text-right text-[0.7rem] text-muted">{whyNot}</p>}
+          {demo
+            ? <p data-testid="deploy-demo" className="mt-2 text-right text-[0.7rem] text-amber">{t("demo.cannotDeploy")}</p>
+            : whyNot && <p className="mt-2 text-right text-[0.7rem] text-muted">{whyNot}</p>}
         </div>
 
         {job && (

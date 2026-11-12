@@ -399,7 +399,12 @@ Per-file list:
   current-network listing `App.tsx` routes `/config/network` to for a visitor.
   `App.tsx` also moves the first landing on `/` to `/chat`. Plugins, Whole
   models, Slice and Shards hide their actions for a visitor
-  (`isDemoUser()`); the node refuses them anyway.
+  (`isDemoUser()`); the node refuses them anyway. A visit also opens
+  (`lib/session.ts` `DEMO_USER_ROUTES`) Networks with no add, share, join,
+  leave or remove action and a quick setup whose last step cannot save
+  (`NetworkQuickSetup` `readOnly`), the network Chat with text only (no file,
+  no typing signal), and Deploy with the History button hidden and Deploy
+  disabled (`demo.cannotDeploy`).
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
   from `NodeInfo.network_name` and linking to `/config/network`; then
   `ConnectionBadge` on a member; then hostname,

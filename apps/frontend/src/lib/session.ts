@@ -88,4 +88,15 @@ export const USER_ROUTES = ["/", "/chat", "/logs", "/statistics", "/documentatio
  * models and slices, and the network it is in. Searching and downloading
  * models (the Hugging Face plugin's screen) is not among them.
  */
-export const DEMO_USER_ROUTES = ["/plugins", "/models", "/models/slice", "/shards", "/config/network"] as const;
+export const DEMO_USER_ROUTES = [
+  "/plugins",
+  "/models",
+  "/models/slice",
+  "/shards",
+  "/config/network",
+  // Networks read-only (its quick setup walks but never saves), the network
+  // Chat, and Deploy to play with: never deploys, and never the history.
+  "/public-networks",
+  "/network-chat",
+  "/deploy",
+] as const;

@@ -1141,7 +1141,9 @@ pub(crate) async fn require_admin_for_surface(
         crate::webui::RouteScope::AnyAdmin => local_authority.is_some(),
         _ => true,
     };
-    let profile_access = crate::webui::profile_can_access(profile, scope) && authority_access;
+    let profile_access = (crate::webui::profile_can_access(profile, scope) && authority_access)
+        || (!internal_node_request
+            && crate::user_session::demo_previews_deploy(profile, &method, &path));
     if !profile_access && !internal_node_request {
         return (
             StatusCode::FORBIDDEN,

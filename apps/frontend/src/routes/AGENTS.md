@@ -603,11 +603,14 @@ Per-file list:
   `DeployModel.whole.test.tsx` ("pipeline map" covers the survey, the Machines
   tab, the refusal window and the partial coverage question).
   `MachinesTab` lists every machine on the map in pipeline order
-  (`orderedMapMachines`), without GPU/RAM/disk/RTT: each range on a
+  (`orderedMapMachines`, or the order the operator gave with the up/down
+  arrows, `machineOrder`/`moveMachine`: the machines with one range each take
+  the ranges in the new order, so the list stays the pipeline order and Split
+  follows it), without GPU/RAM/disk/RTT: each range on a
   `../components/LayerRangeSlider` (two thumbs that stop only at
   `rangeBounds(total, validEnds(...))`, i.e. 0, each valid cut + 1 and the layer
-  count), **Whole model**, **+ Range** (the first stretch no machine serves, so
-  one machine can serve several ranges), a remove per range, a mark box per
+  count), **Whole model** (there is no button to add a second range: one range
+  per machine), a remove per range when a remembered deploy brought two, a mark box per
   machine (`unmarked`, a new machine comes marked; Shift+click on a map card
   toggles it too), **Split the layers over N machines** over the marked ones that
   hold the model (`../lib/wholeRanges` `splitOverMarked`: the unmarked machines

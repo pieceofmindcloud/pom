@@ -894,7 +894,10 @@ Key logic carriers:
   whole model: the track is in layers so a thumb moves smoothly, the range it
   reports snaps to `rangeBounds` (0, each valid cut + 1, the layer count, drawn
   as ticks) and the thumb settles there on release; the Deploy Studio's
-  Machines tab uses one per range.
+  Machines tab uses one per range. The mouse goes through one layer over the
+  whole track (a press takes the nearer thumb and drags it with pointer
+  capture); the two range inputs under it serve the keyboard and screen
+  readers only.
 - `ModelPresence.tsx` - `FilePresence` is the generic card foot for a file a machine lacks (`source`, `missing`
   text); `ModelPresence` wraps it for the model, and the studio uses it for each `mmproj`/`mtp` entry of
   `DeployPlan.copies` aimed at that machine, with the source from `fileSourceOn` (`lib/wholeModels.ts`).

@@ -50,8 +50,9 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { ImageDeployStudio } from "../components/ImageDeployStudio";
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
-  Plus,
+  ChevronUp,
   History,
   Rocket,
   ServerCog,
@@ -295,6 +296,9 @@ export function DeployModel() {
    *  Split the layers works on the marked ones. Shift+click on a card, or the
    *  box by its name in the Machines tab, toggles the mark. */
   const [unmarked, setUnmarked] = useState<Set<string>>(() => new Set());
+  /** The order the operator gave the map's machines with the arrows of the
+   *  Machines tab; empty until the first move (then pipeline order rules). */
+  const [machineOrder, setMachineOrder] = useState<string[]>([]);
   const [inspectorTab, setInspectorTab] = useState<"global" | "machine">("machine");
   const [inspectorOpen, setInspectorOpen] = useState(true);
   /** The whole model to deploy, when that is the question being asked. */
@@ -816,10 +820,42 @@ export function DeployModel() {
   const orderedMapMachines = useMemo(() => {
     const firstLayer = (nodeId: string) =>
       Math.min(...rows.filter((row) => row.target_node_id === nodeId).map((row) => row.start_layer), Number.POSITIVE_INFINITY);
-    return liveMachines
+    const byPipeline = liveMachines
       .filter((machine) => mapNodeIds.has(machine.node_id))
       .sort((a, b) => firstLayer(a.node_id) - firstLayer(b.node_id) || a.label.localeCompare(b.label));
-  }, [liveMachines, mapNodeIds, rows]);
+    if (machineOrder.length === 0) return byPipeline;
+    const place = (nodeId: string) => {
+      const index = machineOrder.indexOf(nodeId);
+      return index < 0 ? Number.POSITIVE_INFINITY : index;
+    };
+    return byPipeline
+      .map((machine, index) => ({ machine, index }))
+      .sort((a, b) => place(a.machine.node_id) - place(b.machine.node_id) || a.index - b.index)
+      .map(({ machine }) => machine);
+  }, [liveMachines, machineOrder, mapNodeIds, rows]);
+  /** Moves a machine one place up or down the Machines tab. The machines that
+   *  serve one range each take the ranges in the new order, so the pipeline
+   *  follows the list, and Split the layers splits in that order. */
+  function moveMachine(nodeId: string, direction: -1 | 1) {
+    const order = orderedMapMachines.map((machine) => machine.node_id);
+    const from = order.indexOf(nodeId);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= order.length) return;
+    [order[from], order[to]] = [order[to], order[from]];
+    setMachineOrder(order);
+    const ranged = order.filter((id) => rows.some((row) => row.target_node_id === id));
+    if (ranged.some((id) => rows.filter((row) => row.target_node_id === id).length !== 1)) return;
+    const segments = ranged
+      .map((id) => rows.find((row) => row.target_node_id === id) as DeploySelection)
+      .slice()
+      .sort(byLayer);
+    const next = rows.map((row) => {
+      const index = ranged.indexOf(row.target_node_id);
+      if (index < 0) return row;
+      return { ...row, start_layer: segments[index].start_layer, end_layer: segments[index].end_layer };
+    });
+    setSelection(next.sort(byLayer));
+  }
   const markedNodeIds = useMemo(
     () => orderedMapMachines.map((machine) => machine.node_id).filter((nodeId) => !unmarked.has(nodeId)),
     [orderedMapMachines, unmarked],
@@ -1753,6 +1789,7 @@ export function DeployModel() {
               onKqv={setPeerKqv}
               marked={markedNodeIds}
               onToggleMarked={toggleMarked}
+              onMove={rangesOnWhole ? moveMachine : undefined}
               balance={splitBalance}
               serviceName={service?.name}
               onSplit={(nodeIds, ends) => {
@@ -1917,6 +1954,7 @@ function MachinesTab({
   onKqv,
   marked,
   onToggleMarked,
+  onMove,
   balance,
   onSplit,
   serviceName,
@@ -1938,6 +1976,8 @@ function MachinesTab({
   /** The machines Split the layers works on. */
   marked: string[];
   onToggleMarked: (nodeId: string) => void;
+  /** Moves a machine up (-1) or down (1) the list, which is the pipeline order. */
+  onMove?: (nodeId: string, direction: -1 | 1) => void;
   /** Range sizes and machine capacities, for each machine's projected use. */
   balance?: SplitBalance;
   onSplit: (nodeIds: string[], ends: number[]) => void;
@@ -1962,19 +2002,6 @@ function MachinesTab({
       ...(existing?.inference_role ? { inference_role: existing.inference_role } : {}),
     };
   };
-  /** The first stretch of layers no machine serves, else the last range a cut allows. */
-  const freeRange = (): [number, number] | null => {
-    if (total == null || bounds.length < 2) return null;
-    const covered = new Array(total).fill(false);
-    for (const row of rows) for (let layer = row.start_layer; layer <= row.end_layer && layer < total; layer++) covered[layer] = true;
-    const startIndex = bounds.findIndex((bound) => bound < total && !covered[bound]);
-    if (startIndex >= 0) {
-      let endIndex = startIndex + 1;
-      while (endIndex < bounds.length - 1 && !covered[bounds[endIndex]]) endIndex++;
-      return [bounds[startIndex], bounds[endIndex] - 1];
-    }
-    return [bounds[bounds.length - 2], total - 1];
-  };
   return (
     <div className="space-y-2 p-2">
       {!rangesOnWhole && serviceName && (
@@ -1997,7 +2024,7 @@ function MachinesTab({
           <p className="text-[0.58rem] leading-snug text-faint">{t("deployStudio.splitMarkedHint")}</p>
         </>
       )}
-      {machines.map((machine) => {
+      {machines.map((machine, position) => {
         const taking = rows.filter((row) => row.target_node_id === machine.node_id);
         const holds = holders.includes(machine.node_id);
         const editable = rangesOnWhole && holds && total != null && bounds.length >= 2;
@@ -2022,6 +2049,31 @@ function MachinesTab({
                 />
                 <span className="min-w-0 truncate text-[0.7rem] font-semibold text-fg">{machine.label}</span>
               </label>
+              <span className="flex shrink-0 items-center">
+              {onMove && machines.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    aria-label={t("deployStudio.moveMachineUp", { machine: machine.label })}
+                    title={t("deployStudio.moveMachineUp", { machine: machine.label })}
+                    disabled={position === 0}
+                    onClick={(event) => { event.stopPropagation(); onMove(machine.node_id, -1); }}
+                    className="flex h-5 w-5 items-center justify-center text-faint hover:bg-line/40 hover:text-fg disabled:pointer-events-none disabled:opacity-30"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t("deployStudio.moveMachineDown", { machine: machine.label })}
+                    title={t("deployStudio.moveMachineDown", { machine: machine.label })}
+                    disabled={position === machines.length - 1}
+                    onClick={(event) => { event.stopPropagation(); onMove(machine.node_id, 1); }}
+                    className="flex h-5 w-5 items-center justify-center text-faint hover:bg-line/40 hover:text-fg disabled:pointer-events-none disabled:opacity-30"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 aria-label={t("deployStudio.machineOffMap", { machine: machine.label })}
@@ -2031,6 +2083,7 @@ function MachinesTab({
               >
                 <X className="h-3.5 w-3.5" />
               </button>
+              </span>
             </div>
             <div className="space-y-2 px-2 py-2">
               {taking.length === 0 && <p className="text-[0.62rem] text-faint">{t("deployStudio.noLayerAssigned")}</p>}
@@ -2081,34 +2134,18 @@ function MachinesTab({
                 </div>
               ))}
               {editable && (
-                <div className="flex gap-1.5">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    type="button"
-                    className="flex-1"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onRows([...rows.filter((row) => row.target_node_id !== machine.node_id), newRow(machine.node_id, 0, total - 1)]);
-                    }}
-                  >
-                    {t("deployStudio.machineWholeModel")}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    type="button"
-                    className="flex-1"
-                    icon={<Plus className="h-3 w-3" />}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      const range = freeRange();
-                      if (range) onRows([...rows, newRow(machine.node_id, range[0], range[1])]);
-                    }}
-                  >
-                    {t("deployStudio.machineAddRange")}
-                  </Button>
-                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  className="w-full"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRows([...rows.filter((row) => row.target_node_id !== machine.node_id), newRow(machine.node_id, 0, total - 1)]);
+                  }}
+                >
+                  {t("deployStudio.machineWholeModel")}
+                </Button>
               )}
               {rangesOnWhole && !holds && (
                 <p className="text-[0.6rem] leading-snug text-amber">{t("deployStudio.machineLacksModel")}</p>

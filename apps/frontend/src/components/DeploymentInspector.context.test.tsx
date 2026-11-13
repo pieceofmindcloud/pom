@@ -60,3 +60,33 @@ describe("DeploymentInspector context ceiling", () => {
     expect(screen.getByRole("spinbutton", { name: "Context" }).getAttribute("max")).toBeNull();
   });
 });
+
+describe("DeploymentInspector hidden-state precision", () => {
+  const cap = (state: string) => ({ state, source: "peers", reason: "test" });
+  function f8Option(state: string) {
+    render(
+      <LocaleProvider initialLocale="en">
+        <DeploymentInspector
+          value={params}
+          onChange={vi.fn()}
+          showHiddenStateDtype
+          capabilities={{
+            hidden_state_f8: cap(state),
+            hidden_state_i4g64: cap(state),
+            hidden_state_i4g128: cap(state),
+          } as never}
+        />
+      </LocaleProvider>,
+    );
+    const select = screen.getByRole("combobox", { name: /hidden/i }) as HTMLSelectElement;
+    return [...select.options].find((option) => option.value === "f8")!;
+  }
+
+  it("lets f8 be chosen while the surveyed plan cannot confirm the peers", () => {
+    expect(f8Option("unknown").disabled).toBe(false);
+  });
+
+  it("blocks f8 when a peer does not announce it", () => {
+    expect(f8Option("unsupported").disabled).toBe(true);
+  });
+});

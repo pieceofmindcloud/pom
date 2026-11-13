@@ -643,7 +643,10 @@ Per-file list:
   controls (`service-no-ranges`). Test: `DeployModel.service.test.tsx`.
 - The global options conditioned by the model use `DeployPlan.capabilities`:
   `unsupported` stays hidden; `unknown` stays visible, disabled and
-  explains the source and the reason. `no_embeddings` is the product exception:
+  explains the source and the reason. The f8/i4 hidden-state formats are
+  disabled only when `unsupported`: the surveyed plan names no range, so it
+  always answers them `unknown`, and Deploy refuses an unconfirmed format.
+  `no_embeddings` is the product exception:
   it stays visible, and the backend validates the topology atomically per peer before
   applying the control.
 - The inspector's closing edge is a visual bar 3px tall at full height, with a

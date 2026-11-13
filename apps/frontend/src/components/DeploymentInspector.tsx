@@ -434,14 +434,17 @@ export function DeploymentInspector({
       : hiddenStateDtype === "i4g128"
         ? capabilities?.hidden_state_i4g128
         : undefined;
-  const hiddenStateUnavailable = hiddenStateCapability
-    ? hiddenStateCapability.state !== "supported"
-    : false;
-  const f8Unavailable = capabilities?.hidden_state_f8
-    ? capabilities.hidden_state_f8.state !== "supported"
-    : false;
-  const i4g64Unavailable = capabilities?.hidden_state_i4g64?.state !== "supported";
-  const i4g128Unavailable = capabilities?.hidden_state_i4g128?.state !== "supported";
+  /*
+   * Only a peer that says no blocks a lossy format here. The plan the screen
+   * surveys names no range, so it has no steps and every hidden-state
+   * capability comes back `unknown`; disabling on `unknown` locked f8/i4 for
+   * good. Deploy plans the real rows and refuses an unconfirmed format there
+   * (`requested_capability_block`).
+   */
+  const hiddenStateUnavailable = hiddenStateCapability?.state === "unsupported";
+  const f8Unavailable = capabilities?.hidden_state_f8?.state === "unsupported";
+  const i4g64Unavailable = capabilities?.hidden_state_i4g64?.state === "unsupported";
+  const i4g128Unavailable = capabilities?.hidden_state_i4g128?.state === "unsupported";
 
   /*
    * `auto` is no longer in the combo, but may arrive from an API or from a

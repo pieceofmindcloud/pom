@@ -1628,6 +1628,11 @@ impl NodeRuntime {
         let quic = self.quic.clone();
         let quic_port = self.quic_port;
         let last_slice_path = self.last_slice_path.clone();
+        // Each load attempt of this generation, for the `/health` watcher: a
+        // restart inside the same generation (the engine stopped with an error)
+        // writes `Pending` again, and only the watcher may bring it back to
+        // `Serving`, so it has to watch the new attempt too.
+        let (attempt_tx, attempt_rx) = tokio::sync::watch::channel(0u32);
 
         let supervisor = tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;
@@ -1720,6 +1725,7 @@ impl NodeRuntime {
                     }
                 }
 
+                let _ = attempt_tx.send(restarts);
                 let result = if cfg.inference_service.is_some() {
                     crate::plugin_engine::run(
                         cfg.clone(),
@@ -1798,12 +1804,17 @@ impl NodeRuntime {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(supervisor);
 
-        self.spawn_health_watch(cfg_for_health, generation);
+        self.spawn_health_watch(cfg_for_health, generation, Some(attempt_rx));
     }
 
     /// Poll the inference server until it answers, then mark the node ready and
     /// correct `total_layers` from the shard's GGUF metadata.
-    fn spawn_health_watch(&self, cfg: NodeConfig, generation: u64) {
+    fn spawn_health_watch(
+        &self,
+        cfg: NodeConfig,
+        generation: u64,
+        mut attempts: Option<tokio::sync::watch::Receiver<u32>>,
+    ) {
         let port = cfg.inference_port;
         // The runtime's own annotation path (`last_slice_path`), never the
         // environment's: two POM instances may use distinct POM_CONFIG values
@@ -1815,7 +1826,7 @@ impl NodeRuntime {
         };
         let assignment = self.assignment.clone();
         let net = self.net.clone();
-        let gen_rx = self.generation.subscribe();
+        let mut gen_rx = self.generation.subscribe();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -1923,7 +1934,24 @@ impl NodeRuntime {
                 if let Err(e) = net.announce(current_assignment.as_ref()).await {
                     warn!("batch capability announce after readiness failed: {e}");
                 }
-                return;
+                // The supervisor may restart the server within this same
+                // generation; that attempt is confirmed by `/health` again.
+                // Without a supervisor (or once it ends) there is nothing left
+                // to watch.
+                let Some(next) = attempts.as_mut() else {
+                    return;
+                };
+                // The attempt just confirmed is not a new one.
+                next.borrow_and_update();
+                tokio::select! {
+                    changed = next.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                    }
+                    _ = gen_rx.changed() => return,
+                }
+                healthy_polls = 0;
             }
         });
     }
@@ -2545,7 +2573,7 @@ mod tests {
         c.inference_port = port;
         // As `apply` leaves it: applied, not yet loaded.
         crate::lastslice::save(&c, crate::lastslice::SliceState::Pending).unwrap();
-        rt.spawn_health_watch(c, 0);
+        rt.spawn_health_watch(c, 0, None);
 
         // Wait for the first real probe, instead of depending on the scheduler
         // delivering exactly the 3 s interval. The first return still
@@ -2600,6 +2628,72 @@ mod tests {
             "the annotation goes back to the captured configuration when /health confirmed"
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A restart inside the same generation (the engine stopped with an error and
+    /// the supervisor loads it again) writes `Pending`; the watcher confirms the
+    /// new attempt too, or the node stays "loading" with the engine ready.
+    #[tokio::test]
+    async fn health_promotes_again_after_a_restart_in_the_same_generation() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct RestoreConfigEnv(Option<std::ffi::OsString>);
+        impl Drop for RestoreConfigEnv {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("POM_CONFIG", value),
+                    None => std::env::remove_var("POM_CONFIG"),
+                }
+            }
+        }
+        let _restore_config = RestoreConfigEnv(std::env::var_os("POM_CONFIG"));
+        let dir = std::env::temp_dir().join(format!("pom-health-rearm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("POM_CONFIG", dir.join("pom.json"));
+
+        let app = axum::Router::new().route(
+            "/health",
+            axum::routing::get(|| async { axum::Json(serde_json::json!({ "model_loaded": true })) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let net = Arc::new(
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
+                .await
+                .expect("UDP socket on an ephemeral port"),
+        );
+        let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
+        let mut c = cfg();
+        c.inference_port = port;
+        crate::lastslice::save(&c, crate::lastslice::SliceState::Pending).unwrap();
+        let (attempt_tx, attempt_rx) = tokio::sync::watch::channel(0u32);
+        let _ = attempt_tx.send(0);
+        rt.spawn_health_watch(c.clone(), 0, Some(attempt_rx));
+
+        let serving = || matches!(crate::lastslice::inspect(), crate::lastslice::LastSlice::Serving(_));
+        for _ in 0..60 {
+            if serving() {
+                break;
+            }
+            sleep(Duration::from_millis(250)).await;
+        }
+        assert!(serving(), "the first attempt is confirmed");
+
+        // The supervisor's second attempt, as after "stopped with an error".
+        crate::lastslice::save(&c, crate::lastslice::SliceState::Pending).unwrap();
+        let _ = attempt_tx.send(1);
+        for _ in 0..60 {
+            if serving() {
+                break;
+            }
+            sleep(Duration::from_millis(250)).await;
+        }
+        assert!(serving(), "the restarted attempt is confirmed by /health again");
         std::fs::remove_dir_all(&dir).ok();
     }
 

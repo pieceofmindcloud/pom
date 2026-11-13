@@ -1133,6 +1133,11 @@ reason that only shows up in the error of a tunnel that also failed.
   that answer. The watcher captures the journal's path when it comes up; another
   instance/test that changes `POM_CONFIG` afterwards cannot redirect its annotation. Only
   `Serving` authorizes resuming the slice on a restart.
+  It watches every load attempt of its generation: the supervisor publishes each attempt on
+  a `watch` channel, and after promoting, the watcher waits (no polling) for the next one. A
+  restart inside the same generation (a Strata stage that stops because the earlier stage
+  restarted) writes `Pending` again; before this the watcher had already returned and the
+  node stayed "loading" with the engine ready.
 - `note_unloadable_slice` - marks the slice as not resumable and puts the reason in the
   `status.detail` (what the panel shows); it is what an empty node says instead of staying
   silent - an empty, silent node is indistinguishable from a machine that never received a

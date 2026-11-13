@@ -355,6 +355,9 @@ pub struct Discovery {
     gossip_rx: GossipReceiver,
     mdns: Option<iroh_mdns_address_lookup::MdnsAddressLookup>,
     dedicated_relays: Vec<RelayUrl>,
+    /// n0's public relays this run may use (`--no-default-relays` empties it),
+    /// added or removed by the network's relay policy.
+    public_relays: Vec<(RelayUrl, Arc<iroh::RelayConfig>)>,
     announce_rx: mpsc::Receiver<Vec<u8>>,
     dial_rx: mpsc::Receiver<EndpointAddr>,
     tunnel_rx: mpsc::Receiver<TunnelOutbound>,
@@ -398,13 +401,29 @@ impl Discovery {
                 None => warn!("relay_peers: {text} is not a relay URL (https://... or http://...)"),
             }
         }
-        let relay_map = if use_default_relays {
-            iroh::RelayMode::Default.relay_map()
+        let public_relays: Vec<(RelayUrl, Arc<iroh::RelayConfig>)> = if use_default_relays {
+            let defaults = iroh::RelayMode::Default.relay_map();
+            defaults
+                .urls::<Vec<RelayUrl>>()
+                .into_iter()
+                .filter_map(|url| Some((url.clone(), defaults.get(&url)?)))
+                .collect()
         } else {
-            iroh::RelayMap::empty()
+            Vec::new()
         };
-        for url in &dedicated_relays {
-            relay_map.insert(url.clone(), relay_config(url));
+        // The network's relay policy decides the first map too; the policy
+        // round keeps the map in line with it afterwards (`apply_relay_policy`).
+        let relay_policy = network.relay_gate().policy();
+        let relay_map = iroh::RelayMap::empty();
+        if relay_policy.allows_public() {
+            for (url, config) in &public_relays {
+                relay_map.insert(url.clone(), config.clone());
+            }
+        }
+        if relay_policy.allows_any() {
+            for url in &dedicated_relays {
+                relay_map.insert(url.clone(), relay_config(url));
+            }
         }
         network.set_dedicated_relays(dedicated_relays.iter().map(|url| url.to_string()));
 
@@ -530,6 +549,7 @@ impl Discovery {
             gossip_rx,
             mdns,
             dedicated_relays,
+            public_relays,
             announce_rx,
             dial_rx,
             tunnel_rx,
@@ -703,6 +723,7 @@ impl Discovery {
             mut gossip_rx,
             mdns,
             dedicated_relays,
+            public_relays,
             mut announce_rx,
             mut dial_rx,
             mut tunnel_rx,
@@ -719,6 +740,10 @@ impl Discovery {
             None => Box::pin(futures::stream::pending()),
         };
         let mut policy = PolicyState::default();
+        // The first map already follows the policy (`new`).
+        let first = ctx.network.relay_gate().policy();
+        policy.public_off = !first.allows_public();
+        policy.dedicated_off = !first.allows_any();
         let mut policy_tick = tokio::time::interval(POLICY_INTERVAL);
         policy_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let network = ctx.network.clone();
@@ -812,7 +837,9 @@ impl Discovery {
                             relay_chat(&ctx, &network, &ctx.chat, closed, None).await;
                         }
                     }
-                    if network.is_detached() {
+                    // With no relay allowed, no tunnel through a visitor's
+                    // anonymous relay either.
+                    if network.is_detached() || !network.relay_gate().policy().allows_any() {
                         anon.sync(&[]).await;
                         network.set_anon_tunnel(None);
                     } else {
@@ -824,6 +851,7 @@ impl Discovery {
                         &endpoint,
                         &gossip_tx,
                         &dedicated_relays,
+                        &public_relays,
                         udp_port,
                         relay_port,
                         &mut policy,
@@ -978,6 +1006,10 @@ struct PolicyState {
     pkarr_rejoin: std::collections::HashMap<EndpointId, std::time::Instant>,
     /// Member relays this node added to its relay map.
     member_relays: HashSet<RelayUrl>,
+    /// n0's public relays were taken out of the map by the relay policy.
+    public_off: bool,
+    /// The dedicated relays were taken out of the map by the relay policy.
+    dedicated_off: bool,
 }
 
 /// Wait between two rounds of asking every admitted peer to join, while this
@@ -1011,6 +1043,44 @@ impl PolicyState {
     }
 }
 
+/// Keeps n0's public relays and the dedicated ones in the endpoint's relay
+/// map only while the network's `RelayPolicy` allows them. Member relays
+/// follow the same policy in `apply_policy`. A relay that leaves the map is
+/// one this endpoint stops connecting to, so no path through it remains on
+/// this side, whatever the other side would like.
+async fn apply_relay_policy(
+    endpoint: &iroh::Endpoint,
+    relay_policy: crate::config::RelayPolicy,
+    dedicated: &[RelayUrl],
+    public: &[(RelayUrl, Arc<iroh::RelayConfig>)],
+    policy: &mut PolicyState,
+) {
+    let public_off = !relay_policy.allows_public();
+    if public_off != policy.public_off {
+        for (url, config) in public {
+            if public_off {
+                endpoint.remove_relay(url).await;
+            } else {
+                endpoint.insert_relay(url.clone(), config.clone()).await;
+            }
+        }
+        info!(policy = ?relay_policy, "p2p: n0's public relays {}", if public_off { "off" } else { "on" });
+        policy.public_off = public_off;
+    }
+    let dedicated_off = !relay_policy.allows_any();
+    if dedicated_off != policy.dedicated_off {
+        for url in dedicated {
+            if dedicated_off {
+                endpoint.remove_relay(url).await;
+            } else {
+                endpoint.insert_relay(url.clone(), relay_config(url)).await;
+            }
+        }
+        info!(policy = ?relay_policy, "p2p: dedicated relays {}", if dedicated_off { "off" } else { "on" });
+        policy.dedicated_off = dedicated_off;
+    }
+}
+
 async fn join_gossip(gossip: &GossipSender, policy: &mut PolicyState, peer: EndpointId) {
     if policy.joined.insert(peer) {
         if let Err(error) = gossip.join_peers(vec![peer]).await {
@@ -1030,6 +1100,7 @@ async fn apply_policy(
     endpoint: &iroh::Endpoint,
     gossip: &GossipSender,
     dedicated: &[RelayUrl],
+    public: &[(RelayUrl, Arc<iroh::RelayConfig>)],
     udp_port: u16,
     relay_port: u16,
     policy: &mut PolicyState,
@@ -1037,6 +1108,8 @@ async fn apply_policy(
     let network = &ctx.network;
     let peers = network.alive_peers().await;
     let gate = network.relay_gate();
+    let relay_policy = gate.policy();
+    apply_relay_policy(endpoint, relay_policy, dedicated, public, policy).await;
     gate.set_members(peers.iter().filter_map(|peer| peer.endpoint_id.clone()));
 
     // Reachability, from the NAT report: the public address the relays saw
@@ -1065,6 +1138,7 @@ async fn apply_policy(
     // transfer, so a node behind NAT needs a member relay as well.
     let wanted: Vec<RelayUrl> = peers
         .iter()
+        .filter(|_| relay_policy.allows_any())
         .filter(|peer| peer.node_id != network.node_id)
         .filter_map(|peer| peer.relay.as_ref()?.url.as_deref().and_then(p2p::relay_url))
         .filter(|url| !dedicated.contains(url))

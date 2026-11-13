@@ -502,6 +502,8 @@ export interface NetworkSettings {
   public_stats: boolean;
   /** Opens the network Chat to visitors; off, it is the admins' and workers' only. */
   chat_visitors?: boolean;
+  /** Which relays the machines may use; absent reads as `all`. */
+  relay_policy?: RelayPolicy;
   location: NetworkLocation | null;
 }
 
@@ -2598,3 +2600,7 @@ export interface PlannedCopy {
   target_node_id: string;
   target_host: string;
 }
+
+/** The network's relay policy (`NetworkSettings.relay_policy`), decided by the principal. */
+export type RelayPolicy = "all" | "members" | "none";
+export const RELAY_POLICIES: readonly RelayPolicy[] = ["all", "members", "none"];

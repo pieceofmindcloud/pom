@@ -70,6 +70,51 @@ impl Default for NetworkVisibility {
     }
 }
 
+/// Which iroh relays the network's machines may use, decided by the
+/// principal. A relay only carries end-to-end encrypted QUIC, but it sees who
+/// talks to whom, when and how much; a company may want no third party there.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayPolicy {
+    /// n0's public relays, the dedicated ones and member relays.
+    #[default]
+    All,
+    /// Only the network's own relays: the dedicated ones (`relay_peers`) and
+    /// member relays. n0's public relays leave every machine's relay map.
+    Members,
+    /// No relay at all: only direct connections (LAN, public address, an
+    /// open port). Machines behind NAT without an open port cannot connect.
+    None,
+}
+
+impl RelayPolicy {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::All => 0,
+            Self::Members => 1,
+            Self::None => 2,
+        }
+    }
+
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Members,
+            2 => Self::None,
+            _ => Self::All,
+        }
+    }
+
+    /// n0's public relays are allowed.
+    pub fn allows_public(self) -> bool {
+        self == Self::All
+    }
+
+    /// Any relay is allowed.
+    pub fn allows_any(self) -> bool {
+        self != Self::None
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkAccessPolicy {
@@ -198,6 +243,11 @@ pub struct NetworkSettings {
     /// Absent (an older principal) reads as false: no demonstration.
     #[serde(default)]
     pub demo_mode_active: bool,
+    /// Which relays the machines may use (`RelayPolicy`). Changed only
+    /// through `POST /api/ui/network/relay-policy`; absent (an older
+    /// principal) reads as `all`, today's behavior.
+    #[serde(default)]
+    pub relay_policy: RelayPolicy,
     /// How much of `location` is published; applied before it is stored.
     #[serde(default)]
     pub location_precision: LocationPrecision,
@@ -1286,6 +1336,22 @@ fn migrate_admin_access_token(value: Option<String>) -> Result<(Option<String>, 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn network_settings_from_an_older_principal_allow_every_relay() {
+        use super::RelayPolicy;
+        let settings: NetworkSettings = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(settings.relay_policy, RelayPolicy::All);
+        for (text, policy) in [("members", RelayPolicy::Members), ("none", RelayPolicy::None)] {
+            let settings: NetworkSettings =
+                serde_json::from_value(serde_json::json!({ "relay_policy": text })).unwrap();
+            assert_eq!(settings.relay_policy, policy);
+            assert_eq!(RelayPolicy::from_u8(policy.as_u8()), policy);
+        }
+        assert!(RelayPolicy::All.allows_public() && RelayPolicy::All.allows_any());
+        assert!(!RelayPolicy::Members.allows_public() && RelayPolicy::Members.allows_any());
+        assert!(!RelayPolicy::None.allows_public() && !RelayPolicy::None.allows_any());
+    }
 
     #[test]
     fn network_settings_from_an_older_principal_allow_no_demonstration() {

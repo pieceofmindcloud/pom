@@ -124,6 +124,12 @@ dedicated or member, with iroh's hole punching), are in
 - `network_chat_policy.rs` - the authenticated ratchet of the Network Chat switch;
   the announced boolean is a trigger and the authenticated read on the principal is
   the effective source.
+- `discovery.rs` - the network's relay policy (`apply_relay_policy`, called by
+  every policy round, and the first relay map in `Discovery::new`) keeps n0's
+  public relays and the dedicated ones in the endpoint's map only while
+  `RelayGate::policy` allows them; member relays and the anonymous relay
+  tunnels follow the same policy. See `p2p-network.md`, "The network's relay
+  policy".
 - `discovery.rs` - the iroh endpoint and everything on it: the endpoint under the
   node key on UDP `p2p_port + 10000` (n0's relays unless `--no-default-relays`, the
   dedicated `relay_peers` URLs, member relays added live), mDNS, iroh-gossip (one

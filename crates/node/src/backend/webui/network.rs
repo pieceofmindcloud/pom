@@ -152,7 +152,7 @@ pub(crate) async fn geo_nearest(
 pub(crate) async fn save_network_settings(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
-    Json(settings): Json<NetworkSettings>,
+    Json(mut settings): Json<NetworkSettings>,
 ) -> Response {
     if !super::local_is_primary(&state).await {
         return network_error(
@@ -161,6 +161,9 @@ pub(crate) async fn save_network_settings(
             "only an authorized administrator can edit the network",
         );
     }
+    // The relay policy has its own route: a screen that does not know the
+    // field never turns it back to `all`.
+    settings.relay_policy = state.auth.read().await.network.relay_policy;
 
     match apply_network_settings_with_key(&state, settings, true, None, None).await {
         Ok(synced_peers) => {
@@ -168,6 +171,42 @@ pub(crate) async fn save_network_settings(
             Json(json!({
                 "network": view.network,
                 "can_edit": view.can_edit,
+                "synced_peers": synced_peers,
+            }))
+            .into_response()
+        }
+        Err(error) => network_error(StatusCode::BAD_REQUEST, "network_settings_invalid", &error),
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RelayPolicyRequest {
+    pub relay_policy: config::RelayPolicy,
+}
+
+/// `POST /api/ui/network/relay-policy`: the principal decides which relays
+/// every machine may use. The policy travels in `NetworkSettings` to the
+/// members, and each one applies it to its own relay map
+/// (`discovery::apply_relay_policy`) and relay server (`RelayGate`).
+pub(crate) async fn save_relay_policy(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(request): Json<RelayPolicyRequest>,
+) -> Response {
+    if !super::local_is_primary(&state).await {
+        return network_error(
+            StatusCode::FORBIDDEN,
+            "admin_authority_required",
+            "only the principal admin decides which relays the network uses",
+        );
+    }
+    let mut settings = state.auth.read().await.network.clone();
+    settings.relay_policy = request.relay_policy;
+    match apply_network_settings_with_key(&state, settings, true, None, None).await {
+        Ok(synced_peers) => {
+            info!(policy = ?request.relay_policy, synced_peers, "relay policy set from the interface");
+            Json(json!({
+                "relay_policy": request.relay_policy,
                 "synced_peers": synced_peers,
             }))
             .into_response()
@@ -233,6 +272,8 @@ async fn apply_network_settings_with_key(
         .database
         .save_network_settings(&settings)
         .map_err(|error| format!("save network details: {error:#}"))?;
+    // The next policy round puts the relay map in line with it.
+    state.network.relay_gate().set_policy(settings.relay_policy);
 
     // Discovery is the difference between `local` and the other two: off, the
     // node announces nothing and no key lookup finds it; on, it goes looking

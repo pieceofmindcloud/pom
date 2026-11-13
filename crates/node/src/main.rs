@@ -1598,6 +1598,9 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
     net.relay_gate().set_reachable(args.public_addr_configured);
+    // The network's relay policy holds from the first relay map on.
+    net.relay_gate()
+        .set_policy(args.auth.read().await.network.relay_policy);
     net.set_policy_principal_pubkey(primary_authority_pubkey);
     // TLS between nodes is always on: set before the probing task, so no
     // URL is ever built as plain HTTP.

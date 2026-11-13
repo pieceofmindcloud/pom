@@ -1599,6 +1599,15 @@ TLS between nodes has no switch: it is always on (`p2p-network.md`, section
 `inference_frame_capabilities` so a deployment plan can rebuild the tunnel on
 the rank that will run the call.
 
+**`POST /api/ui/network/relay-policy`** - body `{ relay_policy: "all" |
+"members" | "none" }`, `PrincipalOnly`: which iroh relays every machine may
+use (`p2p-network.md`, "The network's relay policy"). It saves the policy in
+the principal's `NetworkSettings` and sends the document to the members, who
+apply it at once; the answer is `{ relay_policy, synced_peers }`. The policy is
+read in `GET /api/ui/network/info` (`network.relay_policy`). `POST
+/api/ui/network/settings` never changes it: it keeps the value already saved,
+so a screen that does not know the field cannot reset it.
+
 **`POST /api/ui/network/quic`** - body `{ quic_enabled: bool }`, turns the
 HTTP/3-over-QUIC preference for new inference hops on or off. Only the
 principal can change it; there is no restart and peers adopt the decision

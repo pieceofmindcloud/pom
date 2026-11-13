@@ -515,6 +515,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
+        prefix: "/api/ui/network/relay-policy",
+        method: None,
+        scope: RouteScope::PrincipalOnly,
+    },
+    RouteRule {
         prefix: "/api/ui/network/logs",
         method: None,
         // Every admin decides it; a secondary's request is passed on to the

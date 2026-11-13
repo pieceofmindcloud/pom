@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   setAdminAccessToken: vi.fn(),
   clearAdminAccessToken: vi.fn(),
   logsPluginActive: true,
+  relayPolicy: "all" as "all" | "members" | "none",
+  refetchNetwork: vi.fn(),
   passwordConfigured: false,
   node: {
     thermal: { limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 },
@@ -48,6 +50,10 @@ vi.mock("../lib/queries", () => ({
   useInvalidate: () => mocks.invalidate,
   useLocalCa: () => ({ data: undefined, isError: true, refetch: mocks.invalidate }),
   useNode: () => ({ data: mocks.node }),
+  useNetworkInfo: () => ({
+    data: { network: { relay_policy: mocks.relayPolicy }, can_edit: true },
+    refetch: mocks.refetchNetwork,
+  }),
 }));
 
 vi.mock("../lib/toast", () => ({
@@ -66,6 +72,8 @@ afterEach(() => {
   mocks.clearAdminAccessToken.mockReset();
   mocks.get.mockResolvedValue({ enabled: false, active: false, searching: false, found: false, port: 0 });
   mocks.node.quic_enabled = false;
+  mocks.node.quic_authority = true;
+  mocks.relayPolicy = "all";
 });
 
 mocks.get.mockResolvedValue({ enabled: false, active: false, searching: false, found: false, port: 0 });
@@ -131,6 +139,30 @@ describe("Preferences", () => {
         quic_enabled: true,
       });
     });
+  });
+
+  it("lets the principal pick which relays the network uses, and warns about NAT with none", async () => {
+    mocks.post.mockResolvedValue({ relay_policy: "none" });
+    mount(<Preferences administrative />);
+
+    expect(screen.getByRole("radio", { name: /todos os relays/i }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByText(/sem relay, uma máquina atrás de nat/i)).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /^nenhum relay/i }));
+
+    await waitFor(() => {
+      expect(mocks.post).toHaveBeenCalledWith("/api/ui/network/relay-policy", { relay_policy: "none" });
+    });
+    cleanup();
+    mocks.relayPolicy = "none";
+    mount(<Preferences administrative />);
+    expect(screen.getByText(/sem relay, uma máquina atrás de nat/i)).toBeTruthy();
+  });
+
+  it("keeps the relay choice read-only outside the principal", () => {
+    mocks.node.quic_authority = false;
+    mount(<Preferences administrative />);
+    expect((screen.getByRole("radio", { name: /só relays desta rede/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/só o administrador principal da rede altera isto/i)).toBeTruthy();
   });
 
   it("keeps local discovery off and allows enabling it through the administrative preference", async () => {

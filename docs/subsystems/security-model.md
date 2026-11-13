@@ -47,6 +47,14 @@ are either workers or visitors.
   chain, else its announced profile. A visitor's own announce goes straight to
   its admins and workers, never on the gossip topic or the LAN broadcast
   (`p2p-network.md`, "Admission before the `peers` table").
+- The principal decides which iroh relays the network uses
+  (`NetworkSettings.relay_policy`: `all`, `members` for only the network's own
+  dedicated and member relays, `none` for direct connections only). A relay
+  never reads the end-to-end encrypted QUIC it carries, but it sees which
+  endpoints talk, when and how much; the policy keeps third parties out of
+  that. Each machine enforces it on its own side by keeping a disallowed relay
+  out of its relay map, so a machine that ignores the policy still cannot reach
+  a compliant one through such a relay (`p2p-network.md`).
 - A visitor may relay for its network anonymously (`relay.anonymous`, off by
   default): it admits anyone with an admin-signed relay pass for its URL
   (`crate::relay_pass`). An admin signs passes only for a relay URL on a

@@ -20,6 +20,8 @@ Ligado, os novos saltos de inferência preferem HTTP/3 sobre QUIC. O QUIC sempre
 Ligado, cada nó manda uma cópia do log de processo a cada administrador por um canal separado; a tela Logs da implantação lê isso. A fila descarta linhas sob pressão, então a inferência nunca é segurada.
 ### Chat da rede
 O canal de conversa de baixa prioridade entre os participantes. Mensagens e arquivos viajam pela rede e são validados pela máquina principal.
+### Relays
+Quais relays as máquinas podem usar para se alcançar: todos (o padrão), só os da própria rede (os relays dedicados e as máquinas da rede que fazem relay, sem nenhum relay público de terceiros) ou nenhum. O tráfego por um relay já é criptografado de ponta a ponta, então o relay não consegue lê-lo, mas vê quais máquinas conversam, quando e quanto. Sem relay, só funcionam conexões diretas: uma máquina atrás de NAT sem porta aberta não alcança as outras. Só o principal altera, e todas as máquinas aplicam em segundos.
 ### Descoberta local automática
 Deixa as máquinas da mesma rede local se acharem por broadcast. Vem desligada.
 :::

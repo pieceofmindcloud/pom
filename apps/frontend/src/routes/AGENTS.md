@@ -767,7 +767,10 @@ Per-file list:
   toggles the HTTP/3 preference in `POST /api/ui/network/quic` with the same
   authority control. The access password is a human credential and is not the
   cluster `connection_key`. The route `/config/preferences/admin` renders
-  only QUIC, process logs between nodes and the network chat, besides the
+  only QUIC, process logs between nodes, the network chat, the relay policy
+  (`RelayPolicyPanel`: all / only this network's / none, read from
+  `useNetworkInfo`, saved through `POST /api/ui/network/relay-policy`,
+  editable by the principal only, with the NAT warning on "none") and the
   local discovery switch, off by default; the normal route keeps
   exposure and thermal protection; Storage only has a menu entry.
 - `NotFound.tsx` - 404 fallback with a link back to `/`.

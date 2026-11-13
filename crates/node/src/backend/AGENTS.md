@@ -515,6 +515,15 @@ boundary.
   answers with its own, and `spawn_revocation_keeper` trades lists with one
   admin per tick. `on_revoked` makes the principal forget the member and
   rotate the key.
+- `webui/gpu_metrics.rs` - the GPU energy and temperature feed of the logs
+  plugin's Metrics screen: `spawn_gpu_metrics_sampler` (started with the
+  gateway companions) runs once a minute and, only on a node that may see the
+  network's peers and runs the logs plugin, reads every member's
+  `/api/ui/node` (its own through `node_info`), keeps each GPU's power,
+  temperature, utilization and VRAM plus the served model, and ingests one
+  `{"type": "gpu_samples", "at", "machines"}` event into that plugin. A card
+  two nodes of one machine report is counted once (hostname + index). Nothing
+  is stored here; the plugin keeps the hour and writes it.
 - `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
   `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
   `POST /api/ui/kv-cache/clear` (PrincipalOnly, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like

@@ -169,6 +169,8 @@ mod cluster;
 mod jobs;
 mod known_networks;
 pub(crate) use known_networks::remember_public_networks;
+mod gpu_metrics;
+pub(crate) use gpu_metrics::spawn_gpu_metrics_sampler;
 mod guide;
 mod https;
 mod jobs_apply;

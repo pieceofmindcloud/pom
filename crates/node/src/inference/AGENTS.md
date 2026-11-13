@@ -478,6 +478,11 @@ inference service runs a whole model instead through `plugin_engine.rs`.
   changed (the earlier engine restarted), `Relay::stale` makes
   `plugin_engine::run` end the generation, so the restart links with the new
   secret.
+  A frame the earlier stage answers with 410 (it reset the link: it restarted,
+  or took a newer connection) also restarts this stage when the engine has not
+  opened a newer connection within `RETRY` (`StaleSignal`, `ConnSlot`):
+  before, the engine lost the link for good and answered "the earlier stage is
+  not connected" to every request while its `/health` stayed ready.
 - `relay.rs` - `BatchCoordinator` schedules the flush immediately and still groups
   concurrent calls to the same next hop in the same executor cycle; it sends a single
   frame and distributes the answers by `item_id`. QUIC also publishes, in microseconds,

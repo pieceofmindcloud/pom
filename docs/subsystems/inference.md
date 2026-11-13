@@ -2682,6 +2682,10 @@ engines exchange their own hidden states, never POM's hop protocol of section
   engine's handshake can never pass. The relay's `stale` then ends the
   generation (`plugin_engine::run`), and the supervisor's restart takes the
   current secret.
+  A frame the earlier machine answers with 410 ("the earlier stage's link was
+  reset") does the same unless the engine opened a newer connection within 3 s:
+  without it the engine lost the link for good and refused every request while
+  its `/health` stayed ready.
 - The relay reads the engine's frames (a little-endian `u32` length, then the
   bytes, both ways) and posts each one, signed and along the measured route,
   to `POST /api/internal/plugins/:code/engine/link/:deploy/:conn/:seq` on the

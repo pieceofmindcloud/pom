@@ -276,6 +276,11 @@ Exact operational steps before testing a long deployment:
 
 1. On the deploy screen, set `n_ctx` and `max_new_tokens` in `params` to the
    chosen values, for example `n_ctx: 100000` and `max_new_tokens: 32000`.
+   The only ceiling of `n_ctx` is the model's own `<arch>.context_length`
+   (`splitter::read_context_length`, published in the catalog as
+   `context_length`): the inspector caps the field at it and each node's
+   `NodeConfig::validate` refuses an apply above it. POM has no fixed cap; a
+   header that does not declare the value leaves the limit to the engine.
 2. Apply the deployment and wait for the `/health` of **each peer** to confirm
    `model_loaded` and `runtime_capacity`. A peer that is still restarting does
    not enter the published capacity. The gateway's `/health` keeps answering

@@ -375,7 +375,10 @@ export function DeploymentInspector({
   onMachineRole,
   pomDevMode = false,
   inferenceService,
+  contextLimit,
 }: {
+  /** The model's declared `context_length`: the field refuses an `n_ctx` above it. */
+  contextLimit?: number | null;
   value: RuntimeParams;
   onChange?: (next: RuntimeParams) => void;
   readOnly?: boolean;
@@ -449,7 +452,11 @@ export function DeploymentInspector({
 
   function setKnob(key: NumericKey, text: string) {
     setDrafts((current) => ({ ...current, [key]: text }));
-    const parsed = Number(text);
+    let parsed = Number(text);
+    if (key === "n_ctx" && contextLimit && parsed > contextLimit) {
+      parsed = contextLimit;
+      setDrafts((current) => ({ ...current, [key]: String(contextLimit) }));
+    }
     if (text !== "" && Number.isFinite(parsed)) set({ [key]: parsed } as Partial<RuntimeParams>);
   }
 
@@ -464,7 +471,9 @@ export function DeploymentInspector({
             aria-label={label}
             name={key}
             type="number"
-            min={key === "idle_minutes" ? 1 : key === "moe_cache_mib" ? 0 : undefined}
+            min={key === "idle_minutes" || key === "n_ctx" ? 1 : key === "moe_cache_mib" ? 0 : undefined}
+            max={key === "n_ctx" && contextLimit ? contextLimit : undefined}
+            title={key === "n_ctx" && contextLimit ? t("inspector.contextLimit", { n: contextLimit.toLocaleString() }) : undefined}
             step={NUMERIC_STEP[key]}
             value={shown(key)}
             onChange={(event) => setKnob(key, event.target.value)}

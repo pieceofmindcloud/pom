@@ -651,6 +651,63 @@ pub fn validate_slice_source(
     Ok(())
 }
 
+/// The context the model declares it supports: `<arch>.context_length` in the
+/// header of `src` (the first part of a multipart source). `None` when the
+/// header does not declare it. A slice keeps the source's value, so a range
+/// of the model answers the same as the whole file.
+pub fn read_context_length(src: &Path) -> Result<Option<u32>> {
+    let source = crate::multipart::GgufSource::open(src)?;
+    let mm = source
+        .parts()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("GGUF without parts"))?
+        .map();
+    let mut r = R { data: mm, pos: 0 };
+    if r.u32()? != GGUF_MAGIC {
+        bail!("not a GGUF file: {}", src.display());
+    }
+    let version = r.u32()?;
+    if version != 2 && version != 3 {
+        bail!("GGUF version {version} not supported (expected 2 or 3)");
+    }
+    let _n_tensors = r.u64()?;
+    let n_kv = r.u64()? as usize;
+    if n_kv > 100_000 {
+        bail!("implausible GGUF header ({n_kv} kv)");
+    }
+    let mut architecture = None;
+    let mut lengths: Vec<(String, u32)> = Vec::new();
+    for _ in 0..n_kv {
+        let key = r.string()?;
+        let vtype = r.u32()?;
+        let value_start = r.pos;
+        if vtype == T_ARR {
+            let element_type = r.u32()?;
+            let count = r.u64()?;
+            r.skip_array_payload(element_type, count)?;
+            continue;
+        }
+        r.skip_value(vtype)?;
+        let entry = KvSource { start: 0, end: r.pos, key, vtype, value_start, array: None };
+        if entry.key == "general.architecture" {
+            architecture = source_string(mm, &entry);
+        } else if entry.key.ends_with(".context_length") {
+            if let Some(value) = source_scalar_u32(mm, &entry) {
+                lengths.push((entry.key, value));
+            }
+        }
+    }
+    let Some(architecture) = architecture else {
+        return Ok(None);
+    };
+    let wanted = format!("{architecture}.context_length");
+    Ok(lengths
+        .into_iter()
+        .find(|(key, _)| *key == wanted)
+        .map(|(_, value)| value)
+        .filter(|&value| value > 0))
+}
+
 /// Slice a GGUF model file.
 ///
 /// Produces a valid standalone GGUF at `dst` covering layers

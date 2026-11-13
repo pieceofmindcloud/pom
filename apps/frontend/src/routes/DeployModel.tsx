@@ -1654,6 +1654,7 @@ export function DeployModel() {
             <DeploymentInspector
               value={eff}
               onChange={setParams}
+              contextLimit={wholes.find((w) => w.name === chosen)?.context_length ?? null}
               inferenceService={service ? { name: service.name, settings: service.settings, pomSettings: service.pomSettings, takesDraft } : undefined}
               capabilities={p?.capabilities}
               cacheTypes={{

@@ -2529,6 +2529,7 @@ mod tests {
             metadata_identity: None,
             architecture: Some("llama".into()),
             embedding_length: None,
+            context_length: None,
             is_moe: false,
             total_layers: shard_range.map(|_| 32),
             quant: Some("Q4_K_M".into()),

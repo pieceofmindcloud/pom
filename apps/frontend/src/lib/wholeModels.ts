@@ -27,6 +27,8 @@ export interface WholeModelEntry {
   size_bytes: number;
   quant: string | null;
   architecture: string | null;
+  /** `<arch>.context_length` from the header: the largest `n_ctx` the model takes. */
+  context_length: number | null;
   mmproj_path: string | null;
   mmproj_candidates: string[];
   mmproj_reason: string | null;
@@ -95,6 +97,7 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
           size_bytes: model.size_bytes,
           quant: model.quant,
           architecture: model.architecture,
+          context_length: model.context_length ?? null,
           mmproj_path: model.mmproj_path ?? null,
           mmproj_candidates: candidates,
           mmproj_reason: model.mmproj_reason ?? null,
@@ -111,6 +114,7 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
       found.total_layers ??= model.total_layers;
       found.quant ??= model.quant;
       found.architecture ??= model.architecture;
+      found.context_length ??= model.context_length ?? null;
       found.mmproj_path ??= model.mmproj_path ?? null;
       for (const candidate of model.mmproj_candidates ?? []) {
         if (!found.mmproj_candidates.includes(candidate)) found.mmproj_candidates.push(candidate);

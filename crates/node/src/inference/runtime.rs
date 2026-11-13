@@ -47,10 +47,14 @@ const ANNOUNCE_DEADLINE: Duration = Duration::from_secs(1);
 /// lets the first return pass plus a short stability window without
 /// inventing a new product timeout.
 const HEALTH_CONFIRMATION_POLLS: u32 = 2;
-/// Largest context the product exposes. Larger allocations can exhaust a node
-/// before llama.cpp can report a useful error, so keep the operator-facing
-/// contract explicit.
-pub const MAX_CONTEXT_TOKENS: u32 = 250_000;
+/// The context ceiling is the model's own: `<arch>.context_length` from the
+/// GGUF header (`splitter::read_context_length`). A header that does not
+/// declare it leaves the limit to the engine; POM sets no fixed cap.
+fn model_context_limit(model_path: &str) -> Option<u32> {
+    crate::splitter::read_context_length(std::path::Path::new(model_path))
+        .ok()
+        .flatten()
+}
 
 /// Total KV-cache capacity needed to give every configured session the full
 /// context requested by the operator.
@@ -664,8 +668,13 @@ impl NodeConfig {
         if self.total_layers == 0 {
             bail!("total_layers cannot be zero");
         }
-        if self.n_ctx == 0 || self.n_ctx > MAX_CONTEXT_TOKENS {
-            bail!("n_ctx must be between 1 and {MAX_CONTEXT_TOKENS}");
+        if self.n_ctx == 0 {
+            bail!("n_ctx must be at least 1");
+        }
+        if let Some(limit) = model_context_limit(&self.model_path) {
+            if self.n_ctx > limit {
+                bail!("n_ctx {} exceeds the {limit} tokens the model declares (context_length)", self.n_ctx);
+            }
         }
         total_context_tokens(self.n_ctx, self.max_sessions)?;
         if self.end_layer >= self.total_layers {
@@ -2832,17 +2841,33 @@ mod tests {
     }
 
     #[test]
-    fn accepts_a_250k_context_but_refuses_a_larger_configured_limit() {
+    fn the_context_ceiling_is_the_model_s_declared_context_length() {
+        let dir = std::env::temp_dir().join(format!("pom-ctx-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        std::fs::write(&model, crate::catalog::tests::gguf_header_fixture(
+            &[("llama.context_length", 262_144), ("llama.block_count", 32)],
+            &[("general.architecture", "llama")],
+        ))
+        .unwrap();
         let mut c = cfg();
+        c.model_path = model.to_string_lossy().into_owned();
+        c.n_ctx = 262_144;
+        assert!(c.validate().is_ok(), "{:?}", c.validate());
+        c.n_ctx = 262_145;
+        let error = c.validate().unwrap_err().to_string();
+        assert!(error.contains("262144"), "{error}");
+        c.n_ctx = 0;
+        assert!(c.validate().is_err());
+
+        // A header without context_length sets no POM ceiling.
         c.model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/inference/runtime.rs")
             .to_string_lossy()
             .into_owned();
-        c.n_ctx = 250_000;
-        assert!(c.validate().is_ok());
-
-        c.n_ctx = 250_001;
-        assert!(c.validate().is_err());
+        c.n_ctx = 1_000_000;
+        assert!(c.validate().is_ok(), "{:?}", c.validate());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

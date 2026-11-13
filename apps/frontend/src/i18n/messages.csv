@@ -1502,6 +1502,7 @@ inspector.capabilityLimited,Capability limited in the runtime; the control stays
 inspector.capabilitySource,Source: {source}.,Fonte: {source}.
 inspector.capabilityTopology,The topology limits this option; the control stays actionable.,A topologia limita esta opção; o controle continua acionável.
 inspector.capabilityUnknown,Capability not confirmed. Turning it on is at the operator''s own risk.,Capacidade não confirmada. Ligar é por conta e risco do usuário.
+inspector.contextLimit,The model supports up to {n} tokens of context,O modelo aceita até {n} tokens de contexto
 inspector.engineDefault,Engine default,Padrão do motor
 inspector.engineOff,Off,Desligado
 inspector.engineOn,On,Ligado

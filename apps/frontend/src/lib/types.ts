@@ -1137,6 +1137,8 @@ export interface DiscoveredModel {
   architecture: string | null;
   /** `<arch>.embedding_length`: the width a projector or MTP draft must match. */
   embedding_length?: number | null;
+  /** `<arch>.context_length`: the largest context the model declares; caps the deployment's `n_ctx`. */
+  context_length?: number | null;
   /** Header evidence: `mtp` is true when the GGUF carries its own `nextn` block. */
   capabilities?: { thinking?: boolean | null; mtp?: boolean | null } | null;
   /** True only when the GGUF metadata reports more than one expert. */

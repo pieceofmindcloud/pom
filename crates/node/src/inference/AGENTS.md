@@ -1152,7 +1152,7 @@ reason that only shows up in the error of a tunnel that also failed.
   2026-08-12); without the callback, `hidden_state` refuses with "residual capture
   did not fire".
 - `MAX_RESTARTS=3` with `RESTART_INTERVAL=30s` between attempts (a newer generation cuts the
-  wait short), `MAX_CONTEXT_TOKENS=250_000`. The restart budget is persisted in the
+  wait short), the context ceiling is the model's own `<arch>.context_length` (`splitter::read_context_length`), with no fixed POM cap. The restart budget is persisted in the
   journal `<config>.last-slice.json` (the path `NodeRuntime` fixes when it is built, never
   read again from `POM_CONFIG`; the test benches give each runtime its own) and shared
   with the supervisor: if the slice does not fit

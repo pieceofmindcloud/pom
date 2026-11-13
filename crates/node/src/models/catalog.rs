@@ -123,6 +123,10 @@ pub struct DiscoveredModel {
     /// has to match to belong to this model.
     #[serde(default)]
     pub embedding_length: Option<u32>,
+    /// `<arch>.context_length`: the largest context the model declares, the
+    /// ceiling of a deployment's `n_ctx` (`splitter::read_context_length`).
+    #[serde(default)]
+    pub context_length: Option<u32>,
     /// True only when the GGUF header reports more than one expert.
     #[serde(default)]
     pub is_moe: bool,
@@ -873,6 +877,7 @@ fn describe(
         metadata_identity: None,
         architecture: None,
         embedding_length: None,
+        context_length: None,
         is_moe: false,
         total_layers,
         // On a part the file name is the hash, and a hash has no quantization
@@ -1326,6 +1331,7 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     model.mmproj_reason = projector.reason;
     model.architecture = info.architecture.clone();
     model.embedding_length = info.embedding_length;
+    model.context_length = crate::splitter::read_context_length(&path).ok().flatten();
     model.is_moe = info.is_moe();
     if let Err(error) = fill_multipart_metadata(model, &path, &info) {
         if info.split_count.unwrap_or(1) > 1 {
@@ -2106,7 +2112,7 @@ pub fn discover(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
 pub(crate) mod tests {
     use super::*;
 
-    fn gguf_header_fixture(metadata: &[(&str, u32)], strings: &[(&str, &str)]) -> Vec<u8> {
+    pub(crate) fn gguf_header_fixture(metadata: &[(&str, u32)], strings: &[(&str, &str)]) -> Vec<u8> {
         const GGUF_MAGIC: u32 = 0x4655_4747;
         const TYPE_UINT32: u32 = 4;
         const TYPE_STRING: u32 = 8;
@@ -2690,6 +2696,7 @@ pub(crate) mod tests {
             size_bytes: 4096,
             architecture: None,
             embedding_length: None,
+            context_length: None,
             is_moe: false,
             total_layers: Some(total),
             quant: None,
@@ -2731,6 +2738,7 @@ pub(crate) mod tests {
             size_bytes: 4096,
             architecture: None,
             embedding_length: None,
+            context_length: None,
             is_moe: false,
             total_layers: Some(32),
             quant: None,
@@ -2795,6 +2803,7 @@ pub(crate) mod tests {
             size_bytes: 4096,
             architecture: None,
             embedding_length: None,
+            context_length: None,
             is_moe: false,
             total_layers: Some(32),
             quant: Some("Q4_K_M".into()),
@@ -2851,6 +2860,7 @@ pub(crate) mod tests {
                 size_bytes: 4096,
                 architecture: None,
                 embedding_length: None,
+                context_length: None,
                 is_moe: false,
                 total_layers: Some(32),
                 quant: None,
@@ -2985,6 +2995,7 @@ pub(crate) mod tests {
             size_bytes: 4096,
             architecture: None,
             embedding_length: None,
+            context_length: None,
             is_moe: false,
             total_layers: None,
             quant: None,

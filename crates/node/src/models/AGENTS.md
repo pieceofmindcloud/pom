@@ -22,7 +22,10 @@ Models, GGUF reading, planning and slice files. The module is used by
   model rule, `SidecarLink`/`SidecarMode` the link kept on the principal,
   `SidecarFile` the name + size identity and `find_local_sidecar` the on-disk
   lookup used at apply time. `DiscoveredModel.embedding_length` carries the
-  width a sidecar must match.
+  width a sidecar must match. `DiscoveredModel.context_length` carries the model's
+  `<arch>.context_length` (`splitter::read_context_length`), the only ceiling of a
+  deployment's `n_ctx`: `NodeConfig::validate` refuses above it, the Deploy
+  inspector caps the field at it, and a header without it sets no POM cap.
 - `catalog.rs` - discovers whole models and slices in the configured folders.
   `discover_fast` lists files and reads only `stat`/system metadata, without
   opening the GGUF content; `enrich` reads the headers afterwards and marks

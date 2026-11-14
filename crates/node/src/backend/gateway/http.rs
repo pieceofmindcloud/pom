@@ -128,6 +128,7 @@ pub(crate) async fn start_gateway_with_ready(
     crate::delegation::install_router(app.clone());
     crate::payments::runtime::install(&warm);
     crate::home_statement::install_issuer(&warm);
+    warm.network.set_validator(warm.auth.read().await.validator);
 
     // Both startup paths (with a model and gateway-only) come through here, so
     // this is the one place that warms every node's catalog exactly once.

@@ -211,6 +211,9 @@ pub enum LobbyRequest {
         /// network a visitor's requests are charged to. Older nodes send none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         home: Option<String>,
+        /// A worker asking to join as a validator (validators spec, 1).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        validator: bool,
     },
     /// A member asks the principal for the network's current connection key,
     /// because the one it holds stopped being accepted - it missed a
@@ -311,6 +314,9 @@ pub struct AdmissionGrant {
     /// that started local would be joined with discovery off.
     #[serde(default)]
     pub network: Option<crate::config::NetworkSettings>,
+    /// The machine was admitted as a validator: it sets `Config.validator`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub validator: bool,
 }
 
 impl std::fmt::Debug for AdmissionGrant {
@@ -347,6 +353,9 @@ pub struct AdmissionRecord {
     /// it sent one: the account its requests are charged to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// A worker admitted as a validator.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub validator: bool,
 }
 
 /// Admission records kept at once; the oldest decided ones go first. The
@@ -419,6 +428,7 @@ pub fn apply_admission_request(
     }
     records.push(AdmissionRecord {
         account: None,
+        validator: false,
         node_id: node_id.to_string(),
         card,
         role,

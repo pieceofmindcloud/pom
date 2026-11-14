@@ -1174,6 +1174,7 @@ fn force_setup_mode() -> anyhow::Result<()> {
 fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     use crate::config::Config;
     Config {
+        validator: false,
         retired_tls_required: (),
         saved_at: None,
         profile: crate::profile::NodeProfile::Admin,

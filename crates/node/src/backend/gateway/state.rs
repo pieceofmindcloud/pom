@@ -942,6 +942,14 @@ impl GatewayState {
     }
 }
 
+/// A worker admitted as a validator: it announces `metering/validator-v1`
+/// and is never a deployment target nor part of a pipeline.
+pub(crate) fn peer_is_validator(peer: &PeerInfo) -> bool {
+    peer.inference_frame_capabilities
+        .iter()
+        .any(|c| c == crate::pipeline::CAP_METERING_VALIDATOR)
+}
+
 pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
     peer.profile == crate::profile::NodeProfile::Visitor
@@ -1068,8 +1076,24 @@ pub(crate) async fn require_admin_for_surface(
     };
     let internal_node_request = internal_node.is_some();
     let request = Request::from_parts(parts, body);
-    let profile = state.auth.read().await.profile;
+    let (profile, validator) = {
+        let cfg = state.auth.read().await;
+        (cfg.profile, cfg.validator)
+    };
     let scope = crate::webui::route_scope(&method, &path);
+    // A validator re-runs samples from its own copy of the model and serves
+    // none: it refuses what would make it hold or serve one, as a visitor does.
+    if validator && crate::webui::visitor_refuses(&path) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "this machine was admitted as a validator and does not serve models",
+                "reason": "validator_profile",
+                "path": path,
+            })),
+        )
+            .into_response();
+    }
     // An inference node holds and serves no model, whoever asks. This comes
     // before everything else on purpose: the profile gate below lets a
     // node-to-node request through, and an admin's request is one.

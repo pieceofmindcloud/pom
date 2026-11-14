@@ -646,7 +646,23 @@ pub(crate) async fn node_op(state: &GatewayState, caller_role: &str, op: &str, p
                 .unwrap_or_default();
             Ok(json!({ "roles": roles_of(state, &ids).await }))
         }
-        "node.reexecute" => crate::metering_verify::reexecute(state, params).await,
+        "node.reexecute" => {
+            // Readings (a validator's answer) come only from a validator or an admin.
+            if params["mode"] == "readings" {
+                let admin = crate::admin_trust::is_admin_node(&state.admin_trust.document(), &state.network.node_id);
+                if !admin && !state.network.is_validator() {
+                    return Err("this machine is not a validator".into());
+                }
+            }
+            crate::metering_verify::reexecute(state, params).await
+        }
+        "node.validators" => Ok(json!({ "validators": validators_of(state).await })),
+        // Whether this machine holds a model whole, so the ledger assigns it
+        // only samples it can re-run.
+        "node.holds" => {
+            let model = params["model"].as_str().ok_or("model is required")?;
+            Ok(json!({ "holds": crate::webui::whole_model_by_label(state, model).await.is_some() }))
+        }
         "node.reexecute_status" => crate::metering_verify::reexecute_status(params),
         "node.sign_statement" => {
             // The ledger's own node signs a cycle statement for it. Only the
@@ -670,6 +686,19 @@ pub(crate) async fn node_op(state: &GatewayState, caller_role: &str, op: &str, p
         }
         _ => Err("unknown operation".into()),
     }
+}
+
+/// The live validators: each one's id and name. Whether one holds a
+/// receipt's model the ledger asks it (`node.holds`).
+async fn validators_of(state: &GatewayState) -> Vec<Value> {
+    state
+        .network
+        .alive_peers()
+        .await
+        .into_iter()
+        .filter(crate::gateway::peer_is_validator)
+        .map(|peer| json!({ "node_id": peer.node_id, "name": peer.hostname }))
+        .collect()
 }
 
 /// Each node's role from this node's view: `admin` (named by the trust

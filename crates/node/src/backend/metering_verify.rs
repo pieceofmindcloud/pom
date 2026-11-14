@@ -73,6 +73,20 @@ pub(crate) struct ReexecuteRequest {
     /// (the ledger's `calibration_request`), compared like the last stage.
     #[serde(default)]
     pub(crate) output_head: bool,
+    /// Validators (validators spec, 4): with `readings`, the request names
+    /// the positions of each chunk and carries no proof; the job returns this
+    /// node's reading of each chunk (`toploc::Reading`, hex) for the ledger to
+    /// compare, never a verdict. Absent: `verdict`, the single verifier's path.
+    #[serde(default)]
+    pub(crate) mode: Option<String>,
+    #[serde(default)]
+    pub(crate) positions: Vec<Vec<u32>>,
+}
+
+impl ReexecuteRequest {
+    pub(crate) fn wants_readings(&self) -> bool {
+        self.mode.as_deref() == Some("readings")
+    }
 }
 
 /// Verdict of one re-execution.
@@ -103,6 +117,9 @@ pub(crate) async fn reexecute(state: &GatewayState, params: &Value) -> Result<Va
     let request: ReexecuteRequest = serde_json::from_value(params.clone()).map_err(|e| format!("invalid request: {e}"))?;
     validate(&request)?;
     let tokens = decode_tokens(&request.tokens)?;
+    if request.wants_readings() && request.engine.as_deref().is_some_and(|e| e != "llama.cpp") {
+        return Ok(json!({ "job": finished_job(json!(void("validators re-execute llama.cpp work only".into()))) }));
+    }
     if let Some(engine) = request.engine.clone().filter(|e| e != "llama.cpp") {
         let enabled = request.calibration
             || crate::metering::context().is_some_and(|ctx| ctx.settings.verify_plugin_engines);
@@ -459,12 +476,29 @@ fn validate(r: &ReexecuteRequest) -> Result<(), String> {
     if r.tokens.is_empty() {
         return Err("no tokens to re-execute".into());
     }
+    if r.wants_readings() {
+        // A validator never sees the proofs it is held against.
+        if !r.chunks.is_empty() {
+            return Err("a request for readings carries no proofs".into());
+        }
+        if r.positions.is_empty() || r.positions.len() > MAX_AUDIT_CHUNKS {
+            return Err("a request for readings names between 1 and the most chunks".into());
+        }
+        if r.positions.iter().any(|p| p.is_empty() || p.len() > 4096) {
+            return Err("a chunk names no position or too many".into());
+        }
+        return check_plan(r);
+    }
     if r.chunks.len() > MAX_AUDIT_CHUNKS {
         return Err("too many chunks for one re-execution".into());
     }
     if r.chunks.is_empty() {
         return Err("no chunks to check".into());
     }
+    check_plan(r)
+}
+
+fn check_plan(r: &ReexecuteRequest) -> Result<(), String> {
     for pair in r.ranges.windows(2) {
         if pair[0][1] != pair[1][0] {
             return Err("the plan's ranges are not contiguous".into());
@@ -484,6 +518,22 @@ pub(crate) fn rows_at(output: &[f32], width: usize, positions: &[u32]) -> Option
         rows.extend_from_slice(output.get(start..start + width)?);
     }
     Some(rows)
+}
+
+/// A validator's readings of the audited hop's chunks (named by their
+/// positions) from its recomputed output, hex, in the verdict's `readings`.
+pub(crate) fn read_chunks(output: &[f32], width: usize, positions: &[Vec<u32>], params: &toploc::Params) -> ReexecuteVerdict {
+    let mut readings = Vec::with_capacity(positions.len());
+    for chunk in positions {
+        let Some(rows) = rows_at(output, width, chunk) else {
+            return void("a chunk names positions past the sequence".into());
+        };
+        match toploc::read_chunk(&rows, params.k) {
+            Ok(reading) => readings.push(hex::encode(reading.encode())),
+            Err(e) => return void(format!("a chunk cannot be read: {e}")),
+        }
+    }
+    ReexecuteVerdict { pass: false, chunks: Vec::new(), void: None, readings: Some(json!(readings)) }
 }
 
 /// Checks the audited hop's chunks against its recomputed output.
@@ -559,6 +609,9 @@ fn run(r: &ReexecuteRequest, tokens: &[i32], model_path: &str, total: Option<u32
             Err(e) => return void(format!("range {first}..{last}: {e}")),
         };
         if index == r.audited {
+            if r.wants_readings() {
+                return read_chunks(&out.0, out.1, &r.positions, &params);
+            }
             return check_chunks(&out.0, out.1, &r.chunks, &params);
         }
         // The boundary's codec: what the next hop really decoded.
@@ -692,6 +745,8 @@ mod tests {
             engine: None,
             calibration: false,
             output_head: false,
+            mode: None,
+            positions: Vec::new(),
         }
     }
 
@@ -855,4 +910,30 @@ mod tests {
             assert_eq!(ours, theirs, "{dtype}");
         }
     }
+
+    #[test]
+    fn a_validator_returns_readings_and_never_takes_proofs() {
+        let params = toploc::Params::for_engine("llama.cpp");
+        let width = 256;
+        let output: Vec<f32> = (0..40 * width).map(|i| ((i * 7919) % 1009) as f32 / 37.0 - 13.0).collect();
+        let positions = vec![(0..32).collect::<Vec<u32>>(), (32..40).collect()];
+        let v = read_chunks(&output, width, &positions, &params);
+        let readings: Vec<String> = serde_json::from_value(v.readings.clone().unwrap()).unwrap();
+        assert_eq!(readings.len(), 2);
+        // The reading checks the proof of the same rows as the rows themselves do.
+        let rows = rows_at(&output, width, &positions[0]).unwrap();
+        let proof = toploc::prove_chunk(&rows, params.k).unwrap();
+        let reading = toploc::Reading::decode(&hex::decode(&readings[0]).unwrap()).unwrap();
+        assert_eq!(toploc::check_reading(&proof, &reading, &params).unwrap(), toploc::check_chunk(&proof, &rows, &params).unwrap());
+        // Positions past the sequence leave the job void.
+        assert!(read_chunks(&output, width, &[vec![99]], &params).void.is_some());
+        // A request for readings that carries proofs is refused.
+        let mut r = request(vec!["00".into()]);
+        r.mode = Some("readings".into());
+        r.positions = positions;
+        assert!(validate(&r).is_err());
+        r.chunks.clear();
+        assert!(validate(&r).is_ok());
+    }
+
 }

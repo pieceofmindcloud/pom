@@ -940,6 +940,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_validator_refuses_to_serve_a_model_even_from_an_admin() {
+        let state = testkit::state_with("connection-secret", vec![]).await;
+        {
+            let mut auth = state.auth.write().await;
+            auth.connection_key = "connection-secret".into();
+            auth.profile = crate::profile::NodeProfile::Worker;
+            auth.validator = true;
+        }
+        let app = Router::new()
+            .route("/api/ui/apply", axum::routing::post(|| async { StatusCode::OK }))
+            .route("/api/ui/unload", axum::routing::post(|| async { StatusCode::OK }))
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(state.clone(), require_admin_for_surface));
+        let signed_post = |path: &'static str| {
+            let mut request = Request::post(path);
+            for (name, value) in state.signed_control_headers("POST", path, b"").unwrap().iter() {
+                request = request.header(name, value);
+            }
+            let mut request = request.body(axum::body::Body::empty()).unwrap();
+            request
+                .extensions_mut()
+                .insert(crate::serve::PeerAddr("192.0.2.7:1234".parse().unwrap()));
+            request
+        };
+        let refused = app.clone().oneshot(signed_post("/api/ui/apply")).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(testkit::body_of(refused).await["reason"], "validator_profile");
+        assert_eq!(app.oneshot(signed_post("/api/ui/unload")).await.unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn an_inference_node_refuses_a_model_even_from_an_admin() {
         let state = testkit::state_with("connection-secret", vec![]).await;
         {
@@ -3899,6 +3930,7 @@ pub(crate) mod testkit {
             std::env::temp_dir().join(format!("pom-testkit-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&bench_dir).expect("testkit folder");
         let auth = Arc::new(RwLock::new(Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: Some(bench_dir.join("pom.json")),
             gpus: None,

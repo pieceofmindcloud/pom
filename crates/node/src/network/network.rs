@@ -473,9 +473,12 @@ pub const REDISCOVERY_GIVE_UP: Duration = Duration::from_secs(90);
 /// Adds the delegation capability to a member's announce: every node that is
 /// not a visitor can be an entry node (`crate::delegation`), and a visitor
 /// says it delegates when asked to.
-fn with_delegation(profile: crate::profile::NodeProfile, mut caps: Vec<String>) -> Vec<String> {
+fn with_delegation(profile: crate::profile::NodeProfile, validator: bool, mut caps: Vec<String>) -> Vec<String> {
     if profile != crate::profile::NodeProfile::Visitor {
         caps.push(crate::pipeline::CAP_GATEWAY_DELEGATE.into());
+        if validator {
+            caps.push(crate::pipeline::CAP_METERING_VALIDATOR.into());
+        }
     } else {
         caps.push(crate::pipeline::CAP_GATEWAY_CLIENT.into());
     }
@@ -1425,6 +1428,8 @@ pub struct Network {
     /// What a visitor may learn of this network (`set_visitor_view`):
     /// 0 everyone, 1 entry nodes only, 2 admin entry nodes only.
     visitor_view: Arc<std::sync::atomic::AtomicU8>,
+    /// A worker admitted as a validator (`set_validator`).
+    validator: Arc<std::sync::atomic::AtomicBool>,
     pub profile: Arc<std::sync::RwLock<crate::profile::NodeProfile>>,
     /// The name this machine goes by: `node_name` from the config, or the
     /// system hostname. Read with `hostname()`; the operator renames the
@@ -1969,6 +1974,7 @@ impl Network {
             public_discovery: Arc::new(RwLock::new(HashMap::new())),
             profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Worker)),
             visitor_view: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            validator: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hostname: std::sync::RwLock::new(String::new()),
             advertise_addr: std::sync::RwLock::new(None),
             tp: std::sync::RwLock::new(None),
@@ -2110,6 +2116,15 @@ impl Network {
     /// Change the profile announced by this process after a local mutation.
     pub fn set_profile(&self, profile: crate::profile::NodeProfile) {
         *self.profile.write().expect("profile lock") = profile;
+    }
+
+    /// Whether this node announces itself as a validator (`Config.validator`).
+    pub fn set_validator(&self, validator: bool) {
+        self.validator.store(validator, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_validator(&self) -> bool {
+        self.validator.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn profile(&self) -> crate::profile::NodeProfile {
@@ -2623,7 +2638,7 @@ impl Network {
             // `CAP_P2P_TUNNEL`). The last one only goes out once the endpoint
             // has actually come up (`p2p_tunnel_ready`) — claiming it any
             // earlier would send peers to dial an endpoint id that can't answer.
-            inference_frame_capabilities: with_delegation(self.profile(), if let Some(caps) = self.plugin_engine_capabilities() {
+            inference_frame_capabilities: with_delegation(self.profile(), self.is_validator(), if let Some(caps) = self.plugin_engine_capabilities() {
                 // A plugin engine serves the whole model: it takes prompts,
                 // not hidden states.
                 caps
@@ -6101,6 +6116,7 @@ mod tests {
     ) -> crate::auth::AuthState {
         use crate::config::Config;
         Arc::new(RwLock::new(Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             profile: crate::profile::NodeProfile::Worker,
@@ -6686,6 +6702,17 @@ mod tests {
         assert!(worker.self_withheld_from_visitors());
         worker.set_visitor_view(None);
         assert!(!worker.self_withheld_from_visitors());
+    }
+
+    /// A worker admitted as a validator announces it, beside delegation; a
+    /// visitor never does.
+    #[test]
+    fn a_validator_announces_its_capability() {
+        use crate::profile::NodeProfile;
+        let caps = with_delegation(NodeProfile::Worker, true, vec![]);
+        assert!(caps.iter().any(|c| c == crate::pipeline::CAP_METERING_VALIDATOR));
+        assert!(!with_delegation(NodeProfile::Worker, false, vec![]).iter().any(|c| c == crate::pipeline::CAP_METERING_VALIDATOR));
+        assert!(!with_delegation(NodeProfile::Visitor, true, vec![]).iter().any(|c| c == crate::pipeline::CAP_METERING_VALIDATOR));
     }
 
     /// A visitor's anonymous relay admits whoever holds a pass of its network

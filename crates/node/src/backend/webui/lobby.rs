@@ -44,7 +44,7 @@ async fn local_card() -> LobbyCard {
 enum Ask {
     Fetch,
     Post { message_id: String, text: String },
-    Admission { role: crate::config::EnrollmentRole, home: Option<String> },
+    Admission { role: crate::config::EnrollmentRole, home: Option<String>, validator: bool },
 }
 
 /// An admission request this node made to another network. `grant` is what an
@@ -183,11 +183,12 @@ async fn exchange(
             identity,
             card: card.clone(),
         },
-        Ask::Admission { role, home } => LobbyRequest::Admission {
+        Ask::Admission { role, home, validator } => LobbyRequest::Admission {
             identity,
             card: card.clone(),
             role,
             home,
+            validator,
         },
     };
     let started = Instant::now();
@@ -300,6 +301,9 @@ pub struct AdmissionAsk {
     /// The network's name as the screen lists it, to label the request.
     #[serde(default)]
     pub name: String,
+    /// Ask to join as a validator (a worker that re-runs sampled work).
+    #[serde(default)]
+    pub validator: bool,
 }
 
 /// `POST /api/ui/network-chat/lobby/admission` - ask the network under `key`
@@ -315,6 +319,7 @@ pub(super) async fn lobby_admission(
         Ask::Admission {
             role: ask.role,
             home: crate::home_statement::own(&state),
+            validator: ask.validator,
         },
         Some(&ask.name),
         Some(&state.database),
@@ -537,6 +542,8 @@ pub(super) async fn join_network(
         crate::config::EnrollmentRole::Worker => crate::profile::NodeProfile::Worker,
         crate::config::EnrollmentRole::Visitor => crate::profile::NodeProfile::Visitor,
     };
+    // A validator re-runs sampled work and serves no model.
+    config.validator = grant.validator && request.role == crate::config::EnrollmentRole::Worker;
     config.connection_key = grant.connection_key.trim().to_string();
     config.network = network;
     let relay_hints = metadata

@@ -432,6 +432,11 @@ pub struct Config {
     /// and is intentionally required in the new schema. Administrative
     /// capability comes only from the separate signed grant chain.
     pub profile: crate::profile::NodeProfile,
+    /// A worker admitted as a validator: it re-runs sampled work for the
+    /// metering ledger, announces `metering/validator-v1` and holds and serves
+    /// no model (validators spec, 1). Set by the admission grant.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub validator: bool,
     /// This file is a local preference shell waiting for first access. It is
     /// set when leaving a network so setup can preserve machine preferences
     /// without booting the old network.
@@ -1615,6 +1620,7 @@ mod tests {
     #[test]
     fn test_roundtrip_principal_config() {
         let cfg = Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             gpus: None,
@@ -1724,6 +1730,7 @@ mod tests {
     #[test]
     fn test_roundtrip_node_config() {
         let cfg = Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             gpus: None,
@@ -1975,6 +1982,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let mut cfg = Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             profile: crate::profile::NodeProfile::Worker,
@@ -2178,6 +2186,7 @@ mod tests {
     #[test]
     fn test_active_api_key() {
         let cfg = Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             gpus: None,

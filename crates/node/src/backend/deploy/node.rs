@@ -473,6 +473,14 @@ pub(super) async fn add_node_endpoint(
     }
 
     if state.all_peers().await.iter().any(|peer| {
+        peer.node_id == req.target_node_id && crate::gateway::peer_is_validator(peer)
+    }) {
+        return bad(json!({
+            "reason": "validator_target",
+            "error": "this machine was admitted as a validator and does not serve models",
+        }));
+    }
+    if state.all_peers().await.iter().any(|peer| {
         peer.node_id == req.target_node_id && crate::gateway::peer_is_visitor(&state, peer)
     }) {
         return bad(json!({

@@ -1715,6 +1715,7 @@ async fn lobby_admission_view(
                         connection_key,
                         relay_peers,
                         network: Some(settings),
+                        validator: record.validator,
                     }
                 })
             } else {
@@ -1963,12 +1964,13 @@ async fn answer_lobby_request(
         };
         relay_chat(ctx, network, chat, presence, None).await;
     }
-    if let LobbyRequest::Admission { role, home, .. } = &request {
+    if let LobbyRequest::Admission { role, home, validator, .. } = &request {
         if !chat.accepts_role(*role).await {
             return LobbyResponse::rejected("role_not_accepted");
         }
         let status = chat.request_admission(&node_id, card.clone(), *role);
         crate::home_statement::note_admission(chat, &node_id, home.as_deref());
+        chat.set_admission_validator(&node_id, *validator && *role == crate::config::EnrollmentRole::Worker);
         match status {
             Ok(crate::network_lobby::AdmissionStatus::Pending) if chat.auto_approves().await => {
                 chat.decide_admission(

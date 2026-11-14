@@ -748,6 +748,17 @@ impl NetworkChat {
         Ok(status)
     }
 
+    /// Marks a worker's admission request as a validator's.
+    pub fn set_admission_validator(&self, node_id: &str, validator: bool) {
+        let mut records = self.admissions.lock().expect("admissions lock");
+        if let Some(record) = records.iter_mut().find(|r| r.node_id == node_id) {
+            if record.validator != validator {
+                record.validator = validator;
+                self.store_admissions(&records);
+            }
+        }
+    }
+
     /// Records the account a candidate's home statement names.
     pub fn set_admission_account(&self, node_id: &str, account: String) {
         let mut records = self.admissions.lock().expect("admissions lock");
@@ -787,6 +798,7 @@ impl NetworkChat {
         let now = chrono::Utc::now().to_rfc3339();
         records.push(crate::network_lobby::AdmissionRecord {
             account: None,
+            validator: false,
             node_id: node_id.to_string(),
             card: crate::network_lobby::LobbyCard {
                 hostname: hostname.to_string(),

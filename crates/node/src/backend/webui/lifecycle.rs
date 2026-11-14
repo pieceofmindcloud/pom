@@ -954,7 +954,7 @@ pub(crate) async fn launch(
         peers
             .iter()
             .find(|peer| peer.node_id == target.node_id)
-            .filter(|peer| crate::gateway::peer_is_visitor(&state, peer))
+            .filter(|peer| crate::gateway::peer_is_visitor(&state, peer) || crate::gateway::peer_is_validator(peer))
     }) {
         return (
             StatusCode::CONFLICT,

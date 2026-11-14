@@ -204,6 +204,10 @@ pub const CAP_GATEWAY_DELEGATE: &str = "gateway/delegate-v1";
 /// network asks it to. A visitor without it (an older release) is cut off by
 /// `inference_access = member_gateway_only` (`docs/subsystems/payments.md`).
 pub const CAP_GATEWAY_CLIENT: &str = "gateway/client-v1";
+/// Announced by a worker admitted as a validator (validators spec, 1): it
+/// re-runs sampled work for the metering ledger and is never planned for
+/// inference nor made a deployment target.
+pub const CAP_METERING_VALIDATOR: &str = "metering/validator-v1";
 /// The node signs GPU work receipts in the session lifecycle answers when
 /// the gateway hands a bundle nonce (`crate::metering`).
 pub const CAP_METERING_RECEIPT: &str = "metering/receipt-v1";

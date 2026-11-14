@@ -12,9 +12,9 @@
 //! this is purely an alternate transport for it, not a new format.
 
 use crate::p2p::Codec;
+use crate::p2p::EndpointId;
 use async_trait::async_trait;
 use futures::prelude::*;
-use crate::p2p::EndpointId;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::time::Duration;
@@ -86,8 +86,8 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
     plugin_path_is_allowed(path)
         || model_download_path_is_allowed(path)
         || matches!(
-        path,
-        "/handshake"
+            path,
+            "/handshake"
             | "/health"
             | "/api/cluster/quic"
             | "/api/cluster/logs"
@@ -164,7 +164,7 @@ pub fn gateway_path_is_allowed(path: &str) -> bool {
             | "/api/transfer/download"
             | "/api/transfer/manifest"
             | "/api/transfer/pom"
-    )
+        )
 }
 
 /// A model download the admin's node starts, follows, cancels, retries or
@@ -180,7 +180,10 @@ fn model_download_path_is_allowed(path: &str) -> bool {
     };
     match rest.split('/').collect::<Vec<_>>().as_slice() {
         [id, "cancel" | "retry" | "dismiss"] => {
-            !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            !id.is_empty()
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         }
         _ => false,
     }
@@ -200,13 +203,30 @@ fn plugin_path_is_allowed(path: &str) -> bool {
         return false;
     };
     let segment = |s: &str| {
-        !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     };
     match rest.split('/').collect::<Vec<_>>().as_slice() {
         // The operation follows the handler's own rule, dots included
         // (`quota.status`), so the tunnel carries every op a direct call does.
         [code, "peer", op] => segment(code) && crate::plugin_services::valid_peer_op(op),
         [code, "engine", "generate"] => segment(code),
+        // The link between two machines of a sliced plugin model
+        // (`plugin_stage_link.rs`): the next stage asks the earlier one for
+        // its link secret, then sends its engine's frames. Each route takes
+        // `InternalNodeAuth` and checks the caller is a machine of that
+        // deployment, as `engine/generate` does; over QUIC or behind NAT the
+        // control plane reaches the peer only through this tunnel.
+        [code, "engine", "link", deploy] => segment(code) && segment(deploy),
+        [code, "engine", "link", deploy, conn] => segment(code) && segment(deploy) && segment(conn),
+        [code, "engine", "link", deploy, conn, seq] => {
+            segment(code)
+                && segment(deploy)
+                && segment(conn)
+                && !seq.is_empty()
+                && seq.bytes().all(|b| b.is_ascii_digit())
+        }
         // An op of an image model component (`components.rs`), which the
         // node running ComfyUI sends to the machine that serves it.
         [code, "component", deploy, component, op] => {
@@ -455,10 +475,7 @@ impl Codec for InferTunnelCodec {
         })
     }
 
-    async fn read_response<T>(
-        &mut self,
-        io: &mut T,
-    ) -> io::Result<Self::Response>
+    async fn read_response<T>(&mut self, io: &mut T) -> io::Result<Self::Response>
     where
         T: AsyncRead + Unpin + Send,
     {
@@ -472,11 +489,7 @@ impl Codec for InferTunnelCodec {
         })
     }
 
-    async fn write_request<T>(
-        &mut self,
-        io: &mut T,
-        req: Self::Request,
-    ) -> io::Result<()>
+    async fn write_request<T>(&mut self, io: &mut T, req: Self::Request) -> io::Result<()>
     where
         T: AsyncWrite + Unpin + Send,
     {
@@ -491,11 +504,7 @@ impl Codec for InferTunnelCodec {
         write_block(io, "frame", MAX_TUNNEL_PAYLOAD_BYTES, &req.body).await
     }
 
-    async fn write_response<T>(
-        &mut self,
-        io: &mut T,
-        res: Self::Response,
-    ) -> io::Result<()>
+    async fn write_response<T>(&mut self, io: &mut T, res: Self::Response) -> io::Result<()>
     where
         T: AsyncWrite + Unpin + Send,
     {
@@ -504,7 +513,6 @@ impl Codec for InferTunnelCodec {
         write_block(io, "frame", MAX_TUNNEL_PAYLOAD_BYTES, &res.body).await
     }
 }
-
 
 static TUNNEL_SENDER: std::sync::OnceLock<TunnelOutboundSender> = std::sync::OnceLock::new();
 static STREAM_TRANSPORT: std::sync::OnceLock<std::sync::Arc<crate::p2p::P2p>> =
@@ -818,9 +826,15 @@ mod tests {
         assert!(gateway_path_is_allowed("/api/ui/apply"));
         assert!(gateway_path_is_allowed("/api/ui/models/rescan"));
         assert!(gateway_path_is_allowed("/api/ui/model-provider/downloads"));
-        assert!(gateway_path_is_allowed("/api/ui/model-provider/downloads/ab12/cancel"));
-        assert!(!gateway_path_is_allowed("/api/ui/model-provider/downloads/ab12/delete"));
-        assert!(!gateway_path_is_allowed("/api/ui/model-provider/downloads/../x/cancel"));
+        assert!(gateway_path_is_allowed(
+            "/api/ui/model-provider/downloads/ab12/cancel"
+        ));
+        assert!(!gateway_path_is_allowed(
+            "/api/ui/model-provider/downloads/ab12/delete"
+        ));
+        assert!(!gateway_path_is_allowed(
+            "/api/ui/model-provider/downloads/../x/cancel"
+        ));
         assert!(!gateway_path_is_allowed("/api/ui/model-provider/config"));
         assert!(gateway_path_is_allowed("/api/ui/deployments?local=true"));
     }
@@ -856,15 +870,47 @@ mod tests {
         ));
         assert!(gateway_path_is_allowed("/api/ui/components/apply"));
         assert!(gateway_path_is_allowed("/api/ui/components/release"));
-        assert!(gateway_path_is_allowed("/api/internal/plugins/rag/peer/search"));
-        assert!(gateway_path_is_allowed("/api/internal/plugins/moe_x/engine/generate"));
-        assert!(gateway_path_is_allowed("/api/internal/plugins/logs/peer/quota.status"));
-        assert!(!gateway_path_is_allowed("/api/internal/plugins/logs/peer/.status"));
-        assert!(!gateway_path_is_allowed("/api/internal/plugins/rag/peer/search/x"));
+        assert!(gateway_path_is_allowed(
+            "/api/internal/plugins/rag/peer/search"
+        ));
+        assert!(gateway_path_is_allowed(
+            "/api/internal/plugins/moe_x/engine/generate"
+        ));
+        assert!(gateway_path_is_allowed(
+            "/api/internal/plugins/logs/peer/quota.status"
+        ));
+        assert!(!gateway_path_is_allowed(
+            "/api/internal/plugins/logs/peer/.status"
+        ));
+        assert!(!gateway_path_is_allowed(
+            "/api/internal/plugins/rag/peer/search/x"
+        ));
         assert!(!gateway_path_is_allowed("/api/internal/plugins/rag/peer/"));
         assert!(!gateway_path_is_allowed("/api/internal/plugins/../peer/x"));
-        assert!(!gateway_path_is_allowed("/api/internal/plugins/rag/engine/session/file"));
-        assert!(!gateway_path_is_allowed("/api/internal/plugins/rag/engine/link/d"));
+        assert!(!gateway_path_is_allowed(
+            "/api/internal/plugins/rag/engine/session/file"
+        ));
+        assert!(gateway_path_is_allowed(
+            "/api/internal/plugins/strata/engine/link/d-903d6569"
+        ));
+        assert!(gateway_path_is_allowed(
+            "/api/internal/plugins/strata/engine/link/d-903d6569/4289e069d3a54a93a78d79bb2c3aa477"
+        ));
+        assert!(gateway_path_is_allowed(
+            "/api/internal/plugins/strata/engine/link/d-903d6569/4289e069/0?phase=prefill"
+        ));
+        assert!(!gateway_path_is_allowed(
+            "/api/internal/plugins/strata/engine/link/d/c/x"
+        ));
+        assert!(!gateway_path_is_allowed(
+            "/api/internal/plugins/strata/engine/link/d/c/0/x"
+        ));
+        assert!(!gateway_path_is_allowed(
+            "/api/internal/plugins/strata/engine/link/../c"
+        ));
+        assert!(!gateway_path_is_allowed(
+            "/api/internal/plugins/strata/engine/link"
+        ));
     }
 
     /// The mark is a process secret: constant while it lives and never
@@ -926,10 +972,7 @@ mod tests {
             .expect("write_request");
 
         let mut cursor = Cursor::new(buf);
-        let decoded = codec
-            .read_request(&mut cursor)
-            .await
-            .expect("read_request");
+        let decoded = codec.read_request(&mut cursor).await.expect("read_request");
 
         assert_eq!(decoded.path, req.path);
         assert_eq!(decoded.body, req.body);
@@ -952,10 +995,7 @@ mod tests {
         codec.write_request(&mut buf, req).await.unwrap();
         assert!(buf.len() < body.len() + 512, "frame of {} bytes", buf.len());
 
-        let decoded = codec
-            .read_request(&mut Cursor::new(buf))
-            .await
-            .unwrap();
+        let decoded = codec.read_request(&mut Cursor::new(buf)).await.unwrap();
         assert_eq!(decoded.target, TunnelTarget::Gateway);
         assert_eq!(
             decoded.headers,
@@ -1003,10 +1043,7 @@ mod tests {
             .expect("write_request");
 
         let mut cursor = Cursor::new(buf);
-        let decoded = codec
-            .read_request(&mut cursor)
-            .await
-            .expect("read_request");
+        let decoded = codec.read_request(&mut cursor).await.expect("read_request");
 
         assert_eq!(decoded.path, "/health");
         assert_eq!(decoded.method, "GET");

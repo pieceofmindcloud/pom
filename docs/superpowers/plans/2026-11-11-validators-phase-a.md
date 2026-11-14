@@ -16,6 +16,15 @@ charging and validators work since 2026-11-14); plugin `main` of
 `pom-plugin-metering`, which pins `metering-core` by POM commit: push the POM
 commit and move that `rev` whenever `metering-core` changes.
 
+**Status 2026-11-14:** C1, C2 (as readings), C4, N1-N4, P1-P8 and the docs
+are done and unit-tested (POM `381eb51d`, `e77b3e04`, `c5063af4`; plugin
+`68c2bbd`). Not done: C3 (the reading-against-reading calibration) and the
+live check. A first live cycle on the three CPU nodes plus two validators
+closed with every sample through the single verifier and no validation: the
+ledger found no live validator although both had set their flag. It was not
+explained before the machine got too loaded (another workload) to keep the
+pipeline within its deadlines; both are the next step.
+
 **Since this plan was written (2026-11-14):** the last stage proves its plain
 decode steps by its post-norm rows (llama.cpp's embeddings output, see
 `docs/subsystems/inference.md` 10.1), so its receipts are provable and

@@ -1199,6 +1199,23 @@ impl TransportTrace {
 pub struct PhaseTrace {
     /// Time the peer reported for itself (`processing_ms` on the wire).
     pub processing_ms: u64,
+    /// The phase's wall time split per machine (`RequestTrace::derive_stage_balance`), the same for every engine:
+    /// `compute_ms` is the machine's own work (`processing_ms`), `transfer_ms` the time on the wire (`network_ms`),
+    /// and the rest of the phase's wall time `wall_ms` is waiting - `wait_input_ms` for the earlier machines (at most
+    /// their own work and wire before this one), `wait_output_ms` for the later ones. `utilization` is
+    /// compute / wall: in a pipeline the machine closest to 1 with the least waiting is the bottleneck.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_input_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_output_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wall_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub utilization: Option<f64>,
     /// Sum of the observed call round trips for this phase, including peer
     /// processing. The frontend uses this for the execution RTT total.
     pub round_trip_ms: u64,
@@ -1850,9 +1867,32 @@ pub fn critical_path_ms(spans: &[TraceSpan], host: &str) -> u64 {
     covered
 }
 
+/// The machine that sets the pace of one phase (`RequestTrace::derive_stage_balance`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct StageBottleneck {
+    pub node_id: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    /// Its compute over the phase's wall time.
+    pub utilization: f64,
+    pub compute_ms: u64,
+}
+
+/// Each phase's bottleneck, when the trace had machines to compare.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct StageBalance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill: Option<StageBottleneck>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode: Option<StageBottleneck>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestTrace {
     pub trace_id: String,
+    /// Which machine set the pace of the prefill and of the decode (`derive_stage_balance`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_balance: Option<StageBalance>,
     /// Probability of each label when the request was a typed decision
     /// (`/v1/systemone`): `{labels, probabilities, mass}` of the last peer.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2258,6 +2298,7 @@ impl RequestTrace {
     ) -> Self {
         Self {
             trace_id: trace_id.into(),
+            stage_balance: None,
             probe: None,
             jev: None,
             profile: crate::telemetry::Profile::current(),
@@ -3000,7 +3041,58 @@ impl RequestTrace {
         self.decode_rounds = self.decode_rounds.saturating_add(1);
     }
 
+    /// Splits each machine's part of the prefill and of the decode into compute, wire and waiting (see
+    /// `PhaseTrace::compute_ms`), and names each phase's bottleneck: the machine with the highest utilization.
+    /// Called with the request's wall time by `refresh_telemetry`, on the llama.cpp and the plugin paths alike.
+    pub fn derive_stage_balance(&mut self, wall_clock_ms: u64) {
+        let prefill_wall = self.prefill_ms;
+        let first_token = self.server_ttft_ms.unwrap_or(self.prefill_ms);
+        let decode_wall = wall_clock_ms.saturating_sub(first_token);
+        let mut balance = StageBalance::default();
+        for (decode, wall) in [(false, prefill_wall), (true, decode_wall)] {
+            if wall == 0 || self.hops.is_empty() {
+                continue;
+            }
+            let mut upstream: u64 = 0;
+            let mut best: Option<StageBottleneck> = None;
+            for hop in &mut self.hops {
+                let part = if decode { &mut hop.decode } else { &mut hop.prefill };
+                let compute = part.processing_ms;
+                let transfer = part.network_ms;
+                if compute == 0 && transfer == 0 && part.calls == 0 && part.reported_spans == 0 {
+                    continue;
+                }
+                let waiting = wall.saturating_sub(compute.saturating_add(transfer));
+                let wait_input = waiting.min(upstream);
+                part.compute_ms = Some(compute);
+                part.transfer_ms = Some(transfer);
+                part.wait_input_ms = Some(wait_input);
+                part.wait_output_ms = Some(waiting - wait_input);
+                part.wall_ms = Some(wall);
+                let utilization = (compute as f64 / wall as f64).min(1.0);
+                part.utilization = Some((utilization * 1000.0).round() / 1000.0);
+                if best.as_ref().map_or(true, |b| utilization > b.utilization) {
+                    best = Some(StageBottleneck {
+                        node_id: hop.node_id.clone(),
+                        start_layer: hop.start_layer,
+                        end_layer: hop.end_layer,
+                        utilization: (utilization * 1000.0).round() / 1000.0,
+                        compute_ms: compute,
+                    });
+                }
+                upstream = upstream.saturating_add(compute.saturating_add(transfer));
+            }
+            if decode {
+                balance.decode = best;
+            } else {
+                balance.prefill = best;
+            }
+        }
+        self.stage_balance = (balance.prefill.is_some() || balance.decode.is_some()).then_some(balance);
+    }
+
     pub fn refresh_telemetry(&mut self, wall_clock_ms: u64) {
+        self.derive_stage_balance(wall_clock_ms);
         let expected_peers = self.hops.len() as u32;
         let decode_tracking = self.expected_decode_spans > 0
             || self.hops.iter().any(|hop| hop.decode.reported_spans > 0);

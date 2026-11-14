@@ -319,6 +319,9 @@ inference service runs a whole model instead through `plugin_engine.rs`.
   traversal. `RequestTrace` adds the `trace_id`, the gateway's local spans,
   explicit `outside_node` fields only when there is a measured residual,
   cold/warm state, new/reused connections, first-token marks and decode counters.
+  `RequestTrace::derive_stage_balance` (called by `refresh_telemetry`) splits each hop's
+  phase into compute, wire and waiting on the earlier and the later machines, and
+  `stage_balance` names each phase's bottleneck (`http-api.md`, section 4).
   `RequestTrace::telemetry` separates `response_complete` from `trace complete`: it
   publishes the expected/observed peers and spans, duplicates, delays and the state
   `collecting`/`response_complete`/`complete`/`incomplete`. The sum of compute and

@@ -1954,6 +1954,18 @@ explicitly measured residual, connection counters, first token milestones,
 streaming metrics, the four per-request MTP acceptance fields and the
 distributed integrity `telemetry` summary, with expected and observed peers and
 spans, duplicates, late receipts, absences and `remote-stream` aggregates.
+Each hop's `prefill` and `decode` in `x_pom.trace` also split that phase's wall
+time for the machine (`RequestTrace::derive_stage_balance`, run by
+`refresh_telemetry` on the llama.cpp and plugin paths alike): `compute_ms` (its
+own work, `processing_ms`), `transfer_ms` (`network_ms`), `wait_input_ms`
+(waiting on the earlier machines, at most their own work and wire before it),
+`wait_output_ms` (the rest of the waiting: on the later machines), `wall_ms` and
+`utilization` (compute over wall). `x_pom.trace.stage_balance` names each phase's
+bottleneck, the machine with the highest utilization (`node_id`, layers,
+`utilization`, `compute_ms`). The split of the waiting is an estimate: the engines
+report their own work and the wire, not the moments they sat idle. All the fields
+are optional and absent where the phase did not run.
+
 `x_pom.timings` separates legacy TTFT, `server_ttft_ms`, `engine_ttft_ms` and
 `client_ttft_ms`. A missing field means the boundary was not measured, not
 zero. The audit at `GET /api/ui/requests` keeps that same object in

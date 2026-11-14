@@ -1863,3 +1863,43 @@ fn a_failed_prefill_names_its_cause_not_the_telemetry_wrapper() {
         "hop 1 refused chunk 0: capture has 3 rows, expected 238"
     );
 }
+
+#[test]
+fn stage_balance_splits_each_hop_and_names_the_bottleneck() {
+    let mut trace = RequestTrace::new_with_trace_id(
+        "trace",
+        "flash",
+        &[("a", 0, 15), ("b", 16, 30), ("c", 31, 47)],
+    );
+    trace.prefill_ms = 10_000;
+    trace.server_ttft_ms = Some(10_000);
+    trace.hops[0].prefill.processing_ms = 3_000;
+    trace.hops[0].prefill.network_ms = 500;
+    trace.hops[0].prefill.calls = 1;
+    trace.hops[1].prefill.processing_ms = 9_000;
+    trace.hops[1].prefill.calls = 1;
+    trace.hops[2].prefill.processing_ms = 2_000;
+    trace.hops[2].prefill.calls = 1;
+    trace.refresh_telemetry(10_000);
+
+    let a = &trace.hops[0].prefill;
+    assert_eq!(a.compute_ms, Some(3_000));
+    assert_eq!(a.transfer_ms, Some(500));
+    // the first machine has nothing before it: its waiting is all on the later ones
+    assert_eq!(a.wait_input_ms, Some(0));
+    assert_eq!(a.wait_output_ms, Some(6_500));
+    let b = &trace.hops[1].prefill;
+    // 1,000 ms of waiting, no more than the 3,500 ms of work and wire before it
+    assert_eq!(b.wait_input_ms, Some(1_000));
+    assert_eq!(b.wait_output_ms, Some(0));
+    assert_eq!(b.utilization, Some(0.9));
+    let c = &trace.hops[2].prefill;
+    assert_eq!(c.wait_input_ms, Some(8_000));
+    assert_eq!(c.wait_output_ms, Some(0));
+
+    let prefill = trace.stage_balance.as_ref().and_then(|b| b.prefill.as_ref()).unwrap();
+    assert_eq!(prefill.node_id, "b");
+    assert_eq!((prefill.start_layer, prefill.end_layer), (16, 30));
+    // no decode recorded: no decode bottleneck
+    assert!(trace.stage_balance.as_ref().unwrap().decode.is_none());
+}

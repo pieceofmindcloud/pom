@@ -126,9 +126,13 @@ fn verdict(
             None,
         )
     };
+    // A machine with the image plugin running publishes its `image` service
+    // whether ComfyUI is up or not: the deploy starts ComfyUI there (the first
+    // time it also installs it), so only a machine without the plugin or with
+    // ComfyUI in error is refused.
     match machine.service_status.as_deref() {
         None => return refuse("does not run ComfyUI".into()),
-        Some(status @ ("error" | "waiting")) => return refuse(format!("ComfyUI is {status}")),
+        Some("error") => return refuse("ComfyUI is error".into()),
         Some(_) => {}
     }
     // A LoRA is never copied: the machine holds each one, as a LoRA, or it

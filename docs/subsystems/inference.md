@@ -3224,7 +3224,11 @@ with the ledger is the crate `crates/metering-core`; the node side is
   range with the same embeddings output in chunks of 64 positions. Measured
   2026-11-14 on CPU: no slowdown of the tail, honest re-execution mean 1.1-1.4
   and median 1 against 28-46 and 21-42 with one or five layers skipped, inside
-  and far outside the llama.cpp limits.
+  and far outside the llama.cpp limits. The tail proves full chunks of 32 rows
+  only (`ProofBuffer::full_chunks_only`): a chunk of one or two decode rows
+  missed honest re-executions by a steady margin (mean 3.0-3.1, median 3,
+  validators and the admin agreeing with each other), so a short answer
+  leaves the tail's receipt unproved rather than failed.
 - **The receipt rides the end of the turn.** The gateway mints a bundle nonce
   and sends it as `metering_bundle` in the `/v1/session/rewind` (the normal end
   of a turn) or `/v1/session/release` it already posts to every step; the hop

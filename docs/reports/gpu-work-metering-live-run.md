@@ -184,3 +184,30 @@ receipts re-executed on a CPU verifier through `rpc.calibrate`:
 Not measured: the last stage on a GPU checked by a CPU verifier (both GPUs
 were busy), and the last stage's prefill, which stays unproved.
 
+## Validators, 2026-11-14
+
+Three CPU nodes (the GPUs were taken by another workload) plus two CPU
+validators holding the model, `validators_per_sample` 2, `reference_rate`
+0.5, 10-minute cycles, `samples_per_node` 2.
+
+- Cycle 45775: every sample went to both validators, which answered their
+  readings and agreed with each other on all six (`agree`); the first and
+  middle stages passed against the agreed reading. Each validator was paid
+  187.2 for 6753 agreed layer positions: together 374.4, the 5 % cap of the
+  workers' pay, taken out of it (3744 earned, 3556.8 paid each), the cycle's
+  total unchanged.
+- The last stage failed both its samples there and in cycle 45774 (mean
+  3.06-3.10, median 3, against the limits 3.0 / 2.5), with the validators and
+  the admin agreeing with each other: these answers were one or two tokens, so
+  its proof chunks held one or two rows, where the calibration's chunks held
+  32 (honest mean 1.1-1.4). Fixed by proving full chunks only on the last
+  stage: a short answer now leaves its receipt unproved (cycle 45777).
+- A first try found no validator usable: their container did not mount the
+  model folder, so each answered that it did not hold the model and the
+  admin's reference decided alone (the plugin records nothing for the
+  validators then).
+
+Not measured: the reading-against-reading limits on their own (validators
+agreed far inside the proof limits), a validator answering wrongly in a live
+run (unit-tested), the pause after strikes live.
+

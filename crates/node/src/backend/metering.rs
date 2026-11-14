@@ -365,6 +365,12 @@ pub(crate) struct ProofBuffer {
     chunks: Vec<Vec<u8>>,
     /// The width changed mid-session (never expected): stop proving.
     broken: bool,
+    /// Prove full chunks only: a trailing partial chunk is dropped instead of
+    /// proved. The last stage's post-norm rows of one or two decode steps
+    /// miss an honest re-execution by a steady margin (live, 2026-11-14:
+    /// mean 3.0-3.1 against 1.1-1.4 for full chunks of 32 rows), so a short
+    /// answer is left unproved rather than failed.
+    full_chunks_only: bool,
 }
 
 impl ProofBuffer {
@@ -396,8 +402,13 @@ impl ProofBuffer {
 
     /// Proves the short last chunk when it holds at least k values, and
     /// returns the Merkle root and the chunk count.
+    /// Marks the buffer as the last stage's (`full_chunks_only`).
+    pub(crate) fn full_chunks_only(&mut self) {
+        self.full_chunks_only = true;
+    }
+
     pub(crate) fn finish(&mut self, ctx: &MeterContext) -> (Option<String>, Option<u32>) {
-        if !self.broken && self.pending.len() >= ctx.toploc.k as usize {
+        if !self.broken && !self.full_chunks_only && self.pending.len() >= ctx.toploc.k as usize {
             if let Ok(proof) = toploc::prove_chunk(&self.pending, ctx.toploc.k) {
                 self.chunks.push(toploc::encode_leaf(&self.positions, &proof));
             }

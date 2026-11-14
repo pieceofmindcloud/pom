@@ -193,6 +193,7 @@ impl MeterTable {
     /// prove its work and enter no link chain.
     pub(crate) fn tail_rows(&mut self, sid: &str, first_pos: u32, values: &[f32], width: usize) {
         if let Some(m) = self.meters.get_mut(sid) {
+            m.proofs.full_chunks_only();
             m.proofs.push_rows(values, width, first_pos);
         }
     }
@@ -436,7 +437,21 @@ mod tests {
             assert_eq!(t.meters["s"].out_chain.digest(), before, "the tail's rows are no output frame");
             let r = open_receipt(&t.close("s", Some("b".into()), &slice()).unwrap().0).unwrap();
             assert!(r.summ.is_some(), "the last stage's receipt is provable");
-            assert!(r.chunks.unwrap_or(0) >= 2, "40 rows make a full chunk and a partial one");
+            assert_eq!(r.chunks, Some(1), "40 rows make one full chunk; the partial one is dropped");
+        });
+    }
+
+    #[test]
+    fn a_short_answer_leaves_the_last_stage_unproved() {
+        with_context(|| {
+            let mut t = MeterTable::default();
+            let width = 128;
+            t.input_tensor("s", 4, 0, 1, &vec![0.5f32; width], WireDtype::F16);
+            for pos in 10..12u32 {
+                t.tail_rows("s", pos, &vec![1.0f32 + pos as f32; width], width);
+            }
+            let r = open_receipt(&t.close("s", Some("b".into()), &slice()).unwrap().0).unwrap();
+            assert!(r.summ.is_none(), "two rows are a partial chunk, not proved");
         });
     }
 

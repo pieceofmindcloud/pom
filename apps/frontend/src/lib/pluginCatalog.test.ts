@@ -112,6 +112,21 @@ describe("fetchPublicPluginCatalog", () => {
     expect("github_repository" in catalog.plugins[0]).toBe(false);
   });
 
+  it("keeps a coming-soon entry without releases, so a store page is never empty", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      plugins: [
+        publicPlugin("announced", { releases: [], coming_soon: true }),
+        publicPlugin("withdrawn", { releases: [] }),
+      ],
+      total: 11,
+    }), { status: 200 })));
+
+    const catalog = await fetchPublicPluginCatalog();
+
+    expect(catalog.plugins.map((plugin) => plugin.code)).toEqual(["announced"]);
+    expect(catalog.plugins[0].coming_soon).toBe(true);
+  });
+
   it("reads featured, pom_team and a GitHub install suggestion, accepting only plain github.com repositories", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
       plugins: [

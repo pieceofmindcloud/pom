@@ -256,7 +256,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   optional `{q, page, perPage}` (search and paging done by the server, `total`
   is null from a server without paging), `fetchPublicPlugin(code)` reads one
   entry (null on 404), and `supportedPlatforms` lists the systems with builds. It validates required fields
-  for each commercial release and discards plugins without a valid release.
+  for each commercial release and discards plugins without a valid release, unless the store marks them `coming_soon`: those stay listed (the license server counts them in `total`) with a "Coming soon" badge and no Buy button.
   GitHub sources stay local: the catalog's `github_url` (a free plugin the
   license server lists as installed from GitHub) is only a suggestion, accepted
   solely as `https://github.com/<owner>/<repo>`, and the Plugins card registers

@@ -749,7 +749,10 @@ function PluginCard({
                 : developmentSource.active ? t("plugins.devRebuildInstall") : t("plugins.devInstall")}
             </Button>
           )}
-          {!active && hasRequiredLicense && licenseStatusAvailable && entry && !hasLicense && (
+          {entry?.coming_soon && !active && (
+            <Badge tone="iris">{t("plugins.comingSoon")}</Badge>
+          )}
+          {!active && hasRequiredLicense && licenseStatusAvailable && entry && !entry.coming_soon && !hasLicense && (
             <Button
               variant="ghost"
               type="button"

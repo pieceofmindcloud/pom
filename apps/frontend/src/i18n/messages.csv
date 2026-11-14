@@ -2333,6 +2333,7 @@ plugins.activationUsage.unused,No activations used,Nenhuma ativação utilizada
 plugins.activeTitle,Active,Ativo
 plugins.annualPrice,{price}/year,{price}/ano
 plugins.buy,Buy,Comprar
+plugins.comingSoon,Coming soon,Em breve
 plugins.catalog.enterprise.description,Request Logs and Statistics for this node.,Logs de Requisições e Estatísticas para este nó.
 plugins.catalog.enterprise.name,Statistics & Request Logs,Estatísticas e Logs de Requisições
 plugins.catalogEmpty,No plugins are available right now.,Nenhum plugin disponível no momento.

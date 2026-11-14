@@ -30,7 +30,7 @@ Para um plugin licenciado, quantas ativações da licença estão em uso e quand
 
 :::steps
 ### Da loja
-Plugins gratuitos instalam com um clique. Um plugin pago abre a página de compra no seu navegador; a chave de licença que ela te dá é colada no formulário de licença daqui e ativa todos os plugins que aquela chave concede.
+Plugins gratuitos instalam com um clique. Um plugin pago abre a página de compra no seu navegador; a chave de licença que ela te dá é colada no formulário de licença daqui e ativa todos os plugins que aquela chave concede. Um plugin marcado **Em breve** já foi anunciado mas ainda não tem versão publicada: ele aparece na lista sem nada para comprar ou instalar.
 ### Do GitHub
 **Adicionar do GitHub** recebe o endereço de um repositório público e instala a versão mais nova compatível com esta máquina. Um plugin de fora da equipe do POM pede uma confirmação antes: o código dele não foi revisado.
 ### Mantendo em dia

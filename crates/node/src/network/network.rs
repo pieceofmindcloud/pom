@@ -192,7 +192,11 @@ impl RelayGate {
     }
 
     /// Relays for pass holders too, checked against `trust`.
-    pub fn with_anonymous(self, anonymous: bool, trust: Arc<crate::admin_trust::AdminTrust>) -> Self {
+    pub fn with_anonymous(
+        self,
+        anonymous: bool,
+        trust: Arc<crate::admin_trust::AdminTrust>,
+    ) -> Self {
         self.anonymous.store(anonymous, Ordering::Relaxed);
         if let Ok(mut passes) = self.passes.write() {
             *passes = Some(PassTrust(trust));
@@ -301,8 +305,7 @@ impl RelayGate {
         self.policy().allows_any()
             && self.available.load(Ordering::Relaxed)
             && (self.everyone()
-                || (self.cluster.load(Ordering::Relaxed)
-                    && self.reachable.load(Ordering::Relaxed)))
+                || (self.cluster.load(Ordering::Relaxed) && self.reachable.load(Ordering::Relaxed)))
     }
 
     /// What goes into the announce.
@@ -338,7 +341,8 @@ impl RelayGate {
                     .members
                     .read()
                     .is_ok_and(|members| members.contains(peer)))
-            || (self.anonymous_serving() && pass.is_some_and(|pass| self.pass_admits(pass, peer, connection)))
+            || (self.anonymous_serving()
+                && pass.is_some_and(|pass| self.pass_admits(pass, peer, connection)))
     }
 
     pub fn status(&self) -> RelayStatus {
@@ -677,7 +681,10 @@ pub(crate) fn sign_announce(announce: &mut P2PMessage, key: &ed25519_dalek::Sign
 ///
 /// The gossip path does not need this: the announce comes sealed by the
 /// sender's endpoint key (`open_announce`), checked against the declared one.
-pub(crate) fn verify_udp_announce(msg: &P2PMessage, now: DateTime<Utc>) -> Result<(), &'static str> {
+pub(crate) fn verify_udp_announce(
+    msg: &P2PMessage,
+    now: DateTime<Utc>,
+) -> Result<(), &'static str> {
     use ed25519_dalek::Verifier;
     let P2PMessage::Announce {
         node_id,
@@ -2124,7 +2131,10 @@ impl Network {
     }
 
     pub fn anon_tunnel(&self) -> Option<crate::anon_tunnel::AnonTunnelAddr> {
-        self.anon_tunnel.read().ok().and_then(|current| current.clone())
+        self.anon_tunnel
+            .read()
+            .ok()
+            .and_then(|current| current.clone())
     }
 
     /// The anonymous tunnel address of the live peer whose endpoint is `id`.
@@ -2175,7 +2185,10 @@ impl Network {
     }
 
     pub fn membership(&self) -> Option<String> {
-        self.membership.read().ok().and_then(|current| current.clone())
+        self.membership
+            .read()
+            .ok()
+            .and_then(|current| current.clone())
     }
 
     /// The key that signs this node's announces: the node key.
@@ -2349,7 +2362,12 @@ impl Network {
         if let Some(address) = pinned.as_deref().and_then(pinned_endpoint_addr) {
             addrs.push(address);
         }
-        for address in self.endpoint_addrs.read().expect("endpoint_addrs lock").iter() {
+        for address in self
+            .endpoint_addrs
+            .read()
+            .expect("endpoint_addrs lock")
+            .iter()
+        {
             if !addrs.contains(address) {
                 addrs.push(address.clone());
             }
@@ -3625,8 +3643,10 @@ impl Network {
                                     .catch_unwind()
                                     .await
                             {
-                                let suppressed =
-                                    panic_log.lock().ok().and_then(|mut log| log.record(Instant::now()));
+                                let suppressed = panic_log
+                                    .lock()
+                                    .ok()
+                                    .and_then(|mut log| log.record(Instant::now()));
                                 if let Some(suppressed) = suppressed {
                                     warn!(
                                         source = %src,
@@ -4026,7 +4046,10 @@ impl Network {
     /// The endpoint id is the public key itself (see `p2p.rs`): the binding
     /// is that both name the same key.
     fn peer_id_matches_pubkey(peer: &PeerInfo) -> bool {
-        let Some(endpoint_id) = peer.endpoint_id.as_deref().and_then(crate::p2p::parse_endpoint_id)
+        let Some(endpoint_id) = peer
+            .endpoint_id
+            .as_deref()
+            .and_then(crate::p2p::parse_endpoint_id)
         else {
             return false;
         };
@@ -4126,8 +4149,8 @@ impl Network {
         });
         let proves = |status: u16, body: &[u8]| {
             status == reqwest::StatusCode::OK.as_u16()
-                && serde_json::from_slice::<crate::session::HandshakeResponse>(body)
-                    .is_ok_and(|answer| {
+                && serde_json::from_slice::<crate::session::HandshakeResponse>(body).is_ok_and(
+                    |answer| {
                         crate::session::answer_proves_key(
                             &answer,
                             &challenge,
@@ -4136,7 +4159,8 @@ impl Network {
                             &self.node_id,
                             connection_key,
                         )
-                    })
+                    },
+                )
         };
         for url in self.admission_urls(peer) {
             let Ok(response) = client.post(&url).json(&body).send().await else {
@@ -4204,7 +4228,10 @@ impl Network {
 
     pub(crate) async fn admit_peer(&self, peer: &PeerInfo) -> bool {
         if self.hides(peer) {
-            debug!("admission of {}: a visitor, hidden from this visitor", short(&peer.node_id));
+            debug!(
+                "admission of {}: a visitor, hidden from this visitor",
+                short(&peer.node_id)
+            );
             return false;
         }
         if self.is_revoked(peer) {
@@ -4639,7 +4666,10 @@ impl Network {
             .values()
             .find(|peer| {
                 peer.is_alive()
-                    && peer.endpoint_id.as_deref().and_then(crate::p2p::parse_endpoint_id)
+                    && peer
+                        .endpoint_id
+                        .as_deref()
+                        .and_then(crate::p2p::parse_endpoint_id)
                         == Some(*endpoint)
             })
             .map(|peer| peer.node_id.clone())
@@ -4782,8 +4812,14 @@ mod tests {
         assert_eq!(gossip["idle"], true);
 
         // The participants screen shows each node's release from here.
-        assert_eq!(udp["pom_version"], crate::pom_core_update::release_version());
-        assert_eq!(gossip["pom_version"], crate::pom_core_update::release_version());
+        assert_eq!(
+            udp["pom_version"],
+            crate::pom_core_update::release_version()
+        );
+        assert_eq!(
+            gossip["pom_version"],
+            crate::pom_core_update::release_version()
+        );
         assert_eq!(udp["pom_build"], crate::build_commit());
     }
 
@@ -4791,7 +4827,14 @@ mod tests {
     async fn testkit_broadcasts_only_to_an_injected_loopback_endpoint() {
         let probe = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let destination = probe.local_addr().unwrap();
-        let net = Network::testkit_with_broadcast_addr("n".into(), "p".into(), vec![], None, None, destination)
+        let net = Network::testkit_with_broadcast_addr(
+            "n".into(),
+            "p".into(),
+            vec![],
+            None,
+            None,
+            destination,
+        )
         .await
         .unwrap();
 
@@ -4907,11 +4950,7 @@ mod tests {
         let impostor = principal_of("impostor", &impostor_key);
         {
             let mut peers = net.peers.write().await;
-            for (principal, port) in [
-                (&primary, 8081),
-                (&secondary, 8082),
-                (&impostor, 8084),
-            ] {
+            for (principal, port) in [(&primary, 8081), (&secondary, 8082), (&impostor, 8084)] {
                 peers.insert(principal.node_id.clone(), announced_admin(principal, port));
             }
         }
@@ -4932,7 +4971,14 @@ mod tests {
 
     #[tokio::test]
     async fn testkit_rejects_a_global_broadcast_endpoint() {
-        let result = Network::testkit_with_broadcast_addr("n".into(), "p".into(), vec![], None, None, SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT))
+        let result = Network::testkit_with_broadcast_addr(
+            "n".into(),
+            "p".into(),
+            vec![],
+            None,
+            None,
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::BROADCAST), DISCOVERY_PORT),
+        )
         .await;
 
         assert!(result.is_err());
@@ -5669,8 +5715,8 @@ mod tests {
     #[tokio::test]
     async fn an_announce_does_not_add_the_socket_source_to_an_explicit_set() {
         let net = Network::new("local".into(), "pubkey".into(), 0, vec![], Some(8181), None)
-        .await
-        .unwrap();
+            .await
+            .unwrap();
         let assignment = Arc::new(RwLock::new(None));
         let stale = "[2804:d55:5579:1000:e6c8:310f:1a19:6e92]:42777";
         let current = "[2804:d55:5579:1000:2d50:fe2c:c06c:fc07]:42777";
@@ -5961,7 +6007,13 @@ mod tests {
     /// bound for the later `rejoin`.
     #[tokio::test]
     async fn a_detached_node_neither_announces_nor_looks_for_bootstrap() {
-        let net = Network::testkit("n".into(), "p".into(), vec!["127.0.0.1:1".into()], None, None)
+        let net = Network::testkit(
+            "n".into(),
+            "p".into(),
+            vec!["127.0.0.1:1".into()],
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -6161,24 +6213,40 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let identity = crate::identity::Identity::generate();
-        let wrong = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
+        let wrong = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap()
         .with_admission(
             admission_config("wrong", crate::config::NetworkVisibility::Private),
             Arc::new(crate::admin_trust::AdminTrust::empty()),
         );
-        wrong.insert_peer(admission_peer_for(gateway_port, &responder.signing_key)).await;
+        wrong
+            .insert_peer(admission_peer_for(gateway_port, &responder.signing_key))
+            .await;
         assert_eq!(wrong.peer_count().await, 0);
 
-        let valid = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
+        let valid = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap()
         .with_admission(
             admission_config("correct", crate::config::NetworkVisibility::Private),
             Arc::new(crate::admin_trust::AdminTrust::empty()),
         );
-        valid.insert_peer(admission_peer_for(gateway_port, &responder.signing_key)).await;
+        valid
+            .insert_peer(admission_peer_for(gateway_port, &responder.signing_key))
+            .await;
         assert_eq!(valid.peer_count().await, 1);
 
         server.abort();
@@ -6314,7 +6382,7 @@ mod tests {
         relay_peer.relay = Some(RelayOffer {
             transfers: true,
             url: Some(member_url.clone()),
-                anonymous: false,
+            anonymous: false,
         });
         network.insert_peer(relay_peer.clone()).await;
 
@@ -6334,7 +6402,7 @@ mod tests {
         relay_peer.relay = Some(RelayOffer {
             transfers: false,
             url: Some(member_url.clone()),
-                anonymous: false,
+            anonymous: false,
         });
         network.insert_peer(relay_peer.clone()).await;
         assert!(!network.path_carries_transfers(Some(&member)).await);
@@ -6343,7 +6411,7 @@ mod tests {
         relay_peer.relay = Some(RelayOffer {
             transfers: true,
             url: Some(member_url.clone()),
-                anonymous: false,
+            anonymous: false,
         });
         network.insert_peer(relay_peer).await;
         network.set_dedicated_relays([member_url]);
@@ -6418,7 +6486,10 @@ mod tests {
         let off = RelayGate::new(false, false, true);
         off.set_reachable(true);
         off.set_members([member.clone()]);
-        assert!(!off.allows(&member, None, "conn-5"), "cluster relay turned off");
+        assert!(
+            !off.allows(&member, None, "conn-5"),
+            "cluster relay turned off"
+        );
 
         let public = RelayGate::new(true, true, false);
         assert!(public.allows(&stranger, None, "conn-6"));
@@ -6552,7 +6623,11 @@ mod tests {
         assert!(visitor.admit_peer(&worker).await);
         // One that entered the table before this node knew its own role.
         for peer in [&visitor_b, &worker] {
-            visitor.peers.write().await.insert(peer.node_id.clone(), peer.clone());
+            visitor
+                .peers
+                .write()
+                .await
+                .insert(peer.node_id.clone(), peer.clone());
         }
         let ids = |peers: Vec<PeerInfo>| peers.into_iter().map(|p| p.node_id).collect::<Vec<_>>();
         assert_eq!(ids(visitor.alive_peers().await), vec!["worker"]);
@@ -6564,7 +6639,11 @@ mod tests {
         *admin.profile.write().unwrap() = NodeProfile::Admin;
         let visitor_a = as_role("visitor-a", NodeProfile::Visitor);
         for peer in [&visitor_a, &visitor_b, &worker] {
-            admin.peers.write().await.insert(peer.node_id.clone(), peer.clone());
+            admin
+                .peers
+                .write()
+                .await
+                .insert(peer.node_id.clone(), peer.clone());
         }
         let mut seen = ids(admin.alive_peers().await);
         seen.sort();
@@ -6582,8 +6661,11 @@ mod tests {
     #[test]
     fn an_anonymous_relay_admits_by_pass_alone() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
-        let principal =
-            crate::admin_trust::AuthorityPrincipal::from_signing_key("principal", "peer-principal", &key);
+        let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "principal",
+            "peer-principal",
+            &key,
+        );
         let trust = Arc::new(
             crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
                 "gate-lab",
@@ -6595,23 +6677,37 @@ mod tests {
         let url = "http://198.51.100.7:52000/";
         let now = chrono::Utc::now().timestamp();
         let pass = crate::relay_pass::issue(&key, &principal, &trust.document(), url, now).unwrap();
-        let other = crate::relay_pass::issue(&key, &principal, &trust.document(), "http://x:1/", now)
-            .unwrap();
+        let other =
+            crate::relay_pass::issue(&key, &principal, &trust.document(), "http://x:1/", now)
+                .unwrap();
 
         // A visitor relays for nobody of its own cluster by default here.
         let gate = RelayGate::new(false, false, false).with_anonymous(true, trust.clone());
         gate.set_url(Some(url.into()));
-        assert!(!gate.allows("ephemeral-a", Some(&pass), "conn-8"), "behind NAT");
+        assert!(
+            !gate.allows("ephemeral-a", Some(&pass), "conn-8"),
+            "behind NAT"
+        );
         gate.set_reachable(true);
         assert!(gate.allows("ephemeral-a", Some(&pass), "conn-9"));
-        assert!(gate.allows("ephemeral-a", Some(&pass), "conn-10"), "the same endpoint again");
-        assert!(!gate.allows("ephemeral-b", Some(&pass), "conn-11"), "a pass is not shared");
-        assert!(!gate.allows("ephemeral-c", Some(&other), "conn-12"), "another relay's pass");
+        assert!(
+            gate.allows("ephemeral-a", Some(&pass), "conn-10"),
+            "the same endpoint again"
+        );
+        assert!(
+            !gate.allows("ephemeral-b", Some(&pass), "conn-11"),
+            "a pass is not shared"
+        );
+        assert!(
+            !gate.allows("ephemeral-c", Some(&other), "conn-12"),
+            "another relay's pass"
+        );
         assert!(!gate.allows("ephemeral-d", None, "conn-13"));
         assert_eq!(gate.offer().map(|offer| offer.anonymous), Some(true));
 
         gate.set_anonymous(false);
-        let fresh = crate::relay_pass::issue(&key, &principal, &trust.document(), url, now).unwrap();
+        let fresh =
+            crate::relay_pass::issue(&key, &principal, &trust.document(), url, now).unwrap();
         assert!(!gate.allows("ephemeral-e", Some(&fresh), "conn-14"));
         assert_eq!(gate.offer(), None);
     }
@@ -6634,13 +6730,19 @@ mod tests {
         let mut visitor = dummy_peer("visitor", "127.0.0.1:9");
         visitor.profile = NodeProfile::Visitor;
         for peer in [&worker, &visitor] {
-            admin.peers.write().await.insert(peer.node_id.clone(), peer.clone());
+            admin
+                .peers
+                .write()
+                .await
+                .insert(peer.node_id.clone(), peer.clone());
         }
         let to_visitor = admin.peer_list_for("visitor").await;
         assert_eq!(to_visitor.len(), 1);
         assert_eq!(to_visitor[0].anon_tunnel, None);
         let to_worker = admin.peer_list_for("worker").await;
-        assert!(to_worker.iter().any(|p| p.anon_tunnel == Some(addr.clone())));
+        assert!(to_worker
+            .iter()
+            .any(|p| p.anon_tunnel == Some(addr.clone())));
 
         // A snapshot naming one is not believed by whoever receives it.
         let receiver = Network::testkit("receiver".into(), String::new(), vec![], None, None)
@@ -6650,7 +6752,9 @@ mod tests {
         forged.anon_tunnel = Some(addr);
         receiver
             .handle_message(
-                P2PMessage::PeerList { peers: vec![forged] },
+                P2PMessage::PeerList {
+                    peers: vec![forged],
+                },
                 "127.0.0.1:9".parse().unwrap(),
                 &Arc::new(tokio::sync::RwLock::new(None)),
             )
@@ -6681,7 +6785,11 @@ mod tests {
             with("visitor-b", NodeProfile::Visitor, 2),
             with("visitor-a", NodeProfile::Visitor, 9),
         ] {
-            visitor.peers.write().await.insert(peer.node_id.clone(), peer);
+            visitor
+                .peers
+                .write()
+                .await
+                .insert(peer.node_id.clone(), peer);
         }
         let mut dialed = std::collections::HashMap::new();
         dialed.insert(endpoint(4), vec!["198.51.100.4:4000".to_string()]);
@@ -6705,7 +6813,13 @@ mod tests {
     #[tokio::test]
     async fn a_cache_miss_is_answered_without_probing() {
         let identity = crate::identity::Identity::generate();
-        let network = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap()
         .with_admission(
@@ -6741,7 +6855,13 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let identity = crate::identity::Identity::generate();
-        let network = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap()
         .with_admission(
@@ -6757,7 +6877,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|body| body.contains("network-secret"));
-        assert!(!leaked, "the probe handed the connection key to an outsider");
+        assert!(
+            !leaked,
+            "the probe handed the connection key to an outsider"
+        );
         assert!(!admitted, "an outsider got in by answering approved");
     }
 
@@ -6808,7 +6931,13 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let identity = crate::identity::Identity::generate();
-        let network = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap()
         .with_admission(
@@ -6850,7 +6979,13 @@ mod tests {
 
         let identity = crate::identity::Identity::generate();
         let network = Arc::new(
-            Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
+            Network::testkit(
+                identity.node_id.0.clone(),
+                identity.public_key_hex(),
+                vec![],
+                None,
+                None,
+            )
             .await
             .unwrap()
             .with_admission(
@@ -6970,7 +7105,13 @@ mod tests {
             &signing_key,
         )
         .unwrap();
-        let gated = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
+        let gated = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap()
         .with_admission(
@@ -7031,7 +7172,13 @@ mod tests {
         worker.endpoint_id = Some(worker_peer_id);
         worker.cluster_id = Some("cluster".into());
 
-        let net = Network::testkit(local.node_id.0.clone(), local.public_key_hex(), vec![], None, None)
+        let net = Network::testkit(
+            local.node_id.0.clone(),
+            local.public_key_hex(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap()
         .with_admission(
@@ -7078,7 +7225,13 @@ mod tests {
 
         // authorized + worker without a grant => refused.
         let (trust, peer) = build(Some("cluster"));
-        let net = Network::testkit(local.node_id.0.clone(), local.public_key_hex(), vec![], None, None)
+        let net = Network::testkit(
+            local.node_id.0.clone(),
+            local.public_key_hex(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap()
         .with_admission(
@@ -7094,7 +7247,13 @@ mod tests {
 
         // anyone_with_anchor + cluster_id that is not the anchor's => refused.
         let (trust, peer) = build(Some("outro-enxame"));
-        let net = Network::testkit(local.node_id.0.clone(), local.public_key_hex(), vec![], None, None)
+        let net = Network::testkit(
+            local.node_id.0.clone(),
+            local.public_key_hex(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap()
         .with_admission(
@@ -7112,7 +7271,13 @@ mod tests {
     #[tokio::test]
     async fn public_directory_keeps_unadmitted_public_candidates_out_of_pipeline() {
         let identity = crate::identity::Identity::generate();
-        let network = Network::testkit(identity.node_id.0.clone(), identity.public_key_hex(), vec![], None, None)
+        let network = Network::testkit(
+            identity.node_id.0.clone(),
+            identity.public_key_hex(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap()
         .with_admission(
@@ -7419,7 +7584,10 @@ mod tests {
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let announce = signed_announce_of(&key);
         let later = Utc::now() + chrono::Duration::seconds(ANNOUNCE_FRESHNESS_SECS + 5);
-        assert_eq!(verify_udp_announce(&announce, later), Err("stale timestamp"));
+        assert_eq!(
+            verify_udp_announce(&announce, later),
+            Err("stale timestamp")
+        );
     }
 
     /// A node with a key signs what it announces.
@@ -7427,7 +7595,14 @@ mod tests {
     async fn the_node_signs_its_own_announce() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let pubkey = key.verifying_key();
-        let net = Network::new(crate::identity::NodeId::from_pubkey(&pubkey).0, hex::encode(pubkey.as_bytes()), 0, vec![], None, None)
+        let net = Network::new(
+            crate::identity::NodeId::from_pubkey(&pubkey).0,
+            hex::encode(pubkey.as_bytes()),
+            0,
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap();
         net.set_announce_key(Arc::new(key));
@@ -7469,7 +7644,10 @@ mod tests {
         let stored = net.peers.read().await["peer"].clone();
         assert_eq!(stored.addr, real);
         assert_eq!(stored.addr_candidates, vec![real.to_string()]);
-        assert_eq!(stored.end_layer, 9, "the rest of the snapshot still applies");
+        assert_eq!(
+            stored.end_layer, 9,
+            "the rest of the snapshot still applies"
+        );
     }
 
     /// A worker that is the gateway of its own request dials its own
@@ -7560,8 +7738,9 @@ mod tests {
         assert!(!net.is_member_key("worker", "another-key").await);
         assert!(!net.is_member_key("stranger", "stranger-key").await);
 
-        let ban = crate::membership::revoke(&primary_key, &primary, &trust.document(), "worker", now)
-            .unwrap();
+        let ban =
+            crate::membership::revoke(&primary_key, &primary, &trust.document(), "worker", now)
+                .unwrap();
         trust.merge_revocations(vec![ban]);
         assert!(!net.is_member_key("worker", "worker-key").await);
     }

@@ -618,10 +618,7 @@ pub fn broadcast_to(
         let id = decode_id.to_string();
         let who = member.node_id.clone();
         let auth = tp_state().and_then(|state| state.auth.clone());
-        let peer_id = member
-            .endpoint_id
-            .as_deref()
-            .and_then(|id| id.parse().ok());
+        let peer_id = member.endpoint_id.as_deref().and_then(|id| id.parse().ok());
         let supports_tunnel = member.supports_tunnel;
         let addr_candidates = member.addr_candidates.clone();
         let tunnel = crate::infer_tunnel::tunnel_sender();

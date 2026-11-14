@@ -122,7 +122,8 @@ impl LocalCa {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("could not read {}", path.display()))?;
-        let ca = Self::parse(&text).with_context(|| format!("{} is not a valid CA", path.display()))?;
+        let ca =
+            Self::parse(&text).with_context(|| format!("{} is not a valid CA", path.display()))?;
         let public = dir.join(ca_cert_filename());
         if std::fs::read_to_string(&public).ok().as_deref() != Some(ca.cert_pem.as_str()) {
             write_replace(&public, ca.cert_pem.as_bytes())?;
@@ -132,7 +133,9 @@ impl LocalCa {
 
     fn parse(text: &str) -> Result<Self> {
         let marker = "-----BEGIN CERTIFICATE-----";
-        let at = text.find(marker).ok_or_else(|| anyhow!("no certificate in the CA file"))?;
+        let at = text
+            .find(marker)
+            .ok_or_else(|| anyhow!("no certificate in the CA file"))?;
         let (key_pem, cert_pem) = text.split_at(at);
         let key = KeyPair::from_pem(key_pem).map_err(|e| anyhow!("CA key: {e}"))?;
         let params = CertificateParams::from_ca_cert_pem(cert_pem)
@@ -227,7 +230,9 @@ impl LocalCa {
             .general_names
             .iter()
             .filter_map(|name| match name {
-                x509_parser::extensions::GeneralName::DNSName(dns) => Some(dns.to_ascii_lowercase()),
+                x509_parser::extensions::GeneralName::DNSName(dns) => {
+                    Some(dns.to_ascii_lowercase())
+                }
                 x509_parser::extensions::GeneralName::IPAddress(bytes) => ip_text(bytes),
                 _ => None,
             })
@@ -243,7 +248,11 @@ impl LocalCa {
 
     /// The certificate the browser receives: the persisted web key, signed by
     /// this CA, for `sans` (IP addresses as they are, DNS names the CA permits).
-    pub fn issue_web_certificate(&self, web_key: &KeyPair, sans: &[String]) -> Result<NodeCertificate> {
+    pub fn issue_web_certificate(
+        &self,
+        web_key: &KeyPair,
+        sans: &[String],
+    ) -> Result<NodeCertificate> {
         let mut params = CertificateParams::new(self.web_names(sans))
             .map_err(|e| anyhow!("invalid web certificate parameters: {e}"))?;
         let mut dn = DistinguishedName::new();
@@ -290,13 +299,19 @@ pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {
 /// new one, kept for the next start. Reissued on every start, it was a new
 /// certificate each restart, and a browser that does not trust the CA holds
 /// its exception for one exact certificate: it asked again every time.
-fn browser_certificate_in(dir: &Path, ca_names: &[String], sans: &[String]) -> Result<NodeCertificate> {
+fn browser_certificate_in(
+    dir: &Path,
+    ca_names: &[String],
+    sans: &[String],
+) -> Result<NodeCertificate> {
     let ca = LocalCa::load_or_create_in(dir, ca_names)?;
     let key = load_or_create_web_key_in(dir)?;
     let path = dir.join(web_cert_filename());
-    let kept = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| x509_parser::pem::parse_x509_pem(text.as_bytes()).ok().map(|(_, pem)| pem.contents));
+    let kept = std::fs::read_to_string(&path).ok().and_then(|text| {
+        x509_parser::pem::parse_x509_pem(text.as_bytes())
+            .ok()
+            .map(|(_, pem)| pem.contents)
+    });
     if let Some(der) = kept.filter(|der| ca.still_serves(der, &key, sans)) {
         return Ok(NodeCertificate {
             cert: der.into(),
@@ -332,14 +347,20 @@ pub fn is_local_web_certificate_pem(pem: &str) -> bool {
 
 /// Whether a URL the native window loads is this machine's own interface:
 /// the certificate exception is never granted to another host.
-#[cfg_attr(not(any(windows, target_os = "linux", target_os = "macos")), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "linux", target_os = "macos")),
+    allow(dead_code)
+)]
 pub fn local_host_of(url: &str) -> Option<String> {
     let rest = url.strip_prefix("https://")?;
     let authority = rest.split(['/', '?', '#']).next()?;
     let host = if let Some(stripped) = authority.strip_prefix('[') {
         stripped.split(']').next()?.to_string()
     } else {
-        authority.rsplit_once(':').map_or(authority, |(host, _)| host).to_string()
+        authority
+            .rsplit_once(':')
+            .map_or(authority, |(host, _)| host)
+            .to_string()
     };
     matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1").then_some(host)
 }
@@ -362,7 +383,8 @@ fn is_web_certificate_in(dir: &Path, der: &[u8]) -> bool {
 /// a name its container does not know (`ksia` for a node in Docker, say).
 pub fn host_names() -> Vec<String> {
     let mut names = vec!["localhost".to_string()];
-    if let Ok(output) = crate::console::hidden(&mut std::process::Command::new("hostname")).output() {
+    if let Ok(output) = crate::console::hidden(&mut std::process::Command::new("hostname")).output()
+    {
         names.push(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
     names.extend(extra_names());
@@ -398,7 +420,11 @@ fn create_ca(names: &[String]) -> Result<(KeyPair, String)> {
     let mut params = CertificateParams::default();
     let mut dn = DistinguishedName::new();
     let tag = hex::encode(rand::random::<[u8; 4]>());
-    let host = names.iter().find(|name| *name != "localhost").cloned().unwrap_or_default();
+    let host = names
+        .iter()
+        .find(|name| *name != "localhost")
+        .cloned()
+        .unwrap_or_default();
     dn.push(DnType::OrganizationName, crate::brand::name());
     dn.push(
         DnType::CommonName,
@@ -424,7 +450,9 @@ fn create_ca(names: &[String]) -> Result<(KeyPair, String)> {
     let (y, m, d) = ymd(CA_VALID_DAYS);
     params.not_after = rcgen::date_time_ymd(y, m, d);
     params.serial_number = Some(random_serial());
-    let cert = params.self_signed(&key).map_err(|e| anyhow!("could not sign the CA: {e}"))?;
+    let cert = params
+        .self_signed(&key)
+        .map_err(|e| anyhow!("could not sign the CA: {e}"))?;
     Ok((key, cert.pem()))
 }
 
@@ -495,7 +523,8 @@ fn write_new(path: &Path, contents: &[u8], private: bool) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(_) if !path.exists() => {
             // A file system without hard links: plain write, last one wins.
-            std::fs::write(path, contents).with_context(|| format!("could not write {}", path.display()))?;
+            std::fs::write(path, contents)
+                .with_context(|| format!("could not write {}", path.display()))?;
             if private {
                 restrict(path);
             }
@@ -532,7 +561,11 @@ mod tests {
     #[test]
     fn the_web_certificate_survives_a_restart_until_an_address_is_new() {
         let dir = tempfile::tempdir().unwrap();
-        let sans = vec!["machine-a".to_string(), "192.168.1.10".to_string(), "::1".to_string()];
+        let sans = vec![
+            "machine-a".to_string(),
+            "192.168.1.10".to_string(),
+            "::1".to_string(),
+        ];
         let first = browser_certificate_in(dir.path(), &names(), &sans).unwrap();
         let again = browser_certificate_in(dir.path(), &names(), &sans).unwrap();
         assert_eq!(first.cert, again.cert);
@@ -584,7 +617,11 @@ mod tests {
         let sans = vec!["127.0.0.1".to_string(), "machine-a".to_string()];
         let first = ca.issue_web_certificate(&key, &sans).unwrap();
         let second = ca.issue_web_certificate(&key, &sans).unwrap();
-        assert_ne!(first.cert.as_ref(), second.cert.as_ref(), "a new serial every time");
+        assert_ne!(
+            first.cert.as_ref(),
+            second.cert.as_ref(),
+            "a new serial every time"
+        );
         assert!(is_web_certificate_in(dir.path(), first.cert.as_ref()));
         assert!(is_web_certificate_in(dir.path(), second.cert.as_ref()));
 
@@ -629,9 +666,18 @@ mod tests {
 
     #[test]
     fn only_this_machines_own_address_gets_the_exception() {
-        assert_eq!(local_host_of("https://127.0.0.1:8080/admin-ui/chat").as_deref(), Some("127.0.0.1"));
-        assert_eq!(local_host_of("https://localhost:8080/").as_deref(), Some("localhost"));
-        assert_eq!(local_host_of("https://[::1]:8080/x").as_deref(), Some("::1"));
+        assert_eq!(
+            local_host_of("https://127.0.0.1:8080/admin-ui/chat").as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            local_host_of("https://localhost:8080/").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(
+            local_host_of("https://[::1]:8080/x").as_deref(),
+            Some("::1")
+        );
         assert_eq!(local_host_of("https://192.168.0.2:8080/"), None);
         assert_eq!(local_host_of("https://127.0.0.1.evil.example/"), None);
         assert_eq!(local_host_of("http://127.0.0.1:8080/"), None);
@@ -647,11 +693,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ca = LocalCa::load_or_create_in(dir.path(), &names()).unwrap();
         let key = load_or_create_web_key_in(dir.path()).unwrap();
-        let sans = vec!["127.0.0.1".to_string(), "machine-a".to_string(), "example.com".to_string()];
+        let sans = vec![
+            "127.0.0.1".to_string(),
+            "machine-a".to_string(),
+            "example.com".to_string(),
+        ];
         let leaf = ca.issue_web_certificate(&key, &sans).unwrap();
 
         let mut roots = rustls::RootCertStore::empty();
-        roots.add(CertificateDer::from(ca.cert_der().to_vec())).unwrap();
+        roots
+            .add(CertificateDer::from(ca.cert_der().to_vec()))
+            .unwrap();
         let verifier = rustls::client::WebPkiServerVerifier::builder(std::sync::Arc::new(roots))
             .build()
             .unwrap();

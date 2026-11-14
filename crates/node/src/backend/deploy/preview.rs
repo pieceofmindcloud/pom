@@ -108,7 +108,11 @@ pub(super) async fn plan_endpoint(
     }
     if p.blocked.is_none() {
         if let Some(service) = req.params.inference_service.as_deref() {
-            super::planning::share_whole_model_roles(req.kind, &mut p.steps, req.params.inference_role);
+            super::planning::share_whole_model_roles(
+                req.kind,
+                &mut p.steps,
+                req.params.inference_role,
+            );
             let targets: Vec<String> = p
                 .steps
                 .iter()
@@ -135,7 +139,11 @@ pub(super) async fn plan_endpoint(
             .await;
             // the service cuts each range from the whole file itself: nothing is written to disk
             if ranges && p.blocked.is_none() {
-                for step in p.steps.iter_mut().filter(|step| step.from_whole_path.is_some()) {
+                for step in p
+                    .steps
+                    .iter_mut()
+                    .filter(|step| step.from_whole_path.is_some())
+                {
                     step.note = None;
                 }
             }
@@ -194,7 +202,10 @@ pub(super) async fn enrich_capacity_previews(
             // A range the machine points at in its own whole file is costed
             // on that file, for the range only.
             let range_of_whole = step.target_path.is_none() && step.from_whole_path.is_some();
-            let model_path = step.target_path.clone().or_else(|| step.from_whole_path.clone());
+            let model_path = step
+                .target_path
+                .clone()
+                .or_else(|| step.from_whole_path.clone());
             let eligible = !step.merged;
             let total_layers = step.total_layers.or(plan.total_layers);
             let req = CapacityPreviewRequest {

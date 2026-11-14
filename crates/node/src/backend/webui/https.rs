@@ -41,7 +41,11 @@ fn download_name(ca: &crate::web_ca::LocalCa) -> String {
         .chars()
         .take(8)
         .collect();
-    let mut name = format!("{}-{host}-ca-{}.crt", crate::brand::slug(), short.to_ascii_lowercase());
+    let mut name = format!(
+        "{}-{host}-ca-{}.crt",
+        crate::brand::slug(),
+        short.to_ascii_lowercase()
+    );
     name.retain(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'));
     name.replace("--", "-")
 }
@@ -78,7 +82,10 @@ pub(super) async fn ca_certificate() -> Response {
     match tokio::task::spawn_blocking(crate::web_ca::LocalCa::load_or_create).await {
         Ok(Ok(ca)) => (
             [
-                (header::CONTENT_TYPE, "application/x-x509-ca-cert".to_string()),
+                (
+                    header::CONTENT_TYPE,
+                    "application/x-x509-ca-cert".to_string(),
+                ),
                 (
                     header::CONTENT_DISPOSITION,
                     format!("attachment; filename=\"{}\"", download_name(&ca)),
@@ -104,11 +111,12 @@ pub(super) async fn ca_install(peer: Option<Extension<crate::serve::PeerAddr>>) 
         )
             .into_response();
     }
-    let report = tokio::task::spawn_blocking(|| -> anyhow::Result<crate::trust_store::InstallReport> {
-        let ca = crate::web_ca::LocalCa::load_or_create()?;
-        Ok(crate::trust_store::install(&ca))
-    })
-    .await;
+    let report =
+        tokio::task::spawn_blocking(|| -> anyhow::Result<crate::trust_store::InstallReport> {
+            let ca = crate::web_ca::LocalCa::load_or_create()?;
+            Ok(crate::trust_store::install(&ca))
+        })
+        .await;
     match report {
         Ok(Ok(report)) => Json(report).into_response(),
         Ok(Err(error)) => unavailable(error),

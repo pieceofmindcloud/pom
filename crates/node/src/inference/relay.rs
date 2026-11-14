@@ -9,10 +9,10 @@
 //! encode/decode path instead of drifting apart.
 
 use crate::infer_tunnel::{TunnelOutbound, TunnelOutboundSender, TunnelRequest};
+use crate::p2p::EndpointId;
 use crate::wire::{self, FrameEncoding, TensorShape, WireDtype};
 use anyhow::{anyhow, Result};
 use axum::body::Bytes;
-use crate::p2p::EndpointId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -2523,16 +2523,8 @@ async fn send_bytes_via_tunnel(
     let response = match tokio::time::timeout(TUNNEL_BYTES_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: p2p tunnel failure: {error}")),
-        Ok(Err(_)) => {
-            return Err(anyhow!(
-                "{peer_label}: p2p tunnel closed without answering"
-            ))
-        }
-        Err(_) => {
-            return Err(anyhow!(
-                "{peer_label}: p2p tunnel did not answer in time"
-            ))
-        }
+        Ok(Err(_)) => return Err(anyhow!("{peer_label}: p2p tunnel closed without answering")),
+        Err(_) => return Err(anyhow!("{peer_label}: p2p tunnel did not answer in time")),
     };
 
     if !(200..300).contains(&response.status) {
@@ -3380,10 +3372,7 @@ mod tests {
     fn a_declared_step_budget_raises_the_decode_deadline_up_to_its_ceiling() {
         let fixed = frame_deadline(1, 0, 1);
         let slow = json!({"token_id": 7, STEP_BUDGET_KEY: 40_000});
-        assert_eq!(
-            frame_deadline_for(&slow, None),
-            Duration::from_secs(40)
-        );
+        assert_eq!(frame_deadline_for(&slow, None), Duration::from_secs(40));
         // Never below the fixed deadline, never past the ceiling.
         let fast = json!({"token_id": 7, STEP_BUDGET_KEY: 1});
         assert_eq!(frame_deadline_for(&fast, None), fixed);

@@ -17,9 +17,10 @@ use crate::gateway::{
     DEFAULT_MAX_TOKENS,
 };
 use crate::tool_call::{
-    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call, render_tools_block, OutputPart,
-    ScanEvent, TagScanner, ToolDef, ToolSignatures,
+    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call,
+    render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef, ToolSignatures,
 };
+use axum::extract::DefaultBodyLimit;
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -27,7 +28,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use axum::extract::DefaultBodyLimit;
 use base64::Engine as _;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
@@ -535,8 +535,7 @@ fn covers_whole_model(p: &crate::network::PeerInfo) -> bool {
 /// that is loading must not hide the one that serves).
 fn group_ready(group: &[&crate::network::PeerInfo]) -> bool {
     let ready = |p: &crate::network::PeerInfo| p.runtime_capacity.is_some() || p.idle;
-    group.iter().all(|p| ready(p))
-        || group.iter().any(|p| ready(p) && covers_whole_model(p))
+    group.iter().all(|p| ready(p)) || group.iter().any(|p| ready(p) && covers_whole_model(p))
 }
 
 pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
@@ -548,8 +547,10 @@ pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<St
     let mut ids: Vec<String> = alive_models
         .into_iter()
         .filter(|model| {
-            let group: Vec<&crate::network::PeerInfo> =
-                peers.iter().filter(|p| p.is_alive() && p.model == *model).collect();
+            let group: Vec<&crate::network::PeerInfo> = peers
+                .iter()
+                .filter(|p| p.is_alive() && p.model == *model)
+                .collect();
             group_ready(&group)
         })
         .collect();
@@ -587,7 +588,13 @@ async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> im
             .advertised_output_limits_from_peers(&peers, Some(&id))
             .await;
         let vision = crate::webui::model_vision_supported(&state, &id).await;
-        data.push(model_object(id, created, context_length, max_completion_tokens, vision));
+        data.push(model_object(
+            id,
+            created,
+            context_length,
+            max_completion_tokens,
+            vision,
+        ));
     }
 
     let first_id = data.first().map(|model| model.id.clone());
@@ -880,9 +887,14 @@ async fn completions(
         };
         return error_response(status, error);
     }
-    if let Some(denial) =
-        crate::quota::admit(&state, auth.caller(), &req.prompt, prompt_tokens, &request_details)
-            .await
+    if let Some(denial) = crate::quota::admit(
+        &state,
+        auth.caller(),
+        &req.prompt,
+        prompt_tokens,
+        &request_details,
+    )
+    .await
     {
         crate::gateway::record_rejected(
             &state,
@@ -1269,7 +1281,16 @@ fn stream_response(
         tx,
     );
 
-    let stream = sse_stream(rx, id, created, model, mode, budget.total, output_limit, tools);
+    let stream = sse_stream(
+        rx,
+        id,
+        created,
+        model,
+        mode,
+        budget.total,
+        output_limit,
+        tools,
+    );
     (
         cors_headers(),
         Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()),
@@ -1774,11 +1795,16 @@ mod tests {
         let off = json!({"chat_template_kwargs": {"enable_thinking": false}});
         assert!(!super::client_thinking(None, &off));
         assert!(super::client_thinking(Some(true), &off));
-        assert!(!super::client_thinking(None, &json!({"reasoning_effort": "none"})));
-        assert!(super::client_thinking(None, &json!({"reasoning_effort": "low"})));
+        assert!(!super::client_thinking(
+            None,
+            &json!({"reasoning_effort": "none"})
+        ));
+        assert!(super::client_thinking(
+            None,
+            &json!({"reasoning_effort": "low"})
+        ));
         assert!(super::client_thinking(None, &json!({})));
     }
-
 
     #[test]
     fn reasoning_uses_the_structured_chat_delta_instead_of_visible_content() {

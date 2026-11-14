@@ -75,7 +75,9 @@ pub(super) fn candidate_edges(views: &[PeerView]) -> Vec<RoutingEdgeView> {
     let mut edges = Vec::new();
     for from in views.iter().filter(|view| view.role == Some("prefill")) {
         for to in views.iter().filter(|view| {
-            view.node_id != from.node_id && view.engine == from.engine && view.role != Some("prefill")
+            view.node_id != from.node_id
+                && view.engine == from.engine
+                && view.role != Some("prefill")
         }) {
             for from_capability in from.capabilities.iter().filter(|c| c.supports_inference) {
                 if to.capabilities.iter().any(|c| {
@@ -520,9 +522,11 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         };
         views.push(PeerView {
             engine: crate::plugin_engine::engine_of_peer(p),
-            role: Some(crate::plugin_engine::role_of_capabilities(&p.inference_frame_capabilities))
-                .filter(|role| !role.is_both() && crate::plugin_engine::engine_of_peer(p).is_some())
-                .map(|role| role.as_str()),
+            role: Some(crate::plugin_engine::role_of_capabilities(
+                &p.inference_frame_capabilities,
+            ))
+            .filter(|role| !role.is_both() && crate::plugin_engine::engine_of_peer(p).is_some())
+            .map(|role| role.as_str()),
             short_id: p.node_id[..p.node_id.len().min(12)].to_string(),
             node_id: p.node_id.clone(),
             addr: p.addr.clone(),
@@ -701,7 +705,9 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
         let mut planned = None;
         for engine in crate::plugin_engine::pipeline_engines(&peers, None) {
             let group = crate::plugin_engine::peers_of_engine(&peers, engine.as_deref());
-            if let Some(plan) = crate::pipeline::plan_pipeline(&group, &active, None, total, &state.loads).await {
+            if let Some(plan) =
+                crate::pipeline::plan_pipeline(&group, &active, None, total, &state.loads).await
+            {
                 planned = Some(plan);
                 break;
             }
@@ -723,7 +729,8 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
     };
     let candidate_edges = candidate_edges(&views);
 
-    let self_node = serde_json::to_value(node_info(HeaderMap::new(), State(state.clone())).await.0).ok();
+    let self_node =
+        serde_json::to_value(node_info(HeaderMap::new(), State(state.clone())).await.0).ok();
 
     let body = json!({
         "self_id": self_id,
@@ -796,7 +803,9 @@ async fn chat_capabilities_value(
     deploy_id: Option<&str>,
     vision_only: bool,
 ) -> serde_json::Value {
-    let requested = crate::deployment::split_selector(model.trim()).0.to_string();
+    let requested = crate::deployment::split_selector(model.trim())
+        .0
+        .to_string();
     let active_model = if requested.is_empty() {
         state.displayed_model().await
     } else {
@@ -1163,7 +1172,8 @@ pub(super) async fn cluster_models(State(state): State<GatewayState>) -> impl In
         })
         .collect();
 
-    let hf_sources = crate::model_provider_backend::installed_sources(state.model_dirs().await).await;
+    let hf_sources =
+        crate::model_provider_backend::installed_sources(state.model_dirs().await).await;
     let mut out = vec![json!({
         "hf_sources": hf_sources,
         "node_id": self_id,

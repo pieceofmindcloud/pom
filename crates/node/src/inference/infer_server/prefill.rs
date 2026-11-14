@@ -2004,8 +2004,7 @@ pub(super) fn prefill_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let (residual, residual_shape) =
-                output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let (residual, residual_shape) = output.residual_for(&item.sid_key, s.engine.n_embd)?;
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let mut meta = json!({
                 "done": false,
@@ -2452,8 +2451,7 @@ pub(super) fn step_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let (residual, residual_shape) =
-                output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let (residual, residual_shape) = output.residual_for(&item.sid_key, s.engine.n_embd)?;
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let tokens = match &item.input {
                 PreparedStepInput::Tokens { token } => vec![*token],

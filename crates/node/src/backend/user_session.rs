@@ -365,7 +365,15 @@ fn normalize_path(raw: &str) -> Option<String> {
     } else {
         format!("/{trimmed}")
     };
-    let reserved = ["/api", "/v1", "/auth", "/admin", "/admin-ui", "/health", "/peers"];
+    let reserved = [
+        "/api",
+        "/v1",
+        "/auth",
+        "/admin",
+        "/admin-ui",
+        "/health",
+        "/peers",
+    ];
     (path.len() >= 4
         && path[1..]
             .chars()
@@ -507,7 +515,11 @@ fn with_session_cookies(
     response
 }
 
-fn clear_session_cookies(mut response: Response, headers: &axum::http::HeaderMap, secure: bool) -> Response {
+fn clear_session_cookies(
+    mut response: Response,
+    headers: &axum::http::HeaderMap,
+    secure: bool,
+) -> Response {
     let name = crate::auth::admin_session_cookie_name(headers, secure);
     for path in crate::auth::ADMIN_SESSION_COOKIE_PATHS {
         let mut value = format!("{name}=; Max-Age=0; Path={path}; HttpOnly; SameSite=Strict");
@@ -541,7 +553,11 @@ async fn operator_login(state: &GatewayState, request: Request) -> Result<Respon
     if method != Method::POST {
         return Ok(not_found());
     }
-    let Some(peer) = request.extensions().get::<crate::serve::PeerAddr>().copied() else {
+    let Some(peer) = request
+        .extensions()
+        .get::<crate::serve::PeerAddr>()
+        .copied()
+    else {
         return Ok(not_found());
     };
     let ip = peer.0.ip();
@@ -555,7 +571,11 @@ async fn operator_login(state: &GatewayState, request: Request) -> Result<Respon
             .into_response());
     }
     if !crate::plugin_proxy::same_origin(request.headers()) {
-        return Ok((StatusCode::FORBIDDEN, Json(json!({ "error": "cross-origin" }))).into_response());
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "cross-origin" })),
+        )
+            .into_response());
     }
     let secure = is_secure(&request);
     let (parts, body) = request.into_parts();
@@ -799,7 +819,9 @@ pub fn chat_token_caller(token: &str) -> Option<crate::reqlog::Caller> {
     let mut tokens = chat_tokens().lock().ok()?;
     let now = Instant::now();
     tokens.retain(|_, token| token.expires_at > now);
-    tokens.get(&token_digest(token)).map(|token| token.caller.clone())
+    tokens
+        .get(&token_digest(token))
+        .map(|token| token.caller.clone())
 }
 
 pub fn caller_for(user: &UserIdentity) -> crate::reqlog::Caller {
@@ -869,7 +891,11 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
     if post && path == "/api/ui/chat/image" {
         return true;
     }
-    if get && path.strip_prefix("/api/ui/chat/image/").is_some_and(|hash| !hash.is_empty() && !hash.contains('/')) {
+    if get
+        && path
+            .strip_prefix("/api/ui/chat/image/")
+            .is_some_and(|hash| !hash.is_empty() && !hash.contains('/'))
+    {
         return true;
     }
     // A demonstration node shows, read-only, what the operator has: the
@@ -1021,8 +1047,17 @@ pub async fn unalias_node(state: &GatewayState, id: &str) -> String {
         return id.to_owned();
     }
     let mut ids = vec![state.network.node_id.clone()];
-    ids.extend(state.network.alive_peers().await.into_iter().map(|peer| peer.node_id));
-    ids.into_iter().find(|node_id| alias(node_id) == id).unwrap_or_else(|| id.to_owned())
+    ids.extend(
+        state
+            .network
+            .alive_peers()
+            .await
+            .into_iter()
+            .map(|peer| peer.node_id),
+    );
+    ids.into_iter()
+        .find(|node_id| alias(node_id) == id)
+        .unwrap_or_else(|| id.to_owned())
 }
 
 fn looks_like_address(value: &str) -> bool {
@@ -1223,7 +1258,8 @@ async fn seat_of(
     headers: &axum::http::HeaderMap,
     secure: bool,
 ) -> crate::demo_slots::SeatStatus {
-    let Some(session) = crate::auth::session_id_from_cookie(headers, secure).map(str::to_owned) else {
+    let Some(session) = crate::auth::session_id_from_cookie(headers, secure).map(str::to_owned)
+    else {
         return crate::demo_slots::SeatStatus::Expired;
     };
     let (status, expired) = crate::demo_slots::status(&session, &user.user_id);
@@ -1256,7 +1292,10 @@ async fn user_quota(state: &GatewayState, user: &UserIdentity) -> Response {
             json!({ "profile": "user", "user_id": user.user_id, "params": {} }),
         )
         .await;
-    match reply.and_then(|reply| reply.get("quota").cloned()).filter(|q| q.is_object()) {
+    match reply
+        .and_then(|reply| reply.get("quota").cloned())
+        .filter(|q| q.is_object())
+    {
         Some(mut quota) => {
             quota["available"] = json!(true);
             if let Some(map) = quota.as_object_mut() {
@@ -1269,7 +1308,9 @@ async fn user_quota(state: &GatewayState, user: &UserIdentity) -> Response {
 }
 
 async fn logout(state: &GatewayState, headers: axum::http::HeaderMap, secure: bool) -> Response {
-    if let Some(session_id) = crate::auth::session_id_from_cookie(&headers, secure).map(str::to_owned) {
+    if let Some(session_id) =
+        crate::auth::session_id_from_cookie(&headers, secure).map(str::to_owned)
+    {
         state.admin_sessions.lock().await.revoke(&session_id);
         crate::demo_slots::release(&session_id);
     }
@@ -1278,7 +1319,10 @@ async fn logout(state: &GatewayState, headers: axum::http::HeaderMap, secure: bo
 
 /// Handles the operator path before any other check. `Err` gives the request
 /// back to the gate.
-pub(crate) async fn before_gate(state: &GatewayState, request: Request) -> Result<Response, Request> {
+pub(crate) async fn before_gate(
+    state: &GatewayState,
+    request: Request,
+) -> Result<Response, Request> {
     operator_login(state, request).await
 }
 
@@ -1383,7 +1427,11 @@ pub(crate) async fn after_gate(
         return user_quota(state, user).await;
     }
     if path == "/api/ui/chat-key" {
-        return (StatusCode::OK, Json(json!({ "key": issue_chat_token(user) }))).into_response();
+        return (
+            StatusCode::OK,
+            Json(json!({ "key": issue_chat_token(user) })),
+        )
+            .into_response();
     }
     if path.starts_with("/api/ui/my-keys") {
         return crate::user_keys::handle(state, user, request).await;
@@ -1445,7 +1493,11 @@ async fn demo_network_chat_post(state: &GatewayState, request: Request) -> Respo
         text: format!("[demo] {text}"),
         sent_at: chrono::Utc::now(),
     };
-    let chat = crate::network_chat::ChatRequest { action, api_key: String::new(), relayed: false };
+    let chat = crate::network_chat::ChatRequest {
+        action,
+        api_key: String::new(),
+        relayed: false,
+    };
     match state.network_chat.submit(chat).await {
         Ok(response) if response.accepted => Json(response).into_response(),
         Ok(response) => (StatusCode::FORBIDDEN, Json(response)).into_response(),
@@ -1464,11 +1516,17 @@ fn demo_chat_text(body: &Value) -> Option<String> {
     if action.get("kind")?.as_str()? != "text" {
         return None;
     }
-    let room = action.get("room_id").and_then(Value::as_str).unwrap_or(crate::network_chat::NETWORK_CHAT_ROOM);
+    let room = action
+        .get("room_id")
+        .and_then(Value::as_str)
+        .unwrap_or(crate::network_chat::NETWORK_CHAT_ROOM);
     if room != crate::network_chat::NETWORK_CHAT_ROOM {
         return None;
     }
-    if action.get("recipient_node_id").is_some_and(|value| !value.is_null()) {
+    if action
+        .get("recipient_node_id")
+        .is_some_and(|value| !value.is_null())
+    {
         return None;
     }
     let text = action.get("text")?.as_str()?.trim();
@@ -1481,13 +1539,18 @@ fn demo_chat_text(body: &Value) -> Option<String> {
 /// Whether a network Chat read asks for a room other than the members' one.
 fn demo_chat_reads_lobby(query: Option<&str>) -> bool {
     query.unwrap_or_default().split('&').any(|pair| {
-        pair.split_once('=')
-            .is_some_and(|(key, value)| key == "room" && value != crate::network_chat::NETWORK_CHAT_ROOM)
+        pair.split_once('=').is_some_and(|(key, value)| {
+            key == "room" && value != crate::network_chat::NETWORK_CHAT_ROOM
+        })
     })
 }
 
 fn demo_chat_refused(reason: &str) -> Response {
-    (StatusCode::FORBIDDEN, Json(json!({ "accepted": false, "error": reason }))).into_response()
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "accepted": false, "error": reason })),
+    )
+        .into_response()
 }
 
 /// The caller of a plugin RPC or a request-log query, for the plugin: a
@@ -1512,13 +1575,21 @@ mod tests {
         assert!(!user_may_call(&Method::GET, "/api/ui/connection", false));
         assert!(!user_may_call(&Method::POST, "/api/ui/leave", true));
         assert!(user_may_call(&Method::POST, "/api/ui/chat/image", true));
-        assert!(user_may_call(&Method::GET, "/api/ui/chat/image/abc123", false));
+        assert!(user_may_call(
+            &Method::GET,
+            "/api/ui/chat/image/abc123",
+            false
+        ));
         assert!(!user_may_call(&Method::GET, "/api/ui/chat/image/a/b", true));
         assert!(!user_may_call(&Method::GET, "/admin/api-keys", false));
         assert!(!user_may_call(&Method::POST, "/api/ui/deploy", false));
         assert!(!user_may_call(&Method::POST, "/api/ui/cluster", false));
         assert!(!user_may_call(&Method::GET, "/api/ui/network/relay", false));
-        assert!(!user_may_call(&Method::POST, "/api/ui/plugins/base/rpc/x", false));
+        assert!(!user_may_call(
+            &Method::POST,
+            "/api/ui/plugins/base/rpc/x",
+            false
+        ));
     }
 
     #[test]
@@ -1531,15 +1602,32 @@ mod tests {
 
     #[test]
     fn demo_shows_the_catalog_read_only() {
-        for path in ["/api/ui/plugins", "/api/ui/models", "/api/ui/network/info", "/api/ui/quota"] {
+        for path in [
+            "/api/ui/plugins",
+            "/api/ui/models",
+            "/api/ui/network/info",
+            "/api/ui/quota",
+        ] {
             assert!(user_may_call(&Method::GET, path, true), "{path}");
             assert!(!user_may_call(&Method::GET, path, false), "{path}");
         }
-        assert!(!user_may_call(&Method::POST, "/api/ui/plugins/activate", true));
-        assert!(!user_may_call(&Method::POST, "/api/ui/plugins/github-repositories", true));
+        assert!(!user_may_call(
+            &Method::POST,
+            "/api/ui/plugins/activate",
+            true
+        ));
+        assert!(!user_may_call(
+            &Method::POST,
+            "/api/ui/plugins/github-repositories",
+            true
+        ));
         assert!(!user_may_call(&Method::POST, "/api/ui/slice", true));
         assert!(!user_may_call(&Method::POST, "/api/transfer/send", true));
-        assert!(!user_may_call(&Method::POST, "/api/ui/network/settings", true));
+        assert!(!user_may_call(
+            &Method::POST,
+            "/api/ui/network/settings",
+            true
+        ));
         assert!(!user_may_call(&Method::GET, "/api/ui/network-chat", false));
         assert!(!user_may_call(&Method::GET, "/api/ui/cluster-logs", true));
         assert!(user_may_call(&Method::GET, "/api/ui/demo/session", true));
@@ -1548,7 +1636,12 @@ mod tests {
 
     #[test]
     fn demo_plays_with_networks_chat_and_deploy_but_changes_nothing() {
-        for path in ["/api/ui/networks/known", "/api/ui/networks/pinned", "/api/ui/network/relay", "/api/ui/network-chat"] {
+        for path in [
+            "/api/ui/networks/known",
+            "/api/ui/networks/pinned",
+            "/api/ui/network/relay",
+            "/api/ui/network-chat",
+        ] {
             assert!(user_may_call(&Method::GET, path, true), "{path}");
             assert!(!user_may_call(&Method::GET, path, false), "{path}");
         }
@@ -1571,16 +1664,19 @@ mod tests {
 
     #[test]
     fn a_demo_visitor_posts_text_to_the_network_room_only() {
-        let frame = |kind: &str, room: &str, recipient: Value, text: &str| {
-            json!({"action": {"kind": kind, "room_id": room, "recipient_node_id": recipient, "text": text}})
-        };
-        assert_eq!(demo_chat_text(&frame("text", "network", Value::Null, "  hi  ")).as_deref(), Some("hi"));
+        let frame = |kind: &str, room: &str, recipient: Value, text: &str| json!({"action": {"kind": kind, "room_id": room, "recipient_node_id": recipient, "text": text}});
+        assert_eq!(
+            demo_chat_text(&frame("text", "network", Value::Null, "  hi  ")).as_deref(),
+            Some("hi")
+        );
         assert!(demo_chat_text(&frame("file", "network", Value::Null, "hi")).is_none());
         assert!(demo_chat_text(&frame("typing", "network", Value::Null, "hi")).is_none());
         assert!(demo_chat_text(&frame("text", "lobby", Value::Null, "hi")).is_none());
         assert!(demo_chat_text(&frame("text", "network", json!("abc"), "hi")).is_none());
         assert!(demo_chat_text(&frame("text", "network", Value::Null, "   ")).is_none());
-        assert!(demo_chat_text(&frame("text", "network", Value::Null, &"x".repeat(2001))).is_none());
+        assert!(
+            demo_chat_text(&frame("text", "network", Value::Null, &"x".repeat(2001))).is_none()
+        );
         assert!(demo_chat_reads_lobby(Some("room=lobby")));
         assert!(!demo_chat_reads_lobby(Some("room=network")));
         assert!(!demo_chat_reads_lobby(None));
@@ -1637,7 +1733,10 @@ mod tests {
         let mut node = json!({"hostname": "box", "listen_addrs": ["10.0.0.1:1"], "lat": 1.5});
         redact(&mut node, true);
         // The machine's name stays: it is how a person tells the machines apart.
-        assert_eq!(node, json!({"hostname": "box", "listen_addrs": [], "lat": null}));
+        assert_eq!(
+            node,
+            json!({"hostname": "box", "listen_addrs": [], "lat": null})
+        );
         let mut address_name = json!({"hostname": "10.0.0.9"});
         redact(&mut address_name, true);
         assert_eq!(address_name["hostname"], "hidden");
@@ -1686,7 +1785,10 @@ mod tests {
 
     #[test]
     fn operator_paths_are_normalized_and_reserved_ones_refused() {
-        assert_eq!(normalize_path("_k7q-console/").as_deref(), Some("/_k7q-console"));
+        assert_eq!(
+            normalize_path("_k7q-console/").as_deref(),
+            Some("/_k7q-console")
+        );
         assert_eq!(normalize_path("/api"), None);
         assert_eq!(normalize_path("/a/b"), None);
         assert_eq!(normalize_path("/x"), None);
@@ -1791,7 +1893,11 @@ mod tests {
             assert_eq!(body["kind"], "user");
             assert_eq!(body["user"]["user_id"], "u1");
 
-            for path in ["/api/ui/connection", "/api/ui/network/relay", "/admin/api-keys"] {
+            for path in [
+                "/api/ui/connection",
+                "/api/ui/network/relay",
+                "/admin/api-keys",
+            ] {
                 let refused = app(state.clone())
                     .oneshot(request(Method::GET, path, &session, peer))
                     .await
@@ -1804,7 +1910,10 @@ mod tests {
                 .await
                 .unwrap();
             let token = body_of(key).await["key"].as_str().unwrap().to_owned();
-            assert_eq!(chat_token_caller(&token).unwrap().user_id.as_deref(), Some("u1"));
+            assert_eq!(
+                chat_token_caller(&token).unwrap().user_id.as_deref(),
+                Some("u1")
+            );
 
             let node = app(state.clone())
                 .oneshot(request(Method::GET, "/api/ui/node", &session, peer))

@@ -618,14 +618,16 @@ async fn auto_head(
         false
     };
     if let Some((model, key)) = conversation {
-        if let Some(holder) = crate::plugin_session::holder_of(model, key).filter(|head| heads.contains(head)) {
+        if let Some(holder) =
+            crate::plugin_session::holder_of(model, key).filter(|head| heads.contains(head))
+        {
             if keeps(&holder, &format!("the conversation {key}")) {
                 return Some(holder);
             }
         }
         // a new conversation that begins with most of a prompt a head read recently: that head reuses what it read
-        if let Some(holder) =
-            crate::plugin_session::holder_of_prompt_start(model, prompt).filter(|head| heads.contains(head))
+        if let Some(holder) = crate::plugin_session::holder_of_prompt_start(model, prompt)
+            .filter(|head| heads.contains(head))
         {
             if keeps(&holder, "the start of this prompt") {
                 return Some(holder);
@@ -646,15 +648,25 @@ async fn auto_head(
                     && cache_prompt.starts_with(&snapshot.prompt)
             })
             .max_by_key(|snapshot| snapshot.prompt.len())
-            .and_then(|snapshot| snapshot.key.hops.first().and_then(|hop| hop.split('@').next().map(str::to_owned)));
+            .and_then(|snapshot| {
+                snapshot
+                    .key
+                    .hops
+                    .first()
+                    .and_then(|hop| hop.split('@').next().map(str::to_owned))
+            });
         if let Some(head) = held.filter(|head| heads.contains(head)) {
             info!("first stage: the session is already on {head}");
             return Some(head);
         }
     }
     let turn = crate::pipeline::next_head_turn(model);
-    let chosen = crate::fastest::rotate_head(&heads, turn, |head| queue.get(head).copied().unwrap_or(0))?;
-    info!("first stage by rotation over {} heads: {chosen}", heads.len());
+    let chosen =
+        crate::fastest::rotate_head(&heads, turn, |head| queue.get(head).copied().unwrap_or(0))?;
+    info!(
+        "first stage by rotation over {} heads: {chosen}",
+        heads.len()
+    );
     Some(chosen)
 }
 
@@ -764,7 +776,12 @@ pub(super) async fn generate_stream_inner(
     let step_budget = crate::relay::StepBudget::default();
     crate::relay::with_step_budget(
         step_budget.clone(),
-        Box::pin(generate_measured_stream(input, tx, cancellation, step_budget)),
+        Box::pin(generate_measured_stream(
+            input,
+            tx,
+            cancellation,
+            step_budget,
+        )),
     )
     .await
 }
@@ -2376,7 +2393,11 @@ async fn build_shared_prefix(
         "shared system part ({} bytes) read on its own in {} ms: {}",
         root_prompt.len(),
         started.elapsed().as_millis(),
-        if done { "ok" } else { "failed, the request reads it cold" }
+        if done {
+            "ok"
+        } else {
+            "failed, the request reads it cold"
+        }
     );
     done
 }
@@ -3170,8 +3191,8 @@ async fn route_audit_event_to_local_store<F>(
 #[cfg(test)]
 mod audit_replication_tests {
     use super::*;
-    use crate::reqlog::{AuditCompletion, AuditEvent, AuditRequest, Caller};
     use crate::p2p::EndpointId;
+    use crate::reqlog::{AuditCompletion, AuditEvent, AuditRequest, Caller};
     use std::collections::{HashMap, HashSet};
 
     // Representative reproduction from the admins' point of view:
@@ -3186,7 +3207,13 @@ mod audit_replication_tests {
     #[tokio::test]
     async fn plugin_accepted_inference_log_reaches_every_admin_peer() {
         let network = Arc::new(
-            crate::network::Network::testkit("admin-source".into(), "source-key".into(), vec![], None, None)
+            crate::network::Network::testkit(
+                "admin-source".into(),
+                "source-key".into(),
+                vec![],
+                None,
+                None,
+            )
             .await
             .expect("isolated network"),
         );

@@ -48,7 +48,11 @@ pub(crate) fn is_principal(state: &GatewayState) -> bool {
 }
 
 fn refused(reason: &'static str) -> Response {
-    (StatusCode::FORBIDDEN, Json(json!({ "error": reason, "reason": reason }))).into_response()
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "error": reason, "reason": reason })),
+    )
+        .into_response()
 }
 
 /// The admin who signed `auth`, when it is one of the chain's.
@@ -65,9 +69,10 @@ async fn role_to_issue(
     state: &GatewayState,
     caller: &crate::admin_trust::AuthorityPrincipal,
 ) -> Option<crate::config::EnrollmentRole> {
-    if let Some(role) = state
-        .network_chat
-        .admitted_role(&caller.node_id, state.admin_trust.revoked_node_at(&caller.node_id)) {
+    if let Some(role) = state.network_chat.admitted_role(
+        &caller.node_id,
+        state.admin_trust.revoked_node_at(&caller.node_id),
+    ) {
         return Some(role);
     }
     if !state.auth.read().await.network.open_admission()
@@ -155,7 +160,10 @@ pub(crate) async fn relay_passes(
         // The URL is the visitor's own claim: a pass goes only to a relay on a
         // public host the peer is reached at, never one it points elsewhere.
         if !relay_url_is_peers(&url, &peer) {
-            debug!("no relay pass for {url}: not a public address of {}", peer.node_id);
+            debug!(
+                "no relay pass for {url}: not a public address of {}",
+                peer.node_id
+            );
             continue;
         }
         match crate::relay_pass::issue(
@@ -174,11 +182,15 @@ pub(crate) async fn relay_passes(
 
 /// Host of `http(s)://host:port/`, without IPv6 brackets.
 fn url_host(url: &str) -> Option<&str> {
-    let rest = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://"))?;
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
     let authority = rest.split('/').next()?;
     let host = match authority.strip_prefix('[') {
         Some(v6) => v6.split(']').next()?,
-        None => authority.rsplit_once(':').map_or(authority, |(host, _)| host),
+        None => authority
+            .rsplit_once(':')
+            .map_or(authority, |(host, _)| host),
     };
     (!host.is_empty()).then_some(host)
 }
@@ -216,7 +228,10 @@ mod relay_url_tests {
         assert!(relay_url_is_peers("http://[2001:db8::5]:52000/", &visitor));
         // Another host, a private one, or no URL at all.
         assert!(!relay_url_is_peers("http://198.51.100.9:52000/", &visitor));
-        assert!(!relay_url_is_peers("http://10.0.0.5:52000/", &peer(&["10.0.0.5:42777"])));
+        assert!(!relay_url_is_peers(
+            "http://10.0.0.5:52000/",
+            &peer(&["10.0.0.5:42777"])
+        ));
         assert!(!relay_url_is_peers("relay.example", &visitor));
     }
 }
@@ -329,7 +344,9 @@ pub(crate) async fn ban(
         node_id,
         chrono::Utc::now().timestamp(),
     )?;
-    let added = state.admin_trust.merge_revocations(vec![revocation.clone()]);
+    let added = state
+        .admin_trust
+        .merge_revocations(vec![revocation.clone()]);
     on_revoked(state, &added).await;
     let state = state.clone();
     tokio::spawn(async move { push_revocations(&state, added).await });
@@ -342,7 +359,10 @@ pub(crate) async fn ban(
 /// the connection key, as when a member leaves.
 async fn on_revoked(state: &GatewayState, added: &[crate::membership::Revocation]) {
     for revocation in added {
-        warn!("member {} revoked by admin {}", revocation.sub, revocation.iss);
+        warn!(
+            "member {} revoked by admin {}",
+            revocation.sub, revocation.iss
+        );
         state.network.drop_revoked(&revocation.sub).await;
         if is_principal(state)
             && state
@@ -453,14 +473,9 @@ pub(crate) fn spawn_revocation_keeper(state: GatewayState) {
 /// Reads the principal's admission list into the mirror. Returns it.
 pub(crate) async fn refresh_roster(state: &GatewayState) -> anyhow::Result<Vec<AdmissionRecord>> {
     let peer = principal_peer(state).await?;
-    let response = crate::admin::post_internal_json(
-        state,
-        &peer,
-        ROSTER_PATH,
-        &json!({}),
-        MEMBERSHIP_TIMEOUT,
-    )
-    .await?;
+    let response =
+        crate::admin::post_internal_json(state, &peer, ROSTER_PATH, &json!({}), MEMBERSHIP_TIMEOUT)
+            .await?;
     if !response.status().is_success() {
         anyhow::bail!("the principal answered {}", response.status());
     }
@@ -485,14 +500,9 @@ pub(crate) async fn forward_decision(
                 .into_response()
         }
     };
-    let sent = crate::admin::post_internal_json(
-        state,
-        &peer,
-        DECIDE_PATH,
-        decision,
-        MEMBERSHIP_TIMEOUT,
-    )
-    .await;
+    let sent =
+        crate::admin::post_internal_json(state, &peer, DECIDE_PATH, decision, MEMBERSHIP_TIMEOUT)
+            .await;
     match sent {
         Ok(response) if response.status().is_success() => {
             match response.json::<Vec<AdmissionRecord>>().await {
@@ -508,8 +518,8 @@ pub(crate) async fn forward_decision(
             }
         }
         Ok(response) => {
-            let status = StatusCode::from_u16(response.status().as_u16())
-                .unwrap_or(StatusCode::BAD_GATEWAY);
+            let status =
+                StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
             let body = response.json::<Value>().await.unwrap_or(Value::Null);
             (status, Json(body)).into_response()
         }
@@ -580,7 +590,9 @@ async fn request_token(
                 .ok_or_else(|| anyhow::anyhow!("the admin's token does not hold"))?;
                 return Ok((token, relays));
             }
-            Ok(response) => last = anyhow::anyhow!("{} answered {}", peer.node_id, response.status()),
+            Ok(response) => {
+                last = anyhow::anyhow!("{} answered {}", peer.node_id, response.status())
+            }
             Err(error) => last = error,
         }
     }
@@ -682,7 +694,8 @@ struct ConnectionTrack {
 }
 
 fn connection_track() -> &'static std::sync::Mutex<ConnectionTrack> {
-    static TRACK: std::sync::OnceLock<std::sync::Mutex<ConnectionTrack>> = std::sync::OnceLock::new();
+    static TRACK: std::sync::OnceLock<std::sync::Mutex<ConnectionTrack>> =
+        std::sync::OnceLock::new();
     TRACK.get_or_init(|| {
         std::sync::Mutex::new(ConnectionTrack {
             phase: None,
@@ -803,7 +816,10 @@ mod connection_tests {
             crate::admin_trust::AdminTrust::in_memory(trust.document()).unwrap(),
         );
         admin.authority_principal = principal.clone();
-        assert_eq!(refresh_connection_phase(&admin).await.0, ConnectionPhase::Standalone);
+        assert_eq!(
+            refresh_connection_phase(&admin).await.0,
+            ConnectionPhase::Standalone
+        );
 
         let visitor_key = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
         let mut visitor = crate::gateway::testkit::state_with("peer-visitor", vec![]).await;
@@ -812,7 +828,10 @@ mod connection_tests {
         );
         visitor.authority_principal =
             AuthorityPrincipal::from_signing_key("visitor", "peer-visitor", &visitor_key);
-        assert_eq!(refresh_connection_phase(&visitor).await.0, ConnectionPhase::Discovering);
+        assert_eq!(
+            refresh_connection_phase(&visitor).await.0,
+            ConnectionPhase::Discovering
+        );
 
         let mut heard = crate::gateway::testkit::peer(&principal.node_id, "principal", 8090);
         heard.pubkey = principal.pubkey.clone();
@@ -822,7 +841,10 @@ mod connection_tests {
             .write()
             .await
             .insert(heard.node_id.clone(), heard);
-        assert_eq!(refresh_connection_phase(&visitor).await.0, ConnectionPhase::Authenticating);
+        assert_eq!(
+            refresh_connection_phase(&visitor).await.0,
+            ConnectionPhase::Authenticating
+        );
 
         let token = crate::membership::issue(
             &principal_key,
@@ -835,7 +857,10 @@ mod connection_tests {
         )
         .unwrap();
         visitor.network.set_membership(Some(token));
-        assert_eq!(refresh_connection_phase(&visitor).await.0, ConnectionPhase::Connected);
+        assert_eq!(
+            refresh_connection_phase(&visitor).await.0,
+            ConnectionPhase::Connected
+        );
         let Json(status) = connection_status(State(visitor.clone())).await;
         assert_eq!(status["phase"], "connected");
         assert_eq!(status["peers"], 1);
@@ -879,11 +904,31 @@ mod relay_pass_tests {
             peer
         };
         let peers = vec![
-            with("visitor-relay", NodeProfile::Visitor, offer("http://198.51.100.13:52000/", true)),
-            with("visitor-plain", NodeProfile::Visitor, offer("http://198.51.100.13:52000/", false)),
-            with("worker-relay", NodeProfile::Worker, offer("http://198.51.100.12:52000/", true)),
-            with("asker", NodeProfile::Visitor, offer("http://198.51.100.5:52000/", true)),
-            with("liar", NodeProfile::Visitor, offer("http://203.0.113.9:52000/", true)),
+            with(
+                "visitor-relay",
+                NodeProfile::Visitor,
+                offer("http://198.51.100.13:52000/", true),
+            ),
+            with(
+                "visitor-plain",
+                NodeProfile::Visitor,
+                offer("http://198.51.100.13:52000/", false),
+            ),
+            with(
+                "worker-relay",
+                NodeProfile::Worker,
+                offer("http://198.51.100.12:52000/", true),
+            ),
+            with(
+                "asker",
+                NodeProfile::Visitor,
+                offer("http://198.51.100.5:52000/", true),
+            ),
+            with(
+                "liar",
+                NodeProfile::Visitor,
+                offer("http://203.0.113.9:52000/", true),
+            ),
         ];
         let mut admin = crate::gateway::testkit::state_with("peer-principal", peers).await;
         admin.admin_trust = std::sync::Arc::new(
@@ -894,7 +939,10 @@ mod relay_pass_tests {
 
         let relays = relay_passes(&admin, "asker").await;
         assert_eq!(
-            relays.iter().map(|relay| relay.url.as_str()).collect::<Vec<_>>(),
+            relays
+                .iter()
+                .map(|relay| relay.url.as_str())
+                .collect::<Vec<_>>(),
             vec!["http://198.51.100.13:52000/"]
         );
         let now = chrono::Utc::now().timestamp();

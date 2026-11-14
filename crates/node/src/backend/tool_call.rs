@@ -516,13 +516,16 @@ fn attribute_nameless(
 ) -> Vec<ScanEvent> {
     if kind == CallKind::BareXml {
         return match events.as_slice() {
-            [ScanEvent::ToolCallClose(Ok((name, _)))] if !tools.declares(name) => vec![
-                ScanEvent::ToolCallClose(Err(format!("{BARE_XML_OPEN}{raw}{BARE_FUNCTION_CLOSE}"))),
-            ],
+            [ScanEvent::ToolCallClose(Ok((name, _)))] if !tools.declares(name) => {
+                vec![ScanEvent::ToolCallClose(Err(format!(
+                    "{BARE_XML_OPEN}{raw}{BARE_FUNCTION_CLOSE}"
+                )))]
+            }
             _ => events,
         };
     }
-    if kind != CallKind::Wrapped || !matches!(events.as_slice(), [ScanEvent::ToolCallClose(Err(_))]) {
+    if kind != CallKind::Wrapped || !matches!(events.as_slice(), [ScanEvent::ToolCallClose(Err(_))])
+    {
         return events;
     }
     let normalized = normalize_wrapped_body(raw);
@@ -879,9 +882,9 @@ impl TagScanner {
                     attribute_nameless(complete_call_events(&body, kind), &body, kind, &self.tools);
                 let whole = kind != CallKind::BareFunction
                     && !calls.is_empty()
-                    && calls
-                        .iter()
-                        .all(|e| matches!(e, ScanEvent::ToolCallOpen | ScanEvent::ToolCallClose(Ok(_))));
+                    && calls.iter().all(|e| {
+                        matches!(e, ScanEvent::ToolCallOpen | ScanEvent::ToolCallClose(Ok(_)))
+                    });
                 if whole {
                     let mut events = Vec::new();
                     if !self.pending.is_empty() {
@@ -1173,7 +1176,8 @@ fn native_closer_position(raw: &str, pending: &str) -> Option<usize> {
     let mut from = 0;
     while let Some(relative) = pending[from..].find(NATIVE_CALL_CLOSE) {
         let at = from + relative;
-        let quotes = raw.matches(NATIVE_QUOTE).count() + pending[..at].matches(NATIVE_QUOTE).count();
+        let quotes =
+            raw.matches(NATIVE_QUOTE).count() + pending[..at].matches(NATIVE_QUOTE).count();
         if quotes.is_multiple_of(2) {
             return Some(at);
         }
@@ -1191,7 +1195,9 @@ fn parse_native_call(raw: &str) -> Option<(String, serde_json::Value)> {
     let (name, mut args) = native_call_head(raw)?;
     let arguments = args.object()?;
     args.skip_whitespace();
-    args.0.is_empty().then_some((name, serde_json::Value::Object(arguments)))
+    args.0
+        .is_empty()
+        .then_some((name, serde_json::Value::Object(arguments)))
 }
 
 /// The tool name and a cursor on what follows its `{`; `None` until the `{`
@@ -1237,7 +1243,8 @@ fn parse_partial_native_call(raw: &str) -> Option<PartialCall> {
             break;
         }
     }
-    let mut recovered: serde_json::Map<String, serde_json::Value> = complete.iter().cloned().collect();
+    let mut recovered: serde_json::Map<String, serde_json::Value> =
+        complete.iter().cloned().collect();
     if let Some((key, value)) = &partial {
         recovered.insert(key.clone(), serde_json::Value::String(value.clone()));
     }
@@ -1339,7 +1346,8 @@ impl NativeArgs<'_> {
             }
         }
         if self.0.starts_with('"') {
-            let mut stream = serde_json::Deserializer::from_str(self.0).into_iter::<serde_json::Value>();
+            let mut stream =
+                serde_json::Deserializer::from_str(self.0).into_iter::<serde_json::Value>();
             let value = stream.next()?.ok()?;
             self.0 = &self.0[stream.byte_offset()..];
             return Some(value);
@@ -1402,8 +1410,9 @@ fn complete_call_events(raw: &str, kind: CallKind) -> Vec<ScanEvent> {
             return vec![ScanEvent::ToolCallClose(call)];
         }
         CallKind::BareXml => {
-            let call = parse_function_call_xml(&format!("{BARE_XML_OPEN}{raw}{BARE_FUNCTION_CLOSE}"))
-                .ok_or_else(fallback);
+            let call =
+                parse_function_call_xml(&format!("{BARE_XML_OPEN}{raw}{BARE_FUNCTION_CLOSE}"))
+                    .ok_or_else(fallback);
             return vec![ScanEvent::ToolCallClose(call)];
         }
         // Resolved by `TagScanner`, which knows the name its closer needs.
@@ -1440,8 +1449,10 @@ fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Val
     let fallback = || format!("{}{raw}{}", kind.open(), kind.close());
     match kind {
         CallKind::BareFunction => parse_bare_function_call(raw).ok_or_else(fallback),
-        CallKind::BareXml => parse_function_call_xml(&format!("{BARE_XML_OPEN}{raw}{BARE_FUNCTION_CLOSE}"))
-            .ok_or_else(fallback),
+        CallKind::BareXml => {
+            parse_function_call_xml(&format!("{BARE_XML_OPEN}{raw}{BARE_FUNCTION_CLOSE}"))
+                .ok_or_else(fallback)
+        }
         CallKind::FunctionCalls | CallKind::Invoke => parse_function_calls_xml(raw)
             .filter(|calls| calls.len() == 1)
             .and_then(|mut calls| calls.pop())
@@ -1529,10 +1540,15 @@ fn normalize_wrapped_body(raw: &str) -> String {
     let normalized = strip_namespace(raw);
     let mut body = normalized.trim();
     loop {
-        let stripped = [TOOL_CALL_OPEN, FUNCTION_CALL_OPEN, PARAMETER_CALL_OPEN, FUNCTION_CALLS_OPEN]
-            .iter()
-            .find_map(|open| body.strip_prefix(open))
-            .map(str::trim_start);
+        let stripped = [
+            TOOL_CALL_OPEN,
+            FUNCTION_CALL_OPEN,
+            PARAMETER_CALL_OPEN,
+            FUNCTION_CALLS_OPEN,
+        ]
+        .iter()
+        .find_map(|open| body.strip_prefix(open))
+        .map(str::trim_start);
         match stripped {
             Some(rest) => body = rest,
             None => break,
@@ -1544,7 +1560,12 @@ fn normalize_wrapped_body(raw: &str) -> String {
         let noise: &[&str] = if is_invoke {
             &[TOOL_CALL_CLOSE, FUNCTION_CALL_CLOSE, FUNCTION_CALLS_CLOSE]
         } else {
-            &[TOOL_CALL_CLOSE, FUNCTION_CALL_CLOSE, FUNCTION_CALLS_CLOSE, INVOKE_CLOSE]
+            &[
+                TOOL_CALL_CLOSE,
+                FUNCTION_CALL_CLOSE,
+                FUNCTION_CALLS_CLOSE,
+                INVOKE_CLOSE,
+            ]
         };
         if let Some(rest) = noise.iter().find_map(|close| body.strip_suffix(close)) {
             body = rest.trim_end();
@@ -1722,7 +1743,8 @@ fn parse_parameters(
         let mut candidate = args.clone();
         let value_raw = after_name[..close_idx].trim();
         candidate.insert(pname.to_string(), decode_parameter_value(value_raw));
-        if let Some(done) = parse_parameters(&after_name[close_idx + close_tag.len()..], candidate) {
+        if let Some(done) = parse_parameters(&after_name[close_idx + close_tag.len()..], candidate)
+        {
             return Some(done);
         }
         from = close_idx + close_tag.len();
@@ -1736,7 +1758,9 @@ fn parse_parameters(
 fn element_open(s: &str) -> Option<(&str, &str)> {
     let (name, after) = s.strip_prefix('<')?.split_once('>')?;
     let mut chars = name.chars();
-    let starts_well = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    let starts_well = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
     let rest_well = chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     (starts_well && rest_well).then_some((name, after))
 }
@@ -2624,9 +2648,8 @@ mod tests {
 
     #[test]
     fn a_parameter_opened_call_cut_by_the_cap_keeps_its_name() {
-        let (parts, truncated) = parse_output_truncated(
-            "<tool_call>\n<parameter=bash>\n<parameter=command>\nls -la",
-        );
+        let (parts, truncated) =
+            parse_output_truncated("<tool_call>\n<parameter=bash>\n<parameter=command>\nls -la");
         assert!(truncated);
         match parts.as_slice() {
             [OutputPart::ToolCallTruncated(partial)] => assert_eq!(partial.name, "bash"),
@@ -3260,7 +3283,10 @@ mod tests {
     #[test]
     fn an_unfinished_call_at_end_of_output_stays_text() {
         let parts = parse_output("<tool_call>\n<function=bash>\n<parameter=command>\nls");
-        assert!(parts.iter().all(|p| matches!(p, OutputPart::Text(_))), "{parts:?}");
+        assert!(
+            parts.iter().all(|p| matches!(p, OutputPart::Text(_))),
+            "{parts:?}"
+        );
     }
 
     #[test]
@@ -3274,10 +3300,13 @@ mod tests {
                 events.extend(scanner.feed(std::str::from_utf8(chunk).unwrap()));
             }
             events.extend(scanner.finish());
-            assert_eq!(merge_adjacent_text(events_to_parts(events)), whole, "chunk {size}");
+            assert_eq!(
+                merge_adjacent_text(events_to_parts(events)),
+                whole,
+                "chunk {size}"
+            );
         }
     }
-
 
     fn signatures() -> ToolSignatures {
         let tool = |name: &str, params: serde_json::Value| ToolDef {
@@ -3323,15 +3352,24 @@ mod tests {
             events.extend(scanner.feed(&c.to_string()));
         }
         events.extend(scanner.finish());
-        let calls: Vec<_> = events.iter().filter(|e| matches!(e, ScanEvent::ToolCallClose(_))).collect();
-        assert!(matches!(calls.as_slice(), [ScanEvent::ToolCallClose(Ok(_))]), "{events:?}");
+        let calls: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, ScanEvent::ToolCallClose(_)))
+            .collect();
+        assert!(
+            matches!(calls.as_slice(), [ScanEvent::ToolCallClose(Ok(_))]),
+            "{events:?}"
+        );
     }
 
     #[test]
     fn a_nameless_call_two_tools_could_take_stays_text() {
         let text = "<tool_call>\n<parameter=path>\na.rs\n</parameter>\n</tool_call>";
         let parts = parse_output_with_tools(text, &signatures());
-        assert!(parts.iter().all(|p| matches!(p, OutputPart::Text(_))), "{parts:?}");
+        assert!(
+            parts.iter().all(|p| matches!(p, OutputPart::Text(_))),
+            "{parts:?}"
+        );
     }
 
     /// The shape a Gemma 4 session wrote twice in a row: each parameter as
@@ -3370,7 +3408,10 @@ mod tests {
         if let Some(delta) = streamer.finish_complete(body, &parsed) {
             out.push_str(&delta);
         }
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&out).unwrap(), parsed);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&out).unwrap(),
+            parsed
+        );
     }
 
     fn hermes_signatures() -> ToolSignatures {
@@ -3598,7 +3639,11 @@ mod tests {
                 rest = &rest[end..];
             }
             events.extend(scanner.finish());
-            assert_eq!(merge_adjacent_text(events_to_parts(events)), whole, "chunk {size}");
+            assert_eq!(
+                merge_adjacent_text(events_to_parts(events)),
+                whole,
+                "chunk {size}"
+            );
         }
     }
 
@@ -3624,10 +3669,16 @@ mod tests {
 
     #[test]
     fn a_gemma_native_call_with_no_arguments_or_left_unshut_is_still_a_call() {
-        for text in ["<|tool_call>call:list_tools{}<tool_call|>", "<|tool_call>call:list_tools{}"] {
+        for text in [
+            "<|tool_call>call:list_tools{}<tool_call|>",
+            "<|tool_call>call:list_tools{}",
+        ] {
             assert_eq!(
                 parse_output(text),
-                vec![OutputPart::ToolCall { name: "list_tools".to_string(), arguments: json!({}) }],
+                vec![OutputPart::ToolCall {
+                    name: "list_tools".to_string(),
+                    arguments: json!({})
+                }],
                 "{text}"
             );
         }
@@ -3642,7 +3693,9 @@ mod tests {
             "<|tool_call>call:web_search{q:1} trailing<tool_call|>",
         ] {
             assert!(
-                parse_output(text).iter().all(|p| matches!(p, OutputPart::Text(_))),
+                parse_output(text)
+                    .iter()
+                    .all(|p| matches!(p, OutputPart::Text(_))),
                 "{text}"
             );
         }
@@ -3658,7 +3711,10 @@ mod tests {
         };
         assert_eq!(partial.name, "web_search");
         assert_eq!(partial.arguments, "{\"limit\":5,\"query\":\"notícias de");
-        assert_eq!(partial.recovered, json!({"limit": 5, "query": "notícias de"}));
+        assert_eq!(
+            partial.recovered,
+            json!({"limit": 5, "query": "notícias de"})
+        );
         let (parts, cut) = parse_output_truncated("<|tool_call>call:web_se");
         assert!(cut);
         assert!(parts.is_empty(), "{parts:?}");
@@ -3667,13 +3723,17 @@ mod tests {
     #[test]
     fn a_call_shut_by_another_name_stays_text() {
         let text = "<tool_call>\n<function=write>\n<path>a.html</path>\n</read>\n</tool_call>";
-        assert!(parse_output(text).iter().all(|p| matches!(p, OutputPart::Text(_))));
+        assert!(parse_output(text)
+            .iter()
+            .all(|p| matches!(p, OutputPart::Text(_))));
     }
 
     #[test]
     fn without_declared_tools_a_nameless_call_stays_text() {
         let text = "<tool_call>\n<parameter name=\"command\">ls</parameter>\n</tool_call>";
-        assert!(parse_output(text).iter().all(|p| matches!(p, OutputPart::Text(_))));
+        assert!(parse_output(text)
+            .iter()
+            .all(|p| matches!(p, OutputPart::Text(_))));
     }
 
     #[test]
@@ -3690,7 +3750,10 @@ mod tests {
         if let Some(delta) = streamer.finish_complete(raw, &parsed) {
             out.push_str(&delta);
         }
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&out).unwrap(), parsed);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&out).unwrap(),
+            parsed
+        );
     }
 
     #[test]
@@ -3704,13 +3767,15 @@ mod tests {
         );
     }
 
-
     #[test]
     fn a_foreign_closer_inside_a_value_does_not_cut_the_call() {
         let text = "<tool_call>\n<function=write>\n<parameter=content>\nends with </function_call> and </function_calls>\n</parameter>\n</function>\n</tool_call>";
         let (name, args) = only_call(text);
         assert_eq!(name, "write");
-        assert_eq!(args["content"], "ends with </function_call> and </function_calls>");
+        assert_eq!(
+            args["content"],
+            "ends with </function_call> and </function_calls>"
+        );
         // Byte by byte, the same answer.
         let mut scanner = TagScanner::new();
         let mut events = Vec::new();
@@ -3718,7 +3783,10 @@ mod tests {
             events.extend(scanner.feed(&text[i..i + 1]));
         }
         events.extend(scanner.finish());
-        assert_eq!(merge_adjacent_text(events_to_parts(events)), parse_output(text));
+        assert_eq!(
+            merge_adjacent_text(events_to_parts(events)),
+            parse_output(text)
+        );
     }
 
     #[test]
@@ -3728,7 +3796,6 @@ mod tests {
         );
         assert_eq!(name, "bash");
     }
-
 
     #[test]
     fn a_call_named_by_a_quoted_parameter_tag_is_read_as_that_call() {
@@ -3742,7 +3809,6 @@ mod tests {
         assert_eq!(args["edits"], json!([{"newText": "a", "oldText": "b"}]));
     }
 
-
     #[test]
     fn a_call_with_no_opener_after_the_reasoning_is_a_call() {
         // Logged verbatim (Strata, 2026-10-20), right after `</think>`.
@@ -3750,7 +3816,10 @@ mod tests {
             "<function=shell>\n<parameter=command>\nsed -n '1870,1895p' crates/node/src/network/network.rs\n</parameter>\n</function>\n</tool_call>\n",
         );
         assert_eq!(name, "shell");
-        assert_eq!(args["command"], "sed -n '1870,1895p' crates/node/src/network/network.rs");
+        assert_eq!(
+            args["command"],
+            "sed -n '1870,1895p' crates/node/src/network/network.rs"
+        );
     }
 
     #[test]
@@ -3767,7 +3836,6 @@ mod tests {
         );
         assert_eq!(args["content"], "ends </function> here");
     }
-
 
     #[test]
     fn a_namespaced_invoke_is_a_call() {
@@ -3802,7 +3870,12 @@ mod tests {
     fn a_namespaced_invoke_survives_any_chunking() {
         let text = "ok <antml:invoke name=\"bash\">\n<parameter name=\"command\">ls</parameter>\n</invoke>\n";
         let whole = parse_output(text);
-        assert!(whole.iter().any(|p| matches!(p, OutputPart::ToolCall { .. })), "{whole:?}");
+        assert!(
+            whole
+                .iter()
+                .any(|p| matches!(p, OutputPart::ToolCall { .. })),
+            "{whole:?}"
+        );
         for size in 1..9 {
             let mut scanner = TagScanner::new();
             let mut events = Vec::new();
@@ -3810,8 +3883,11 @@ mod tests {
                 events.extend(scanner.feed(std::str::from_utf8(chunk).unwrap()));
             }
             events.extend(scanner.finish());
-            assert_eq!(merge_adjacent_text(events_to_parts(events)), whole, "chunk {size}");
+            assert_eq!(
+                merge_adjacent_text(events_to_parts(events)),
+                whole,
+                "chunk {size}"
+            );
         }
     }
-
 }

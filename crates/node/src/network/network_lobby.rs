@@ -20,11 +20,11 @@
 //! (dial only, over n0's relays when no direct path answers) so it also runs
 //! in setup mode, where the node has no cluster endpoint yet.
 
-use anyhow::{Context, Result};
 use crate::p2p::Codec;
+use crate::p2p::{EndpointAddr, EndpointId};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::prelude::*;
-use crate::p2p::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -983,31 +983,21 @@ impl Codec for LobbyCodec {
     type Request = LobbyRequest;
     type Response = LobbyResponse;
 
-    async fn read_request<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Request>
+    async fn read_request<T>(&mut self, io: &mut T) -> std::io::Result<Self::Request>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_msg(io, LobbyLimits::FRAME_BYTES).await
     }
 
-    async fn read_response<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Response>
+    async fn read_response<T>(&mut self, io: &mut T) -> std::io::Result<Self::Response>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_msg(io, LobbyLimits::RESPONSE_BYTES).await
     }
 
-    async fn write_request<T>(
-        &mut self,
-        io: &mut T,
-        request: Self::Request,
-    ) -> std::io::Result<()>
+    async fn write_request<T>(&mut self, io: &mut T, request: Self::Request) -> std::io::Result<()>
     where
         T: AsyncWrite + Unpin + Send,
     {
@@ -1025,7 +1015,6 @@ impl Codec for LobbyCodec {
         write_msg(io, &response, LobbyLimits::RESPONSE_BYTES).await
     }
 }
-
 
 // ── Candidate side ───────────────────────────────────────────────────────────
 
@@ -1568,7 +1557,13 @@ mod tests {
         let now = chrono::Utc::now();
         let mut records = Vec::new();
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Worker, now),
+            apply_admission_request(
+                &mut records,
+                "a",
+                card("alpha"),
+                EnrollmentRole::Worker,
+                now
+            ),
             Ok(AdmissionStatus::Pending)
         );
         // Asking again while pending only refreshes what the admin will read.
@@ -1606,7 +1601,13 @@ mod tests {
             None
         );
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Worker, now),
+            apply_admission_request(
+                &mut records,
+                "a",
+                card("alpha"),
+                EnrollmentRole::Worker,
+                now
+            ),
             Err("admission_rejected")
         );
         let later = now + chrono::Duration::seconds(ADMISSION_RETRY_AFTER_SECS + 1);

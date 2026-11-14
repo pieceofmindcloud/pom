@@ -380,7 +380,8 @@ pub fn accepted_connection_keys(config: &Config) -> Vec<String> {
         return Vec::new();
     }
     let mut keys = vec![config.connection_key.clone()];
-    if let Some(transition) = transition_for(&config.connection_key, chrono::Utc::now().timestamp()) {
+    if let Some(transition) = transition_for(&config.connection_key, chrono::Utc::now().timestamp())
+    {
         if !transition.old.is_empty() && transition.old != config.connection_key {
             keys.push(transition.old);
         }
@@ -484,7 +485,8 @@ async fn known_control_principal(
     state.network.alive_peers().await.into_iter().any(|peer| {
         peer.node_id == issuer.node_id
             && peer.pubkey == issuer.pubkey
-            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(issuer.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref()
+                == Some(issuer.peer_id.as_str())
     })
 }
 
@@ -957,7 +959,8 @@ where
             .extensions
             .get::<crate::serve::TransportSecurity>()
             .is_some_and(|transport| transport.0);
-        if let Some(session_id) = session_id_from_cookie(&parts.headers, secure).map(str::to_owned) {
+        if let Some(session_id) = session_id_from_cookie(&parts.headers, secure).map(str::to_owned)
+        {
             let State(sessions): State<AdminSessionState> = State::from_request_parts(parts, state)
                 .await
                 .map_err(|_| AdminAuthRejection::InvalidToken)?;
@@ -1226,7 +1229,12 @@ mod tests {
 
     #[test]
     fn the_session_cookie_reaches_every_surface_the_interface_calls() {
-        for path in ["/api/ui/jobs", "/api/transfer/jobs", "/api/transfer/offers", "/admin/api-keys"] {
+        for path in [
+            "/api/ui/jobs",
+            "/api/transfer/jobs",
+            "/api/transfer/offers",
+            "/admin/api-keys",
+        ] {
             assert!(
                 ADMIN_SESSION_COOKIE_PATHS
                     .iter()
@@ -1296,7 +1304,9 @@ mod tests {
         // reads only its own.
         headers.insert(
             axum::http::header::COOKIE,
-            format!("{slug}_admin_session_8080=old; {plain}=plain; {tls}=tls").parse().unwrap(),
+            format!("{slug}_admin_session_8080=old; {plain}=plain; {tls}=tls")
+                .parse()
+                .unwrap(),
         );
         assert_eq!(session_id_from_cookie(&headers, false), Some("plain"));
         assert_eq!(session_id_from_cookie(&headers, true), Some("tls"));
@@ -1784,8 +1794,10 @@ mod tests {
     #[test]
     fn a_rotated_connection_key_overlaps_the_old_one_instead_of_cutting_it() {
         let config = |key: &str| -> Config {
-            serde_json::from_value(serde_json::json!({ "profile": "worker", "connection_key": key }))
-                .unwrap()
+            serde_json::from_value(
+                serde_json::json!({ "profile": "worker", "connection_key": key }),
+            )
+            .unwrap()
         };
         let _lock = transition_test_lock();
         let rotated = config("transition-new-key");

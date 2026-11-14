@@ -675,7 +675,9 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
         // The principal authorizes a demonstration on itself from its own
         // environment; every other node waits for the principal's answer.
         let profile = state.auth.read().await.profile;
-        if state.admin_trust.effective_authority(&state.authority_principal, profile)
+        if state
+            .admin_trust
+            .effective_authority(&state.authority_principal, profile)
             == Some(crate::admin_trust::EffectiveAuthority::Principal)
         {
             crate::user_session::set_demo_authorized(crate::user_session::demo_mode_active_env());

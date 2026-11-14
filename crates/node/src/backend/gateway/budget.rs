@@ -930,7 +930,10 @@ pub(crate) enum SharedPrefix {
     None,
     /// The system part ends `prompt_bytes` into the rendered prompt and
     /// `key_bytes` into the prefix cache key.
-    Offer { prompt_bytes: usize, key_bytes: usize },
+    Offer {
+        prompt_bytes: usize,
+        key_bytes: usize,
+    },
     /// This request is a system part read on its own: its KV is pinned on
     /// disk before the request it opens goes on.
     Build,

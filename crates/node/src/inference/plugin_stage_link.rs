@@ -672,7 +672,8 @@ pub(crate) struct ReportedLink {
 
 /// Per (plugin code, earlier node id, phase) totals, drained by the generation that used them.
 fn link_stats() -> &'static Mutex<HashMap<(String, String, LinkPhase), LinkStats>> {
-    static STATS: OnceLock<Mutex<HashMap<(String, String, LinkPhase), LinkStats>>> = OnceLock::new();
+    static STATS: OnceLock<Mutex<HashMap<(String, String, LinkPhase), LinkStats>>> =
+        OnceLock::new();
     STATS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -774,7 +775,9 @@ pub(crate) fn record_leg(
     served_ms: u64,
     channel: &str,
 ) {
-    record_leg_queued(code, node_id, phase, elapsed, sent, received, served_ms, 0, channel);
+    record_leg_queued(
+        code, node_id, phase, elapsed, sent, received, served_ms, 0, channel,
+    );
 }
 
 /// [`record_leg`] for a frame that also waited `queued_ms` on the other side behind the frames before it: that wait
@@ -792,7 +795,9 @@ pub(crate) fn record_leg_queued(
     channel: &str,
 ) {
     let round_trip_ms = elapsed.as_millis() as u64;
-    let network_ms = round_trip_ms.saturating_sub(served_ms).saturating_sub(queued_ms);
+    let network_ms = round_trip_ms
+        .saturating_sub(served_ms)
+        .saturating_sub(queued_ms);
     let stats = LinkStats {
         calls: 1,
         round_trip_ms,
@@ -805,7 +810,13 @@ pub(crate) fn record_leg_queued(
         wall_ms: 0,
     };
     let channel_stats = ChannelStats::one(channel, round_trip_ms, network_ms, sent, received);
-    merge_in(code, node_id, phase, stats, std::slice::from_ref(&channel_stats));
+    merge_in(
+        code,
+        node_id,
+        phase,
+        stats,
+        std::slice::from_ref(&channel_stats),
+    );
 }
 
 /// The time a relay had frames in flight to `node_id` without a break, filed under `phase` (see [`LinkStats`]).
@@ -831,7 +842,9 @@ fn record_link(
     channel: &str,
 ) {
     add_own_wait(code, phase, elapsed.as_millis() as u64);
-    record_leg_queued(code, node_id, phase, elapsed, sent, received, served_ms, queued_ms, channel);
+    record_leg_queued(
+        code, node_id, phase, elapsed, sent, received, served_ms, queued_ms, channel,
+    );
 }
 
 /// Totals a machine below us reported in its answer, filed under the phase this machine is in.
@@ -839,7 +852,13 @@ fn merge_downstream(code: &str, node_id: &str, stats: LinkStats, channels: &[Cha
     merge_in(code, node_id, current_phase(code), stats, channels);
 }
 
-fn merge_in(code: &str, node_id: &str, phase: LinkPhase, stats: LinkStats, channels: &[ChannelStats]) {
+fn merge_in(
+    code: &str,
+    node_id: &str,
+    phase: LinkPhase,
+    stats: LinkStats,
+    channels: &[ChannelStats],
+) {
     if let Ok(mut totals) = link_stats().lock() {
         totals
             .entry((code.to_owned(), node_id.to_owned(), phase))
@@ -900,7 +919,10 @@ fn take_downstream_links(code: &str) -> Vec<StageLinkWire> {
     let mut channels: HashMap<String, Vec<ChannelStats>> = HashMap::new();
     for (node, _phase, channel) in take_channel_stats(code) {
         let list = channels.entry(node).or_default();
-        match list.iter_mut().find(|known| known.channel == channel.channel) {
+        match list
+            .iter_mut()
+            .find(|known| known.channel == channel.channel)
+        {
             Some(known) => known.add(&channel),
             None => list.push(channel),
         }
@@ -1217,7 +1239,11 @@ struct Link {
 /// The connection's reader: each answer goes to the oldest frame still waiting, with the time the engine spent on
 /// it - from its writing, or from the answer before it when it waited behind that one. It holds the link weakly: the
 /// link dropped (the connection closed or evicted) closes the writer, the engine closes its side, and this ends.
-fn spawn_reader(link: &Arc<Link>, mut reader: tokio::net::tcp::OwnedReadHalf, key: (String, String)) {
+fn spawn_reader(
+    link: &Arc<Link>,
+    mut reader: tokio::net::tcp::OwnedReadHalf,
+    key: (String, String),
+) {
     let weak = Arc::downgrade(link);
     tokio::spawn(async move {
         let mut last = Instant::now();
@@ -1326,7 +1352,10 @@ fn drop_other_connections(key: &(String, String)) -> usize {
     map.retain(|other, _| other == key);
     let dropped = before - map.len();
     if dropped > 0 {
-        info!(dropped, "stage link: a new connection closes the ones before it");
+        info!(
+            dropped,
+            "stage link: a new connection closes the ones before it"
+        );
     }
     dropped
 }
@@ -1355,7 +1384,17 @@ pub(crate) async fn link_frame_route(
     axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
-    link_frame(auth, state, code, deploy, conn, None, phase_of_query(&query), body).await
+    link_frame(
+        auth,
+        state,
+        code,
+        deploy,
+        conn,
+        None,
+        phase_of_query(&query),
+        body,
+    )
+    .await
 }
 
 /// `POST /api/internal/plugins/:code/engine/link/:deploy/:conn/:seq`: frame
@@ -1367,12 +1406,24 @@ pub(crate) async fn link_frame_seq_route(
     axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
-    link_frame(auth, state, code, deploy, conn, Some(seq), phase_of_query(&query), body).await
+    link_frame(
+        auth,
+        state,
+        code,
+        deploy,
+        conn,
+        Some(seq),
+        phase_of_query(&query),
+        body,
+    )
+    .await
 }
 
 /// The phase the requester named (`?phase=`), if it named one this node reads.
 fn phase_of_query(query: &HashMap<String, String>) -> Option<LinkPhase> {
-    query.get(PHASE_QUERY).and_then(|value| LinkPhase::from_header(value))
+    query
+        .get(PHASE_QUERY)
+        .and_then(|value| LinkPhase::from_header(value))
 }
 
 /// The answer to a frame: this machine's time on it, the wait before it, and the links below it, in the envelope
@@ -1587,7 +1638,9 @@ mod tests {
     fn the_restart_signal_fires_once_with_the_first_reason() {
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         let signal = StaleSignal(Arc::new(std::sync::Mutex::new(Some(tx))));
-        signal.clone().fire("the earlier stage reset the link".into());
+        signal
+            .clone()
+            .fire("the earlier stage reset the link".into());
         signal.fire("the earlier stage restarted: its link secret changed".into());
         assert_eq!(rx.try_recv().unwrap(), "the earlier stage reset the link");
     }
@@ -1595,10 +1648,19 @@ mod tests {
     #[test]
     fn a_reset_connection_restarts_only_while_it_is_the_engines_newest() {
         let newest = Arc::new(AtomicU64::new(1));
-        let first = ConnSlot { newest: Arc::clone(&newest), mine: 1 };
-        assert!(first.still_newest(), "no other connection: the engine did not link again");
+        let first = ConnSlot {
+            newest: Arc::clone(&newest),
+            mine: 1,
+        };
+        assert!(
+            first.still_newest(),
+            "no other connection: the engine did not link again"
+        );
         newest.store(2, std::sync::atomic::Ordering::SeqCst);
-        assert!(!first.still_newest(), "the engine opened a newer connection: no restart");
+        assert!(
+            !first.still_newest(),
+            "the engine opened a newer connection: no restart"
+        );
     }
 
     use super::*;
@@ -1746,8 +1808,12 @@ mod tests {
             // both frames arrive before the first answer leaves
             let first = read_frame(&mut socket).await.unwrap().unwrap();
             let second = read_frame(&mut socket).await.unwrap().unwrap();
-            write_frame(&mut socket, &[first, b"!".to_vec()].concat()).await.unwrap();
-            write_frame(&mut socket, &[second, b"!".to_vec()].concat()).await.unwrap();
+            write_frame(&mut socket, &[first, b"!".to_vec()].concat())
+                .await
+                .unwrap();
+            write_frame(&mut socket, &[second, b"!".to_vec()].concat())
+                .await
+                .unwrap();
             socket
         });
         let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -1769,12 +1835,20 @@ mod tests {
                 written: Instant::now(),
                 answer: sender,
             });
-            write_frame(&mut link.io.lock().await.writer, &frame).await.unwrap();
+            write_frame(&mut link.io.lock().await.writer, &frame)
+                .await
+                .unwrap();
             answers.push(answer);
         }
         let mut got = Vec::new();
         for answer in answers {
-            got.push(tokio::time::timeout(Duration::from_secs(5), answer).await.unwrap().unwrap().0);
+            got.push(
+                tokio::time::timeout(Duration::from_secs(5), answer)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .0,
+            );
         }
         assert_eq!(got, vec![b"a!".to_vec(), b"b!".to_vec()]);
         drop(engine.await.unwrap());
@@ -1842,7 +1916,9 @@ mod stale_connection_tests {
     /// engine take it.
     #[tokio::test]
     async fn a_new_connection_closes_the_stale_one_the_engine_was_held_by() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let port = listener.local_addr().unwrap().port();
         // the engine: one connection at a time, until it ends; it reports the first bytes of each
         let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
@@ -1855,7 +1931,8 @@ mod stale_connection_tests {
             }
         });
         let stale_key = ("node-old".to_string(), "conn-old".to_string());
-        let (stale, _stale_reader) = link_on(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
+        let (stale, _stale_reader) =
+            link_on(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
         keep_connection(stale_key.clone(), stale);
         // the new connection's hello: queued behind the stale one, unread
         let new_key = ("node-new".to_string(), "conn-new".to_string());
@@ -1863,14 +1940,22 @@ mod stale_connection_tests {
         fresh.write_all(b"hello").await.unwrap();
         fresh.shutdown().await.unwrap();
         assert!(
-            tokio::time::timeout(Duration::from_millis(200), seen.recv()).await.is_err(),
+            tokio::time::timeout(Duration::from_millis(200), seen.recv())
+                .await
+                .is_err(),
             "the engine is held by the stale connection"
         );
 
         assert_eq!(drop_other_connections(&new_key), 1);
-        let first = tokio::time::timeout(Duration::from_secs(2), seen.recv()).await.unwrap().unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(2), seen.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(first.is_empty(), "the stale connection ends");
-        let second = tokio::time::timeout(Duration::from_secs(2), seen.recv()).await.unwrap().unwrap();
+        let second = tokio::time::timeout(Duration::from_secs(2), seen.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(second, b"hello", "and the engine reads the new one's hello");
         assert!(take_connection(&stale_key).is_none());
         engine.await.unwrap();
@@ -1883,9 +1968,39 @@ mod link_stats_tests {
 
     #[test]
     fn link_totals_are_taken_once_per_plugin_and_node() {
-        record_link("strata-link-test-a", "node-1", LinkPhase::Prefill, Duration::from_millis(40), 100, 200, 25, 0, "quic");
-        record_link("strata-link-test-a", "node-1", LinkPhase::Prefill, Duration::from_millis(10), 50, 60, 4, 0, "quic");
-        record_link("strata-link-test-b", "node-1", LinkPhase::Prefill, Duration::from_millis(5), 1, 1, 0, 0, "http");
+        record_link(
+            "strata-link-test-a",
+            "node-1",
+            LinkPhase::Prefill,
+            Duration::from_millis(40),
+            100,
+            200,
+            25,
+            0,
+            "quic",
+        );
+        record_link(
+            "strata-link-test-a",
+            "node-1",
+            LinkPhase::Prefill,
+            Duration::from_millis(10),
+            50,
+            60,
+            4,
+            0,
+            "quic",
+        );
+        record_link(
+            "strata-link-test-b",
+            "node-1",
+            LinkPhase::Prefill,
+            Duration::from_millis(5),
+            1,
+            1,
+            0,
+            0,
+            "http",
+        );
         assert_eq!(
             take_link_stats("strata-link-test-a"),
             vec![(
@@ -1926,7 +2041,10 @@ mod link_stats_tests {
         let taken = take_link_stats("strata-queue-test");
         assert_eq!(taken.len(), 1);
         let stats = taken[0].2;
-        assert_eq!((stats.served_ms, stats.queued_ms, stats.network_ms), (4_700, 25_000, 300));
+        assert_eq!(
+            (stats.served_ms, stats.queued_ms, stats.network_ms),
+            (4_700, 25_000, 300)
+        );
     }
 
     /// The time the requester waited is the link's wall time when the relay measured it, else the round trips.
@@ -1948,13 +2066,17 @@ mod link_stats_tests {
     /// An older node's answer has no queue and an older node's report no wall time: both read as 0.
     #[test]
     fn an_older_node_s_envelope_and_report_still_read() {
-        let envelope: StageEnvelope = serde_json::from_str(r#"{"served_ms":7,"links":[]}"#).unwrap();
+        let envelope: StageEnvelope =
+            serde_json::from_str(r#"{"served_ms":7,"links":[]}"#).unwrap();
         assert_eq!((envelope.served_ms, envelope.queued_ms), (7, 0));
         let stats: LinkStats = serde_json::from_str(
             r#"{"calls":1,"round_trip_ms":9,"max_round_trip_ms":9,"served_ms":5,"network_ms":4,"bytes_sent":1,"bytes_received":2}"#,
         )
         .unwrap();
-        assert_eq!((stats.queued_ms, stats.wall_ms, stats.waited_ms()), (0, 0, 9));
+        assert_eq!(
+            (stats.queued_ms, stats.wall_ms, stats.waited_ms()),
+            (0, 0, 9)
+        );
     }
 
     /// The requester names its phase in the query; anything else leaves the frame's tag to decide.
@@ -2013,9 +2135,39 @@ mod link_stats_tests {
 
     #[test]
     fn channels_are_kept_apart_and_aggregated() {
-        record_link("strata-chan-test", "node-7", LinkPhase::Prefill, Duration::from_millis(20), 10, 10, 5, 0, "quic");
-        record_link("strata-chan-test", "node-7", LinkPhase::Prefill, Duration::from_millis(30), 10, 10, 5, 0, "quic");
-        record_link("strata-chan-test", "node-7", LinkPhase::Prefill, Duration::from_millis(9), 4, 4, 1, 0, "tunnel");
+        record_link(
+            "strata-chan-test",
+            "node-7",
+            LinkPhase::Prefill,
+            Duration::from_millis(20),
+            10,
+            10,
+            5,
+            0,
+            "quic",
+        );
+        record_link(
+            "strata-chan-test",
+            "node-7",
+            LinkPhase::Prefill,
+            Duration::from_millis(30),
+            10,
+            10,
+            5,
+            0,
+            "quic",
+        );
+        record_link(
+            "strata-chan-test",
+            "node-7",
+            LinkPhase::Prefill,
+            Duration::from_millis(9),
+            4,
+            4,
+            1,
+            0,
+            "tunnel",
+        );
         let mut taken = take_channel_stats("strata-chan-test");
         taken.sort_by(|a, b| a.2.channel.cmp(&b.2.channel));
         assert_eq!(taken.len(), 2);
@@ -2036,20 +2188,33 @@ mod link_stats_tests {
         let mut prompt = vec![KIND_BYTES, b'P'];
         prompt.extend_from_slice(&0i64.to_le_bytes());
         prompt.extend_from_slice(&5u32.to_le_bytes());
-        assert_eq!(frame_phase_and_tokens(&prompt), Some((LinkPhase::Prefill, 5)));
+        assert_eq!(
+            frame_phase_and_tokens(&prompt),
+            Some((LinkPhase::Prefill, 5))
+        );
         let mut window = vec![KIND_BYTES, b'W'];
         window.extend_from_slice(&7i64.to_le_bytes());
         window.extend_from_slice(&3u32.to_le_bytes());
-        assert_eq!(frame_phase_and_tokens(&window), Some((LinkPhase::Decode, 3)));
+        assert_eq!(
+            frame_phase_and_tokens(&window),
+            Some((LinkPhase::Decode, 3))
+        );
         // a window that carries the last one's commit (its n_keep after the tokens)
         let mut folded = vec![KIND_BYTES, b'V'];
         folded.extend_from_slice(&7i64.to_le_bytes());
         folded.extend_from_slice(&2u32.to_le_bytes());
         folded.extend_from_slice(&[0u8; 12]);
-        assert_eq!(frame_phase_and_tokens(&folded), Some((LinkPhase::Decode, 2)));
+        assert_eq!(
+            frame_phase_and_tokens(&folded),
+            Some((LinkPhase::Decode, 2))
+        );
         let mut commit = vec![KIND_BYTES, b'C'];
         commit.extend_from_slice(&2u32.to_le_bytes());
-        assert_eq!(frame_phase_and_tokens(&commit), None, "a commit carries no tokens of its own");
+        assert_eq!(
+            frame_phase_and_tokens(&commit),
+            None,
+            "a commit carries no tokens of its own"
+        );
         assert_eq!(frame_phase_and_tokens(&[KIND_BYTES, b'P']), None);
     }
 }

@@ -129,7 +129,10 @@ async fn ask_source(state: &GatewayState, source: &Source, op: &str, params: &Va
                 "/api/internal/plugins/{}/peer/quota.{op}",
                 crate::plugins::LOGS_PLUGIN_CODE
             );
-            let Ok(response) = state.control_post_json(peer, &path, params, PEER_TIMEOUT).await else {
+            let Ok(response) = state
+                .control_post_json(peer, &path, params, PEER_TIMEOUT)
+                .await
+            else {
                 return Reply::Failed;
             };
             if response.status() == StatusCode::NOT_FOUND {
@@ -183,9 +186,9 @@ struct Lookup {
 
 impl Lookup {
     fn configured(&self) -> bool {
-        self.found
-            .as_ref()
-            .is_some_and(|(_, reply)| reply.get("configured").and_then(Value::as_bool) == Some(true))
+        self.found.as_ref().is_some_and(|(_, reply)| {
+            reply.get("configured").and_then(Value::as_bool) == Some(true)
+        })
     }
 }
 
@@ -246,7 +249,11 @@ fn shrink_content(content: &Value) -> Value {
 /// directory and repository coding tools put in the system prompt, the
 /// newest turns), cut to fit the peer call.
 pub(crate) fn digest_details(details: &Value) -> Value {
-    if serde_json::to_vec(details).map(|bytes| bytes.len()).unwrap_or(usize::MAX) <= MAX_DETAILS_BYTES {
+    if serde_json::to_vec(details)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+        <= MAX_DETAILS_BYTES
+    {
         return details.clone();
     }
     let mut digest = serde_json::Map::new();
@@ -265,9 +272,14 @@ pub(crate) fn digest_details(details: &Value) -> Value {
             .filter(is_system)
             .map(|message| json!({ "role": message["role"], "content": shrink_content(&message["content"]) }))
             .collect();
-        let turns: Vec<&Value> = messages.iter().filter(|message| !is_system(message)).collect();
+        let turns: Vec<&Value> = messages
+            .iter()
+            .filter(|message| !is_system(message))
+            .collect();
         for message in turns.iter().skip(turns.len().saturating_sub(KEPT_TURNS)) {
-            kept.push(json!({ "role": message["role"], "content": shrink_content(&message["content"]) }));
+            kept.push(
+                json!({ "role": message["role"], "content": shrink_content(&message["content"]) }),
+            );
         }
         digest.insert("messages".into(), Value::Array(kept));
     }
@@ -402,7 +414,10 @@ pub(crate) async fn admit(
         if let Some(seconds) = denial.retry_after_secs {
             memory.blocked_until.insert(
                 key,
-                (Instant::now() + Duration::from_secs(seconds), denial.clone()),
+                (
+                    Instant::now() + Duration::from_secs(seconds),
+                    denial.clone(),
+                ),
             );
         }
     }
@@ -448,11 +463,17 @@ pub(crate) async fn my_quota(State(state): State<GatewayState>) -> Response {
 /// Sends a self-serve operation to the plugin that holds the budgets.
 async fn self_serve(state: &GatewayState, op: &str, params: Value) -> Response {
     let Some((source, status)) = lookup(state, "status", &json!({})).await.found else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "quota_unavailable" })))
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "quota_unavailable" })),
+        )
             .into_response();
     };
     if status.get("configured").and_then(Value::as_bool) != Some(true) {
-        return (StatusCode::CONFLICT, Json(json!({ "error": "quota_not_configured" })))
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "quota_not_configured" })),
+        )
             .into_response();
     }
     match ask_source(state, &source, op, &params).await {
@@ -464,9 +485,11 @@ async fn self_serve(state: &GatewayState, op: &str, params: Value) -> Response {
             reply["available"] = json!(true);
             Json(reply).into_response()
         }
-        Reply::Absent | Reply::Failed => {
-            (StatusCode::BAD_GATEWAY, Json(json!({ "error": "quota_unavailable" }))).into_response()
-        }
+        Reply::Absent | Reply::Failed => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "quota_unavailable" })),
+        )
+            .into_response(),
     }
 }
 
@@ -507,7 +530,10 @@ mod tests {
         let kept = digest["messages"].as_array().unwrap();
         assert_eq!(kept.len(), 1 + KEPT_TURNS);
         assert_eq!(kept[0]["content"], "cwd: /x/pom");
-        assert!(kept.last().unwrap()["content"].as_str().unwrap().starts_with("19"));
+        assert!(kept.last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("19"));
         assert!(digest.get("tools").is_none());
     }
 
@@ -520,19 +546,33 @@ mod tests {
             key_node_id: Some(node.into()),
             user_id: None,
         };
-        assert!(admit(&state, &caller("quota-test-free"), "hi", 1, &json!({})).await.is_none());
+        assert!(
+            admit(&state, &caller("quota-test-free"), "hi", 1, &json!({}))
+                .await
+                .is_none()
+        );
 
         lock().blocked_until.insert(
             "quota-test-held".into(),
             (
                 Instant::now() + Duration::from_secs(60),
-                Denial { message: "spent".into(), retry_after_secs: Some(60) },
+                Denial {
+                    message: "spent".into(),
+                    retry_after_secs: Some(60),
+                },
             ),
         );
         let denial = admit(&state, &caller("quota-test-held"), "hi", 1, &json!({})).await;
-        assert_eq!(denial.map(|denial| denial.message).as_deref(), Some("spent"));
+        assert_eq!(
+            denial.map(|denial| denial.message).as_deref(),
+            Some("spent")
+        );
         forget("quota-test-held");
-        assert!(admit(&state, &caller("quota-test-held"), "hi", 1, &json!({})).await.is_none());
+        assert!(
+            admit(&state, &caller("quota-test-held"), "hi", 1, &json!({}))
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -549,14 +589,26 @@ mod tests {
             verdict_key("quota-test-split", &image),
             (
                 Instant::now() + Duration::from_secs(60),
-                Denial { message: "Image budget exhausted".into(), retry_after_secs: Some(60) },
+                Denial {
+                    message: "Image budget exhausted".into(),
+                    retry_after_secs: Some(60),
+                },
             ),
         );
-        assert!(admit(&state, &caller, "hi", 1, &json!({})).await.is_none(), "chat still passes");
+        assert!(
+            admit(&state, &caller, "hi", 1, &json!({})).await.is_none(),
+            "chat still passes"
+        );
         let denial = admit(&state, &caller, "a cat", 0, &image).await;
-        assert_eq!(denial.map(|d| d.message).as_deref(), Some("Image budget exhausted"));
+        assert_eq!(
+            denial.map(|d| d.message).as_deref(),
+            Some("Image budget exhausted")
+        );
         forget("quota-test-split");
-        assert!(admit(&state, &caller, "a cat", 0, &image).await.is_none(), "forget clears both");
+        assert!(
+            admit(&state, &caller, "a cat", 0, &image).await.is_none(),
+            "forget clears both"
+        );
     }
 
     #[test]

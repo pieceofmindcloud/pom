@@ -472,7 +472,11 @@ impl P2p {
         match result {
             Ok(connection) => {
                 self.backoff.lock().expect("backoff lock").connected(&id);
-                if let Some(hook) = self.on_connection.lock().expect("on_connection lock").clone()
+                if let Some(hook) = self
+                    .on_connection
+                    .lock()
+                    .expect("on_connection lock")
+                    .clone()
                 {
                     hook(&connection);
                 }

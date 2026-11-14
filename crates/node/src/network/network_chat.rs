@@ -4,8 +4,8 @@
 //! the interface share the same boundary. The endpoint worker is added after these
 //! contracts are validated; nothing here depends on the inference tunnel.
 
-use anyhow::{Context, Result};
 use crate::p2p::Codec;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::prelude::*;
@@ -1156,31 +1156,21 @@ impl Codec for NetworkChatCodec {
     type Request = ChatRequest;
     type Response = ChatResponse;
 
-    async fn read_request<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Request>
+    async fn read_request<T>(&mut self, io: &mut T) -> std::io::Result<Self::Request>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_msg(io).await
     }
 
-    async fn read_response<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Response>
+    async fn read_response<T>(&mut self, io: &mut T) -> std::io::Result<Self::Response>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_msg(io).await
     }
 
-    async fn write_request<T>(
-        &mut self,
-        io: &mut T,
-        request: Self::Request,
-    ) -> std::io::Result<()>
+    async fn write_request<T>(&mut self, io: &mut T, request: Self::Request) -> std::io::Result<()>
     where
         T: AsyncWrite + Unpin + Send,
     {
@@ -1198,7 +1188,6 @@ impl Codec for NetworkChatCodec {
         write_msg(io, &response).await
     }
 }
-
 
 #[cfg(test)]
 #[derive(Debug, Clone)]

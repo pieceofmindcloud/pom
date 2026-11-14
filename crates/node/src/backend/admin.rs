@@ -60,7 +60,9 @@ pub(crate) struct IssuedApiKey {
     pub secret: String,
 }
 
-pub(crate) async fn refresh_api_key_snapshot(state: &crate::gateway::GatewayState) -> anyhow::Result<()> {
+pub(crate) async fn refresh_api_key_snapshot(
+    state: &crate::gateway::GatewayState,
+) -> anyhow::Result<()> {
     let keys = state.database.api_keys()?;
     state.auth.write().await.api_keys = keys;
     Ok(())
@@ -73,7 +75,8 @@ pub(crate) async fn principal_peer_for(
     network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id != network.node_id
             && peer.node_id == primary.node_id
-            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(primary.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref()
+                == Some(primary.peer_id.as_str())
             && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     })
@@ -175,10 +178,7 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
             post(internal_complete_transfer),
         )
         .route("/api/internal/reload_model", post(internal_reload_model))
-        .route(
-            crate::webui::TOKEN_PATH,
-            post(crate::webui::internal_token),
-        )
+        .route(crate::webui::TOKEN_PATH, post(crate::webui::internal_token))
         .route(
             crate::webui::ROSTER_PATH,
             post(crate::webui::internal_roster),
@@ -329,7 +329,8 @@ fn peer_for_principal<'a>(
 ) -> Option<&'a crate::network::PeerInfo> {
     peers.iter().find(|peer| {
         peer.node_id == principal.node_id
-            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(principal.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref()
+                == Some(principal.peer_id.as_str())
             && peer.pubkey == principal.pubkey
     })
 }
@@ -1201,7 +1202,8 @@ async fn resign_authority(
     };
     let Some(peer) = state.network.alive_peers().await.into_iter().find(|peer| {
         peer.node_id == successor.node_id
-            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(successor.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref()
+                == Some(successor.peer_id.as_str())
             && peer.pubkey == successor.pubkey
             && peer.profile == NodeProfile::Admin
     }) else {
@@ -1299,7 +1301,8 @@ pub(crate) async fn accept_authority_transfer(
     let peers = state.network.alive_peers().await;
     let Some(peer) = peers.into_iter().find(|peer| {
         peer.node_id == offer.issuer.node_id
-            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(offer.issuer.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref()
+                == Some(offer.issuer.peer_id.as_str())
             && peer.pubkey == offer.issuer.pubkey
     }) else {
         return Json(json!({

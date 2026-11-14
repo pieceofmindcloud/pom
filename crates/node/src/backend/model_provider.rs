@@ -579,8 +579,8 @@ pub(crate) async fn forward_to_node(
                 .into_response();
         }
     };
-    let status = StatusCode::from_u16(response.status().as_u16())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let status =
+        StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let bytes = response.bytes().await.unwrap_or_default();
     (
         status,
@@ -669,7 +669,10 @@ async fn start_download(
             extra_ids.push(answer["download_id"].clone());
             continue;
         }
-        let code = answer["error"]["code"].as_str().unwrap_or("download_failed").to_string();
+        let code = answer["error"]["code"]
+            .as_str()
+            .unwrap_or("download_failed")
+            .to_string();
         if matches!(code.as_str(), "model_installed" | "download_in_progress") {
             skipped.push(json!({ "filename": filename, "code": code }));
         } else {
@@ -1833,10 +1836,8 @@ mod tests {
     /// beside it: the failed row had no other button and stayed for good.
     #[tokio::test]
     async fn retrying_a_failed_download_replaces_its_row() {
-        let destination = std::env::temp_dir().join(format!(
-            "pom-model-retry-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let destination =
+            std::env::temp_dir().join(format!("pom-model-retry-{}", uuid::Uuid::new_v4().simple()));
         tokio::fs::create_dir_all(&destination).await.unwrap();
         let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
         state.auth.write().await.model_dirs =
@@ -1851,7 +1852,13 @@ mod tests {
         failed.filename = Some("model.gguf".into());
         webui::jobs().write().await.insert(old_id.clone(), failed);
 
-        let response = retry_download(ConnectionAuth, State(state), axum::extract::Path(old_id.clone()), Query(NodeQuery::default())).await;
+        let response = retry_download(
+            ConnectionAuth,
+            State(state),
+            axum::extract::Path(old_id.clone()),
+            Query(NodeQuery::default()),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         let new_id = crate::gateway::testkit::body_of(response).await["download_id"]
             .as_str()
@@ -1859,7 +1866,10 @@ mod tests {
             .to_string();
 
         let jobs = webui::jobs().read().await;
-        assert!(!jobs.contains_key(&old_id), "the failed row stayed beside the new one");
+        assert!(
+            !jobs.contains_key(&old_id),
+            "the failed row stayed beside the new one"
+        );
         assert!(jobs.contains_key(&new_id));
         drop(jobs);
         let _ = tokio::fs::remove_dir_all(destination).await;
@@ -1875,7 +1885,8 @@ mod tests {
         failed.state = "failed";
         failed.download_status = Some("failed");
         let running_id = uuid::Uuid::new_v4().simple().to_string();
-        let mut running = webui::new_job(&running_id, MODEL_DOWNLOAD_KIND, "running", "downloading");
+        let mut running =
+            webui::new_job(&running_id, MODEL_DOWNLOAD_KIND, "running", "downloading");
         running.download_status = Some("downloading");
         {
             let mut jobs = webui::jobs().write().await;
@@ -1883,15 +1894,33 @@ mod tests {
             jobs.insert(running_id.clone(), running);
         }
 
-        let response = dismiss_download(ConnectionAuth, State(state.clone()), axum::extract::Path(failed_id.clone()), Query(NodeQuery::default())).await;
+        let response = dismiss_download(
+            ConnectionAuth,
+            State(state.clone()),
+            axum::extract::Path(failed_id.clone()),
+            Query(NodeQuery::default()),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(!webui::jobs().read().await.contains_key(&failed_id));
 
-        let response = dismiss_download(ConnectionAuth, State(state.clone()), axum::extract::Path(running_id.clone()), Query(NodeQuery::default())).await;
+        let response = dismiss_download(
+            ConnectionAuth,
+            State(state.clone()),
+            axum::extract::Path(running_id.clone()),
+            Query(NodeQuery::default()),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(webui::jobs().write().await.remove(&running_id).is_some());
 
-        let response = dismiss_download(ConnectionAuth, State(state.clone()), axum::extract::Path("no-such-download".into()), Query(NodeQuery::default())).await;
+        let response = dismiss_download(
+            ConnectionAuth,
+            State(state.clone()),
+            axum::extract::Path("no-such-download".into()),
+            Query(NodeQuery::default()),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
@@ -1911,7 +1940,13 @@ mod tests {
             .await
             .insert(id.clone(), token.clone());
 
-        let response = cancel_download(ConnectionAuth, State(state), axum::extract::Path(id.clone()), Query(NodeQuery::default())).await;
+        let response = cancel_download(
+            ConnectionAuth,
+            State(state),
+            axum::extract::Path(id.clone()),
+            Query(NodeQuery::default()),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(token.is_cancelled());
         assert!(!webui::jobs().read().await.contains_key(&id));
@@ -1962,7 +1997,9 @@ mod tests {
         let response = list_downloads(
             ConnectionAuth,
             State(state),
-            Query(NodeQuery { node_id: Some(own.clone()) }),
+            Query(NodeQuery {
+                node_id: Some(own.clone()),
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1975,7 +2012,8 @@ mod tests {
     /// whose file is gone names nothing.
     #[tokio::test]
     async fn installed_sources_name_the_repository_of_each_file() {
-        let dir = std::env::temp_dir().join(format!("pom-hf-sources-{}", uuid::Uuid::new_v4().simple()));
+        let dir =
+            std::env::temp_dir().join(format!("pom-hf-sources-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(dir.join(".pom-hf")).unwrap();
         std::fs::write(dir.join("m.gguf"), b"x").unwrap();
         let record = |filename: &str| InstalledRecord {
@@ -2020,10 +2058,8 @@ mod tests {
     /// still starts.
     #[tokio::test]
     async fn extra_files_ride_on_the_same_action() {
-        let destination = std::env::temp_dir().join(format!(
-            "pom-model-extra-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let destination =
+            std::env::temp_dir().join(format!("pom-model-extra-{}", uuid::Uuid::new_v4().simple()));
         tokio::fs::create_dir_all(&destination).await.unwrap();
         let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
         state.auth.write().await.model_dirs =

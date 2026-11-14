@@ -1576,7 +1576,10 @@ mod tests {
         let server = local_endpoint().await;
         let address = crate::p2p::EndpointAddr::from_parts(
             server.id(),
-            server.bound_sockets().into_iter().map(iroh::TransportAddr::Ip),
+            server
+                .bound_sockets()
+                .into_iter()
+                .map(iroh::TransportAddr::Ip),
         );
         let _router = iroh::protocol::Router::builder(server)
             .accept(
@@ -1605,11 +1608,12 @@ mod tests {
         let mut body = response.bytes_stream();
         // A buffered tunnel holds the first piece until the second is
         // written, which waits on this read: it would time out here.
-        let first = tokio::time::timeout(Duration::from_secs(10), futures::StreamExt::next(&mut body))
-            .await
-            .expect("the first piece arrives before the answer ends")
-            .expect("a piece")
-            .expect("readable");
+        let first =
+            tokio::time::timeout(Duration::from_secs(10), futures::StreamExt::next(&mut body))
+                .await
+                .expect("the first piece arrives before the answer ends")
+                .expect("a piece")
+                .expect("readable");
         assert_eq!(&first[..], b"{\"t\":\"a\"}\n");
         read_first_tx.send(()).unwrap();
         let mut rest = Vec::new();

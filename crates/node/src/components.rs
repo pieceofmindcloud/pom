@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::gateway::GatewayState;
-use crate::plugin_services::ServedComponent;
 pub(crate) use crate::image_records::{
     load_image_deployments, save_image_deployments, ComponentChoice, ImageDeployment,
 };
+use crate::plugin_services::ServedComponent;
 
 // ── This node's assignments ──────────────────────────────────────────────────
 
@@ -353,7 +353,10 @@ pub(crate) async fn undeploy_image(
     served: &[NetworkComponent],
 ) -> Vec<Released> {
     let deployments = load_image_deployments(db);
-    let record = deployments.iter().find(|d| d.deploy_id == deploy_id).cloned();
+    let record = deployments
+        .iter()
+        .find(|d| d.deploy_id == deploy_id)
+        .cloned();
     // Every machine the record names and every machine that serves the
     // deployment now: an admin node that did not deploy it has no record.
     let mut nodes: Vec<String> = Vec::new();
@@ -523,16 +526,24 @@ pub(crate) async fn image_deploy_route(
     let machines = survey_machines(&state).await;
     let plan = crate::image_plan::plan_image(&request, &machines);
     if let Some((status, body)) = crate::image_plan::refusal(&plan, request.allow_transfers) {
-        let status = axum::http::StatusCode::from_u16(status)
-            .unwrap_or(axum::http::StatusCode::BAD_REQUEST);
+        let status =
+            axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST);
         return (status, axum::Json(body)).into_response();
     }
     let deploy_id = crate::image_plan::new_deploy_id();
     let job_id = format!("deploy-{deploy_id}");
-    let mut job = crate::webui::new_job(&job_id, "deploy", format!("Deploy {}", plan.name), "applying");
+    let mut job = crate::webui::new_job(
+        &job_id,
+        "deploy",
+        format!("Deploy {}", plan.name),
+        "applying",
+    );
     job.deploy_id = Some(deploy_id.clone());
     job.deployment_name = Some(plan.name.clone());
-    crate::webui::jobs().write().await.insert(job_id.clone(), job);
+    crate::webui::jobs()
+        .write()
+        .await
+        .insert(job_id.clone(), job);
     let by = state.network.node_id.clone();
     let (task_deploy_id, task_job_id) = (deploy_id.clone(), job_id.clone());
     tokio::spawn(async move {
@@ -553,7 +564,8 @@ pub(crate) async fn image_deploy_route(
         .await
         {
             Ok(failed) if failed.is_empty() => {
-                crate::webui::set_job(&task_job_id, "done", "ready", "every machine is serving").await
+                crate::webui::set_job(&task_job_id, "done", "ready", "every machine is serving")
+                    .await
             }
             Ok(failed) => {
                 let names: Vec<String> = failed
@@ -564,7 +576,10 @@ pub(crate) async fn image_deploy_route(
                     &task_job_id,
                     "done",
                     "ready",
-                    &format!("serving; these machines could not join: {}", names.join("; ")),
+                    &format!(
+                        "serving; these machines could not join: {}",
+                        names.join("; ")
+                    ),
                 )
                 .await
             }
@@ -585,8 +600,8 @@ pub(crate) async fn deploy_response(
     let machines = survey_machines(state).await;
     let plan = crate::image_plan::plan_image(&request, &machines);
     if let Some((status, body)) = crate::image_plan::refusal(&plan, request.allow_transfers) {
-        let status = axum::http::StatusCode::from_u16(status)
-            .unwrap_or(axum::http::StatusCode::BAD_REQUEST);
+        let status =
+            axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::BAD_REQUEST);
         return (status, axum::Json(body)).into_response();
     }
     let call = live_targets(state.clone());
@@ -595,9 +610,8 @@ pub(crate) async fn deploy_response(
     match crate::image_plan::deploy_stages(&state.database, &plan, &call, &deploy_id, &by, &|_| {})
         .await
     {
-        Ok(failed) => {
-            axum::Json(serde_json::json!({ "deploy_id": deploy_id, "failed": failed })).into_response()
-        }
+        Ok(failed) => axum::Json(serde_json::json!({ "deploy_id": deploy_id, "failed": failed }))
+            .into_response(),
         Err(error) => (
             axum::http::StatusCode::BAD_GATEWAY,
             axum::Json(serde_json::json!({ "error": error })),
@@ -853,7 +867,8 @@ static STICKY: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<StickyKey, (String, std::time::Instant)>>,
 > = std::sync::OnceLock::new();
 
-fn sticky() -> &'static std::sync::Mutex<std::collections::HashMap<StickyKey, (String, std::time::Instant)>> {
+fn sticky(
+) -> &'static std::sync::Mutex<std::collections::HashMap<StickyKey, (String, std::time::Instant)>> {
     STICKY.get_or_init(Default::default)
 }
 
@@ -1571,7 +1586,10 @@ mod tests {
                 with("diffusion", "/l/turbo.safetensors", 99.0),
                 "a strength out of range",
             ),
-            (with("vae", "/l/turbo.safetensors", 0.8), "a LoRA on the VAE"),
+            (
+                with("vae", "/l/turbo.safetensors", 0.8),
+                "a LoRA on the VAE",
+            ),
         ] {
             let error = apply_assignment(&db, &catalog, &call, assignment)
                 .await
@@ -1881,15 +1899,17 @@ mod tests {
         let seen: Arc<Mutex<Vec<String>>> = Default::default();
         let log = seen.clone();
         let answers = Arc::new(answers);
-        let forward: Forward = Arc::new(move |target: NetworkComponent, _op: String, _body: Vec<u8>, _job: Option<String>| {
-            log.lock().unwrap().push(target.node_id.clone());
-            let answer = answers
-                .iter()
-                .find(|(node, _)| *node == target.node_id)
-                .map(|(_, a)| a.clone())
-                .unwrap_or(Ok((200, vec![])));
-            Box::pin(async move { answer })
-        });
+        let forward: Forward = Arc::new(
+            move |target: NetworkComponent, _op: String, _body: Vec<u8>, _job: Option<String>| {
+                log.lock().unwrap().push(target.node_id.clone());
+                let answer = answers
+                    .iter()
+                    .find(|(node, _)| *node == target.node_id)
+                    .map(|(_, a)| a.clone())
+                    .unwrap_or(Ok((200, vec![])));
+                Box::pin(async move { answer })
+            },
+        );
         (forward, seen)
     }
 
@@ -1901,9 +1921,23 @@ mod tests {
     async fn the_nearest_ready_replica_is_called() {
         let mut loading = served("img-1", "diffusion", "a");
         loading.status = "loading".into();
-        let network = vec![loading, served("img-1", "diffusion", "b"), served("img-1", "diffusion", "c")];
+        let network = vec![
+            loading,
+            served("img-1", "diffusion", "b"),
+            served("img-1", "diffusion", "c"),
+        ];
         let (forward, seen) = scripted(vec![]);
-        let (status, _, target) = call_component(&network, "img-1", "diffusion", "forward", vec![], None, &forward, &rtts(&[("a", 1.0), ("b", 9.0), ("c", 3.0)])).await;
+        let (status, _, target) = call_component(
+            &network,
+            "img-1",
+            "diffusion",
+            "forward",
+            vec![],
+            None,
+            &forward,
+            &rtts(&[("a", 1.0), ("b", 9.0), ("c", 3.0)]),
+        )
+        .await;
         assert_eq!(status, 200);
         assert_eq!(target.unwrap().node_id, "c");
         assert_eq!(*seen.lock().unwrap(), ["c"]);
@@ -1923,7 +1957,17 @@ mod tests {
     async fn a_dead_replica_fails_over() {
         let network = vec![served("img-1", "vae", "a"), served("img-1", "vae", "b")];
         let (forward, seen) = scripted(vec![("a", Err("connection refused".into()))]);
-        let (status, _, target) = call_component(&network, "img-1", "vae", "decode", vec![], None, &forward, &rtts(&[("a", 1.0), ("b", 2.0)])).await;
+        let (status, _, target) = call_component(
+            &network,
+            "img-1",
+            "vae",
+            "decode",
+            vec![],
+            None,
+            &forward,
+            &rtts(&[("a", 1.0), ("b", 2.0)]),
+        )
+        .await;
         assert_eq!(status, 200);
         assert_eq!(target.unwrap().node_id, "b");
         assert_eq!(*seen.lock().unwrap(), ["a", "b"]);
@@ -1933,25 +1977,68 @@ mod tests {
     async fn a_5xx_fails_over_but_a_4xx_is_returned() {
         let network = vec![served("img-1", "vae", "a"), served("img-1", "vae", "b")];
         let (forward, seen) = scripted(vec![("a", Ok((503, vec![])))]);
-        let (status, _, _) = call_component(&network, "img-1", "vae", "decode", vec![], None, &forward, &rtts(&[("a", 1.0), ("b", 2.0)])).await;
+        let (status, _, _) = call_component(
+            &network,
+            "img-1",
+            "vae",
+            "decode",
+            vec![],
+            None,
+            &forward,
+            &rtts(&[("a", 1.0), ("b", 2.0)]),
+        )
+        .await;
         assert_eq!(status, 200);
         assert_eq!(seen.lock().unwrap().len(), 2);
         let (forward, seen) = scripted(vec![("a", Ok((400, b"bad".to_vec())))]);
-        let (status, body, _) = call_component(&network, "img-1", "vae", "decode", vec![], None, &forward, &rtts(&[("a", 1.0), ("b", 2.0)])).await;
+        let (status, body, _) = call_component(
+            &network,
+            "img-1",
+            "vae",
+            "decode",
+            vec![],
+            None,
+            &forward,
+            &rtts(&[("a", 1.0), ("b", 2.0)]),
+        )
+        .await;
         assert_eq!((status, body), (400, b"bad".to_vec()));
         assert_eq!(*seen.lock().unwrap(), ["a"]);
     }
 
     #[tokio::test]
     async fn a_job_stays_on_its_replica() {
-        let network = vec![served("img-1", "diffusion", "a"), served("img-1", "diffusion", "b")];
+        let network = vec![
+            served("img-1", "diffusion", "a"),
+            served("img-1", "diffusion", "b"),
+        ];
         let (forward, _) = scripted(vec![("a", Err("down".into()))]);
         let job = Some("job-sticky-1".to_owned());
-        let (_, _, first) = call_component(&network, "img-1", "diffusion", "forward", vec![], job.clone(), &forward, &rtts(&[("a", 1.0), ("b", 5.0)])).await;
+        let (_, _, first) = call_component(
+            &network,
+            "img-1",
+            "diffusion",
+            "forward",
+            vec![],
+            job.clone(),
+            &forward,
+            &rtts(&[("a", 1.0), ("b", 5.0)]),
+        )
+        .await;
         assert_eq!(first.unwrap().node_id, "b");
         // a comes back and is nearer, but the generation keeps its replica.
         let (forward, seen) = scripted(vec![]);
-        let (_, _, again) = call_component(&network, "img-1", "diffusion", "forward", vec![], job, &forward, &rtts(&[("a", 1.0), ("b", 5.0)])).await;
+        let (_, _, again) = call_component(
+            &network,
+            "img-1",
+            "diffusion",
+            "forward",
+            vec![],
+            job,
+            &forward,
+            &rtts(&[("a", 1.0), ("b", 5.0)]),
+        )
+        .await;
         assert_eq!(again.unwrap().node_id, "b");
         assert_eq!(*seen.lock().unwrap(), ["b"]);
     }
@@ -1960,24 +2047,55 @@ mod tests {
     async fn all_replicas_down_names_every_host() {
         let network = vec![served("img-1", "vae", "a"), served("img-1", "vae", "b")];
         let (forward, _) = scripted(vec![("a", Err("refused".into())), ("b", Ok((500, vec![])))]);
-        let (status, body, target) = call_component(&network, "img-1", "vae", "decode", vec![], None, &forward, &|_| None).await;
+        let (status, body, target) = call_component(
+            &network,
+            "img-1",
+            "vae",
+            "decode",
+            vec![],
+            None,
+            &forward,
+            &|_| None,
+        )
+        .await;
         assert_eq!(status, 502);
         assert!(target.is_none());
         let text = String::from_utf8_lossy(&body);
-        assert!(text.contains("host-a: refused") && text.contains("host-b: 500"), "{text}");
+        assert!(
+            text.contains("host-a: refused") && text.contains("host-b: 500"),
+            "{text}"
+        );
     }
 
     fn zimage_record() -> ImageDeployment {
         use crate::image_records::{FileIdentity, ImageStage, Replica};
         let stage = |component: &str, file: &str, nodes: &[&str]| ImageStage {
             component: component.into(),
-            file: FileIdentity { name: file.into(), size_bytes: 5 },
-            replicas: nodes.iter().map(|n| Replica { node_id: (*n).into(), hostname: String::new(), path: format!("/m/{file}"), lora_paths: Vec::new() }).collect(),
+            file: FileIdentity {
+                name: file.into(),
+                size_bytes: 5,
+            },
+            replicas: nodes
+                .iter()
+                .map(|n| Replica {
+                    node_id: (*n).into(),
+                    hostname: String::new(),
+                    path: format!("/m/{file}"),
+                    lora_paths: Vec::new(),
+                })
+                .collect(),
             loras: Vec::new(),
         };
         ImageDeployment::new(
-            "img-1".into(), "Z-Image".into(), "me", None,
-            vec![stage("vae", "ae", &["a"]), stage("diffusion", "z", &["b", "c"]), stage("text_encoder", "q", &["a"])],
+            "img-1".into(),
+            "Z-Image".into(),
+            "me",
+            None,
+            vec![
+                stage("vae", "ae", &["a"]),
+                stage("diffusion", "z", &["b", "c"]),
+                stage("text_encoder", "q", &["a"]),
+            ],
         )
     }
 
@@ -1992,7 +2110,12 @@ mod tests {
         assert_eq!(views.len(), 1);
         let view = &views[0];
         assert_eq!(view["recorded"], true);
-        let order: Vec<_> = view["stages"].as_array().unwrap().iter().map(|s| s["component"].as_str().unwrap()).collect();
+        let order: Vec<_> = view["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["component"].as_str().unwrap())
+            .collect();
         assert_eq!(order, ["text_encoder", "diffusion", "vae"]);
         let diffusion = &view["stages"][1]["replicas"];
         assert_eq!(diffusion[0]["status"], "ready");
@@ -2017,8 +2140,15 @@ mod tests {
     fn serving_needs_a_ready_replica_per_stage() {
         let mut loading = served("img-1", "diffusion", "b");
         loading.status = "loading".into();
-        let served = vec![served("img-1", "text_encoder", "a"), served("img-1", "vae", "a"), loading];
-        assert_eq!(view_of(&[zimage_record()], &served, &|_| None)[0]["serving"], false);
+        let served = vec![
+            served("img-1", "text_encoder", "a"),
+            served("img-1", "vae", "a"),
+            loading,
+        ];
+        assert_eq!(
+            view_of(&[zimage_record()], &served, &|_| None)[0]["serving"],
+            false
+        );
     }
 
     #[test]
@@ -2041,14 +2171,35 @@ mod tests {
     async fn release_with_a_component_drops_only_it() {
         let (_dir, db) = db();
         let (call, seen) = recording(Ok(()));
-        let catalog = vec!["/m/ae.safetensors".to_owned(), "/m/q.safetensors".to_owned()];
-        apply_assignment(&db, &catalog, &call, assignment("img-1", "vae", "/m/ae.safetensors")).await.unwrap();
-        apply_assignment(&db, &catalog, &call, assignment("img-1", "text_encoder", "/m/q.safetensors")).await.unwrap();
+        let catalog = vec![
+            "/m/ae.safetensors".to_owned(),
+            "/m/q.safetensors".to_owned(),
+        ];
+        apply_assignment(
+            &db,
+            &catalog,
+            &call,
+            assignment("img-1", "vae", "/m/ae.safetensors"),
+        )
+        .await
+        .unwrap();
+        apply_assignment(
+            &db,
+            &catalog,
+            &call,
+            assignment("img-1", "text_encoder", "/m/q.safetensors"),
+        )
+        .await
+        .unwrap();
         release_deployment(&db, &call, "img-1", Some("vae")).await;
         let left = load_assignments(&db);
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].component, "text_encoder");
-        assert!(seen.lock().unwrap().iter().any(|(op, payload)| op == "component.release" && payload["component"] == "vae"));
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(op, payload)| op == "component.release" && payload["component"] == "vae"));
     }
 
     #[tokio::test]
@@ -2066,7 +2217,9 @@ mod tests {
         assert!(released.iter().all(|r| r.ok));
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
-        assert!(seen.iter().all(|line| line.starts_with("/api/ui/components/release")));
+        assert!(seen
+            .iter()
+            .all(|line| line.starts_with("/api/ui/components/release")));
         assert!(!seen.iter().any(|line| line.contains(" c ")));
     }
 

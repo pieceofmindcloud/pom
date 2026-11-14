@@ -718,9 +718,7 @@ const VISITOR_REFUSES: &[&str] = &[
 ];
 
 pub(crate) fn visitor_refuses(path: &str) -> bool {
-    VISITOR_REFUSES
-        .iter()
-        .any(|prefix| is_under(path, prefix))
+    VISITOR_REFUSES.iter().any(|prefix| is_under(path, prefix))
 }
 
 pub(crate) const fn profile_can_access(
@@ -735,9 +733,7 @@ pub(crate) const fn profile_can_access(
             profile,
             crate::profile::NodeProfile::Worker | crate::profile::NodeProfile::Admin
         ),
-        RouteScope::AnyMember
-        | RouteScope::LocalOnly
-        | RouteScope::HandlerAuth => true,
+        RouteScope::AnyMember | RouteScope::LocalOnly | RouteScope::HandlerAuth => true,
         RouteScope::OtherRouter => false,
     }
 }
@@ -764,17 +760,31 @@ mod policy_tests {
 
     #[test]
     fn another_node_needs_an_admin_to_download_or_rescan_here() {
-        let post = |path: &str| node_to_node_scope(&Method::POST, path, route_scope(&Method::POST, path));
-        assert_eq!(post("/api/ui/model-provider/downloads"), RouteScope::AnyAdmin);
-        assert_eq!(post("/api/ui/model-provider/downloads/ab/cancel"), RouteScope::AnyAdmin);
+        let post =
+            |path: &str| node_to_node_scope(&Method::POST, path, route_scope(&Method::POST, path));
+        assert_eq!(
+            post("/api/ui/model-provider/downloads"),
+            RouteScope::AnyAdmin
+        );
+        assert_eq!(
+            post("/api/ui/model-provider/downloads/ab/cancel"),
+            RouteScope::AnyAdmin
+        );
         assert_eq!(post("/api/ui/models/rescan"), RouteScope::AnyAdmin);
         assert_eq!(
-            node_to_node_scope(&Method::GET, "/api/ui/model-provider/downloads", scope_of("/api/ui/model-provider/downloads")),
+            node_to_node_scope(
+                &Method::GET,
+                "/api/ui/model-provider/downloads",
+                scope_of("/api/ui/model-provider/downloads")
+            ),
             RouteScope::ServingMember
         );
         assert_eq!(post("/api/ui/models/delete"), RouteScope::ServingMember);
         // The local operator's scope is unchanged.
-        assert_eq!(route_scope(&Method::POST, "/api/ui/models/rescan"), RouteScope::ServingMember);
+        assert_eq!(
+            route_scope(&Method::POST, "/api/ui/models/rescan"),
+            RouteScope::ServingMember
+        );
     }
 
     #[test]
@@ -821,7 +831,10 @@ mod policy_tests {
         ] {
             let scope = route_scope(&Method::POST, path);
             assert_eq!(scope, RouteScope::LocalOnly, "rota={path}");
-            assert!(profile_can_access(crate::profile::NodeProfile::Worker, scope));
+            assert!(profile_can_access(
+                crate::profile::NodeProfile::Worker,
+                scope
+            ));
             assert!(profile_can_access(
                 crate::profile::NodeProfile::Visitor,
                 scope
@@ -869,10 +882,7 @@ mod policy_tests {
             scope_of("/api/ui/network/advertise-addr"),
             RouteScope::LocalOnly
         );
-        assert_eq!(
-            scope_of("/api/ui/network/relay"),
-            RouteScope::LocalOnly
-        );
+        assert_eq!(scope_of("/api/ui/network/relay"), RouteScope::LocalOnly);
         assert_eq!(
             scope_of("/api/ui/network/admin-authority"),
             RouteScope::HandlerAuth
@@ -885,16 +895,16 @@ mod policy_tests {
             scope_of("/api/ui/network/geo/nearest"),
             RouteScope::LocalOnly
         );
-        assert_eq!(
-            scope_of("/api/ui/network/firewall"),
-            RouteScope::LocalOnly
-        );
+        assert_eq!(scope_of("/api/ui/network/firewall"), RouteScope::LocalOnly);
         assert_eq!(
             scope_of("/api/ui/network/auto-discovery"),
             RouteScope::PrincipalOnly
         );
         assert_eq!(scope_of("/api/ui/deployments"), RouteScope::ServingMember);
-        assert_eq!(scope_of("/api/ui/image-deployments"), RouteScope::ServingMember);
+        assert_eq!(
+            scope_of("/api/ui/image-deployments"),
+            RouteScope::ServingMember
+        );
         assert_eq!(
             route_scope(&Method::POST, "/api/ui/deployments"),
             RouteScope::AnyAdmin
@@ -910,10 +920,7 @@ mod policy_tests {
         ] {
             assert_eq!(scope_of(path), RouteScope::AnyAdmin, "{path}");
         }
-        for path in [
-            "/admin/authority/resign",
-            "/api/ui/release",
-        ] {
+        for path in ["/admin/authority/resign", "/api/ui/release"] {
             assert_eq!(scope_of(path), RouteScope::PrincipalOnly, "{path}");
         }
         assert!(profile_can_access(
@@ -945,10 +952,7 @@ mod policy_tests {
             scope_of("/api/ui/chat/capabilities"),
             RouteScope::HandlerAuth
         );
-        assert_eq!(
-            scope_of("/api/ui/chat/history/abc"),
-            RouteScope::LocalOnly
-        );
+        assert_eq!(scope_of("/api/ui/chat/history/abc"), RouteScope::LocalOnly);
         assert_eq!(scope_of("/api/ui/chat-key"), RouteScope::LocalOnly);
         assert_eq!(scope_of("/api/ui/connection"), RouteScope::LocalOnly);
         assert_eq!(scope_of("/api/ui/quota/reset"), RouteScope::LocalOnly);
@@ -990,10 +994,7 @@ mod policy_tests {
             RouteScope::LocalOnly
         );
         assert_eq!(scope_of("/api/new-control"), RouteScope::PrincipalOnly);
-        assert_eq!(
-            scope_of("/api/ui/chat/telemetry"),
-            RouteScope::HandlerAuth
-        );
+        assert_eq!(scope_of("/api/ui/chat/telemetry"), RouteScope::HandlerAuth);
         assert_eq!(scope_of("/api/plugin-host/sign"), RouteScope::HandlerAuth);
         assert_eq!(scope_of("/api/plugin-hosts"), RouteScope::PrincipalOnly);
     }

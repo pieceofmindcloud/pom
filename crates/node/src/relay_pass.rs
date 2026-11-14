@@ -80,8 +80,9 @@ pub(crate) fn verify(
     relay: &str,
     now: i64,
 ) -> Result<RelayPassClaims> {
-    let claims: RelayPassClaims =
-        open_compact(pass, HEADER, |claims: &RelayPassClaims| claims.iss_key.clone())?;
+    let claims: RelayPassClaims = open_compact(pass, HEADER, |claims: &RelayPassClaims| {
+        claims.iss_key.clone()
+    })?;
     if claims.net != document.anchor.cluster_id {
         bail!("the pass belongs to another network");
     }
@@ -180,7 +181,11 @@ mod tests {
         // Nothing in it points at whoever holds it.
         let body = serde_json::to_value(&claims).unwrap();
         assert_eq!(
-            body.as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
+            body.as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
             vec!["exp", "iat", "iss", "iss_key", "jti", "net", "relay"]
         );
     }

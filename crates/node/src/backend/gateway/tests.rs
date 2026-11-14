@@ -436,7 +436,7 @@ mod tests {
     #[tokio::test]
     async fn what_a_node_may_ask_of_another_depends_on_who_it_is() {
         use crate::webui::RouteScope::{
-            PrincipalOnly, HandlerAuth, AnyAdmin, AnyMember, LocalOnly, ServingMember,
+            AnyAdmin, AnyMember, HandlerAuth, LocalOnly, PrincipalOnly, ServingMember,
         };
         let mut worker = testkit::peer("worker", "worker", 8090);
         worker.profile = crate::profile::NodeProfile::Worker;
@@ -472,10 +472,7 @@ mod tests {
             caller_may_ask(&state, AnyAdmin, None).await,
             Err("signature_required")
         );
-        assert_eq!(
-            caller_may_ask(&state, AnyAdmin, Some(&admin)).await,
-            Ok(())
-        );
+        assert_eq!(caller_may_ask(&state, AnyAdmin, Some(&admin)).await, Ok(()));
         assert_eq!(
             caller_may_ask(&state, AnyAdmin, Some(&principal_of("worker"))).await,
             Err("admin_required")
@@ -617,11 +614,18 @@ mod tests {
         let app = router_with_surface_gate(&state, &["/api/ui/leave"]);
         let refused = app
             .clone()
-            .oneshot(from_another_node(axum::http::Method::POST, "/api/ui/leave", None))
+            .oneshot(from_another_node(
+                axum::http::Method::POST,
+                "/api/ui/leave",
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
-        assert_eq!(testkit::body_of(refused).await["reason"], "principal_required");
+        assert_eq!(
+            testkit::body_of(refused).await["reason"],
+            "principal_required"
+        );
 
         let signed = state
             .signed_control_headers("POST", "/api/ui/leave", b"")
@@ -761,7 +765,11 @@ mod tests {
         let before = principal.admin_trust.chain_version();
         principal
             .network_chat
-            .request_admission("visitor", Default::default(), crate::config::EnrollmentRole::Visitor)
+            .request_admission(
+                "visitor",
+                Default::default(),
+                crate::config::EnrollmentRole::Visitor,
+            )
             .unwrap();
         principal.network_chat.decide_admission(
             "visitor",
@@ -772,15 +780,32 @@ mod tests {
         let mut member_as_issuer = member.clone();
         member_as_issuer.authority_signing_key = principal.authority_signing_key.clone();
         member_as_issuer.authority_principal = principal.authority_principal.clone();
-        announce_token(&member_as_issuer, "visitor", crate::config::EnrollmentRole::Visitor).await;
+        announce_token(
+            &member_as_issuer,
+            "visitor",
+            crate::config::EnrollmentRole::Visitor,
+        )
+        .await;
         assert_eq!(
             caller_may_ask(&member, ServingMember, Some(&visitor)).await,
             Err("visitor_caller")
         );
 
         // A worker's token copied into another node's announce is nothing.
-        announce_token(&member_as_issuer, "visitor", crate::config::EnrollmentRole::Worker).await;
-        member.network.peers.write().await.get_mut("visitor").unwrap().pubkey = "another-key".into();
+        announce_token(
+            &member_as_issuer,
+            "visitor",
+            crate::config::EnrollmentRole::Worker,
+        )
+        .await;
+        member
+            .network
+            .peers
+            .write()
+            .await
+            .get_mut("visitor")
+            .unwrap()
+            .pubkey = "another-key".into();
         assert_eq!(
             caller_may_ask(
                 &member,
@@ -815,7 +840,10 @@ mod tests {
             .unwrap();
         bare.extensions_mut()
             .insert(crate::serve::PeerAddr("192.0.2.9:1234".parse().unwrap()));
-        assert_ne!(app.clone().oneshot(bare).await.unwrap().status(), StatusCode::OK);
+        assert_ne!(
+            app.clone().oneshot(bare).await.unwrap().status(),
+            StatusCode::OK
+        );
 
         let marked = app
             .oneshot(from_another_node(
@@ -826,12 +854,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(marked.status(), StatusCode::FORBIDDEN);
-        assert_eq!(testkit::body_of(marked).await["reason"], "signature_required");
+        assert_eq!(
+            testkit::body_of(marked).await["reason"],
+            "signature_required"
+        );
     }
 
     #[tokio::test]
     async fn a_secondary_admin_deploys_and_does_nothing_else() {
-        use crate::webui::RouteScope::{PrincipalOnly, AnyAdmin, ServingMember};
+        use crate::webui::RouteScope::{AnyAdmin, PrincipalOnly, ServingMember};
         use axum::http::Method;
         // A network with a principal and one secondary admin, seen from a
         // third member that holds the same chain.
@@ -1172,7 +1203,11 @@ mod tests {
                 &[Visitor, Worker, Admin],
             ),
             // And so does its name.
-            ("POST", "/api/ui/network/node-name", &[Visitor, Worker, Admin]),
+            (
+                "POST",
+                "/api/ui/network/node-name",
+                &[Visitor, Worker, Admin],
+            ),
             // What was not touched stays where it was.
             ("GET", "/api/ui/deployments", &[Worker, Admin]),
             ("GET", "/api/ui/models", &[Worker, Admin]),
@@ -1419,7 +1454,11 @@ mod tests {
         state.network.relay_gate().set_reachable(true);
         assert_eq!(
             state.network.relay_gate().offer(),
-            Some(crate::network::RelayOffer { transfers: true, url: None, anonymous: false })
+            Some(crate::network::RelayOffer {
+                transfers: true,
+                url: None,
+                anonymous: false
+            })
         );
 
         let mut request = Request::post("/api/ui/network/relay")
@@ -1451,7 +1490,14 @@ mod tests {
         let wire = state.network.gossip_announce_bytes(None).unwrap();
         match serde_json::from_slice(&wire).unwrap() {
             crate::network::P2PMessage::Announce { relay, .. } => {
-                assert_eq!(relay, Some(crate::network::RelayOffer { transfers: false, url: None, anonymous: false }));
+                assert_eq!(
+                    relay,
+                    Some(crate::network::RelayOffer {
+                        transfers: false,
+                        url: None,
+                        anonymous: false
+                    })
+                );
             }
             other => panic!("expected Announce, got {other:?}"),
         }
@@ -3159,8 +3205,14 @@ mod peer_visibility_tests {
 
         let health = std::sync::Arc::new(super::AdmissionHealth::default());
         let clients = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
-        let admitted =
-            ready_for_pipeline(&clients, &health, &network, vec![me], Duration::from_secs(2)).await;
+        let admitted = ready_for_pipeline(
+            &clients,
+            &health,
+            &network,
+            vec![me],
+            Duration::from_secs(2),
+        )
+        .await;
         assert_eq!(admitted.len(), 1, "the gateway left itself out");
         assert_eq!((admitted[0].start_layer, admitted[0].end_layer), (0, 15));
     }
@@ -3211,7 +3263,10 @@ mod peer_visibility_tests {
         )
         .await;
         assert_eq!(second.len(), 1);
-        assert!(second[0].is_alive(), "the remembered admission kept a stale last_seen");
+        assert!(
+            second[0].is_alive(),
+            "the remembered admission kept a stale last_seen"
+        );
     }
 
     #[tokio::test]
@@ -3306,9 +3361,9 @@ mod replicated_admin_logs_tests {
         let state = testkit::secondary_admin_state("secondary").await;
         assert!(state.network.peers.read().await.is_empty());
 
-        assert!(state
-            .cluster_logs
-            .try_ingest_remote("worker", crate::cluster_logs::LogBatch {
+        assert!(state.cluster_logs.try_ingest_remote(
+            "worker",
+            crate::cluster_logs::LogBatch {
                 source_node_id: "worker".into(),
                 entries: vec![crate::cluster_logs::LogEntry {
                     node_id: "worker".into(),
@@ -3320,7 +3375,8 @@ mod replicated_admin_logs_tests {
                     message: "processo iniciou".into(),
                 }],
                 dropped: 0,
-            }));
+            }
+        ));
 
         let request = crate::reqlog::AuditRequest {
             id: "request-1".into(),
@@ -3345,12 +3401,13 @@ mod replicated_admin_logs_tests {
             status: crate::reqlog::AuditStatus::Ok,
             error: None,
         };
-        assert!(state
-            .audit
-            .try_ingest_remote("worker", crate::reqlog::AuditEvent::Complete {
+        assert!(state.audit.try_ingest_remote(
+            "worker",
+            crate::reqlog::AuditEvent::Complete {
                 id: request.id.clone(),
                 completion,
-            }));
+            }
+        ));
         assert!(state
             .audit
             .try_ingest_remote("worker", crate::reqlog::AuditEvent::Begin(request)));
@@ -3850,13 +3907,18 @@ pub(crate) mod testkit {
         peers: Vec<PeerInfo>,
     ) -> GatewayState {
         let net = Arc::new(
-            Network::testkit(node_id.into(), // The same key as `authority_signing_key` below: a node has a
+            Network::testkit(
+                node_id.into(), // The same key as `authority_signing_key` below: a node has a
                 // single key.
                 hex::encode(
                     ed25519_dalek::SigningKey::from_bytes(&[7; 32])
                         .verifying_key()
                         .as_bytes(),
-                ), vec![], None, None)
+                ),
+                vec![],
+                None,
+                None,
+            )
             .await
             .expect("UDP socket on an ephemeral port")
             .with_identity(crate::profile::NodeProfile::Worker, hostname.into()),
@@ -3892,8 +3954,7 @@ pub(crate) mod testkit {
         // The bench's own files: what a route saves or a stop forgets never
         // lands in the configuration `POM_CONFIG` names, another test's or
         // the working directory's `pom.json`.
-        let bench_dir =
-            std::env::temp_dir().join(format!("pom-testkit-{}", uuid::Uuid::new_v4()));
+        let bench_dir = std::env::temp_dir().join(format!("pom-testkit-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&bench_dir).expect("testkit folder");
         let auth = Arc::new(RwLock::new(Config {
             retired_tls_required: (),

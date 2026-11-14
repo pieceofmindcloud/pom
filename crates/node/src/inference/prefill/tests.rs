@@ -930,7 +930,10 @@ mod tests {
     #[test]
     fn hop_trace_becomes_unknown_if_calls_of_the_same_hop_diverge() {
         let mut trace = RequestTrace::new("qwen", &[("mixed", 0, 15)]);
-        for (path, engine) in [("dense/llama.cpp", "llama.cpp"), ("dense/llama.cpp", "plugin")] {
+        for (path, engine) in [
+            ("dense/llama.cpp", "llama.cpp"),
+            ("dense/llama.cpp", "plugin"),
+        ] {
             trace.record_hop(
                 0,
                 Phase::Prefill,
@@ -1897,7 +1900,11 @@ fn stage_balance_splits_each_hop_and_names_the_bottleneck() {
     assert_eq!(c.wait_input_ms, Some(8_000));
     assert_eq!(c.wait_output_ms, Some(0));
 
-    let prefill = trace.stage_balance.as_ref().and_then(|b| b.prefill.as_ref()).unwrap();
+    let prefill = trace
+        .stage_balance
+        .as_ref()
+        .and_then(|b| b.prefill.as_ref())
+        .unwrap();
     assert_eq!(prefill.node_id, "b");
     assert_eq!((prefill.start_layer, prefill.end_layer), (16, 30));
     // no decode recorded: no decode bottleneck

@@ -314,7 +314,11 @@ pub(crate) fn revocations_path_for(trust_path: &Path) -> PathBuf {
 fn load_revocations(trust_path: Option<&Path>) -> Arc<Mutex<RevocationLedger>> {
     let ledger = trust_path
         .map(revocations_path_for)
-        .and_then(|path| std::fs::read_to_string(&path).ok().map(|content| (path, content)))
+        .and_then(|path| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .map(|content| (path, content))
+        })
         .map(|(path, content)| {
             serde_json::from_str(&content).unwrap_or_else(|error| {
                 tracing::warn!("unreadable revocation list at {}: {error}", path.display());

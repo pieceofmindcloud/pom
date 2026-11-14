@@ -26,10 +26,7 @@ impl InferState {
         self.engine.token_to_piece_bytes(token, special)
     }
 
-    pub(super) fn new(
-        engine: LlmEngine,
-        cfg: &NodeConfig,
-    ) -> Self {
+    pub(super) fn new(engine: LlmEngine, cfg: &NodeConfig) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
         // The deployment's seed restarts the sampler's generator once, here,
@@ -2147,9 +2144,11 @@ const PRESERVED_MARKERS: &[&str] = &[
 fn preserved_marker_tokens(engine: &LlmEngine) -> std::collections::HashSet<i32> {
     PRESERVED_MARKERS
         .iter()
-        .filter_map(|marker| match engine.tokenize(marker, false, true).as_slice() {
-            [token] if engine.token_to_piece_bytes(*token, false).is_empty() => Some(*token),
-            _ => None,
-        })
+        .filter_map(
+            |marker| match engine.tokenize(marker, false, true).as_slice() {
+                [token] if engine.token_to_piece_bytes(*token, false).is_empty() => Some(*token),
+                _ => None,
+            },
+        )
         .collect()
 }

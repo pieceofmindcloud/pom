@@ -372,7 +372,8 @@ mod platform {
 
     fn configure_rule(rule: &INetFwRule, spec: &FirewallRuleSpec, executable: &str) -> Result<()> {
         let name = BSTR::from(rule_name(spec));
-        let description = BSTR::from("POM ports for discovery, QUIC, the p2p endpoint and the relay");
+        let description =
+            BSTR::from("POM ports for discovery, QUIC, the p2p endpoint and the relay");
         let application = BSTR::from(executable);
         let port = BSTR::from(spec.port.to_string());
         unsafe {

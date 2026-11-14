@@ -425,7 +425,9 @@ where
     let sha = hex::encode(hasher.finalize());
     // Taken again after the read: a file rewritten meanwhile is not cached
     // under its old fingerprint.
-    if let Some(fingerprint) = fingerprint.filter(|before| source_fingerprint(&source).as_ref() == Some(before)) {
+    if let Some(fingerprint) =
+        fingerprint.filter(|before| source_fingerprint(&source).as_ref() == Some(before))
+    {
         model_hash_cache::put(&fingerprint, &sha);
     }
     Ok(sha)
@@ -443,7 +445,12 @@ fn source_fingerprint(source: &crate::multipart::GgufSource) -> Option<String> {
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
             .as_nanos();
-        key.push_str(&format!("{}\u{0}{}\u{0}{}\n", path.display(), meta.len(), mtime));
+        key.push_str(&format!(
+            "{}\u{0}{}\u{0}{}\n",
+            path.display(),
+            meta.len(),
+            mtime
+        ));
     }
     Some(key)
 }
@@ -461,7 +468,8 @@ pub(crate) mod model_hash_cache {
     fn file() -> std::path::PathBuf {
         // Tests never write into whatever the project root resolves to.
         #[cfg(test)]
-        return std::env::temp_dir().join(format!("pom-model-hashes-test-{}.json", std::process::id()));
+        return std::env::temp_dir()
+            .join(format!("pom-model-hashes-test-{}.json", std::process::id()));
         #[cfg(not(test))]
         crate::config::project_root().join(format!(".{}-model-hashes.json", crate::brand::slug()))
     }
@@ -472,7 +480,9 @@ pub(crate) mod model_hash_cache {
     }
 
     fn with_table<T>(f: impl FnOnce(&mut BTreeMap<String, String>) -> T) -> T {
-        let mut guard = table().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = table()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let map = guard.get_or_insert_with(|| {
             std::fs::read(file())
                 .ok()
@@ -490,7 +500,9 @@ pub(crate) mod model_hash_cache {
         let snapshot = with_table(|map| {
             map.insert(fingerprint.to_string(), sha256.to_string());
             while map.len() > MAX_ENTRIES {
-                let Some(first) = map.keys().next().cloned() else { break };
+                let Some(first) = map.keys().next().cloned() else {
+                    break;
+                };
                 map.remove(&first);
             }
             serde_json::to_vec(map).ok()
@@ -828,9 +840,16 @@ pub(crate) async fn model_layer_options_local(
     };
     let kv_of = |start: u32, end: u32| -> Option<u64> {
         let (info, kv) = kv_plan.as_ref()?;
-        plan::range_cost(&layout, Some(info), Some(*kv), start, end, end + 1 >= total_layers)
-            .ok()
-            .map(|(_, kv_bytes, _)| kv_bytes)
+        plan::range_cost(
+            &layout,
+            Some(info),
+            Some(*kv),
+            start,
+            end,
+            end + 1 >= total_layers,
+        )
+        .ok()
+        .map(|(_, kv_bytes, _)| kv_bytes)
     };
     let tables_path = canonical.clone();
     let lazy_table = tokio::task::spawn_blocking(move || {
@@ -975,7 +994,9 @@ async fn plugin_cuts_range(state: &GatewayState, req: &ApplyRequest) -> bool {
                 .into_iter()
                 .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference")
         })
-        .is_some_and(|entry| crate::plugin_engine::runs_ranges(&entry, info.architecture.as_deref()))
+        .is_some_and(|entry| {
+            crate::plugin_engine::runs_ranges(&entry, info.architecture.as_deref())
+        })
 }
 
 /// This peer's range as a header-only virtual slice of the whole model it

@@ -509,12 +509,22 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             settings: parse_settings(&entry["settings"]),
             draft_architectures: entry["draft_architectures"]
                 .as_array()
-                .map(|list| list.iter().filter_map(slug).take(MAX_ARCHITECTURES).collect())
+                .map(|list| {
+                    list.iter()
+                        .filter_map(slug)
+                        .take(MAX_ARCHITECTURES)
+                        .collect()
+                })
                 .unwrap_or_default(),
             stage_ranges: if stages {
                 entry["stage_ranges"]
                     .as_array()
-                    .map(|list| list.iter().filter_map(slug).take(MAX_ARCHITECTURES).collect())
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(slug)
+                            .take(MAX_ARCHITECTURES)
+                            .collect()
+                    })
                     .unwrap_or_default()
             } else {
                 Vec::new()
@@ -674,8 +684,16 @@ pub(crate) async fn plugin_peer_call(
     // Told apart from a failure below: the caller skips a node that does not
     // run the plugin, but a node that runs it and did not answer may hold the
     // data it asked for (the quota lookup, `backend/quota.rs`).
-    if !state.plugins.status(&code).await.is_some_and(|status| status.active) {
-        return refuse(StatusCode::NOT_FOUND, "the plugin does not run on this node");
+    if !state
+        .plugins
+        .status(&code)
+        .await
+        .is_some_and(|status| status.active)
+    {
+        return refuse(
+            StatusCode::NOT_FOUND,
+            "the plugin does not run on this node",
+        );
     }
     match state
         .plugins
@@ -898,7 +916,9 @@ mod tests {
             json!({"key": "odd", "label": "x", "type": "video"}),
             json!({"key": "pick", "label": "x", "type": "choice"}),
         ];
-        params.extend((0..30).map(|i| json!({"key": format!("k{i}"), "label": "K", "type": "boolean"})));
+        params.extend(
+            (0..30).map(|i| json!({"key": format!("k{i}"), "label": "K", "type": "boolean"})),
+        );
         let answer = json!({"services": [
             {"id": "comfyui-image", "kind": "image", "name": "ComfyUI", "status": "ready",
              "workflows": [{"id": "pub:typed", "name": "Typed", "description": "Paints a picture",
@@ -908,10 +928,20 @@ mod tests {
         assert_eq!(workflow.description.as_deref(), Some("Paints a picture"));
         assert_eq!(workflow.params.len(), MAX_PARAMS, "at most 24 parameters");
         let keys: Vec<_> = workflow.params.iter().map(|p| p.key.as_str()).collect();
-        assert_eq!(&keys[..4], ["prompt", "steps", "sampler", "k0"], "bad entries are dropped");
-        assert_eq!(workflow.params[0].description.as_deref(), Some("What to draw"));
+        assert_eq!(
+            &keys[..4],
+            ["prompt", "steps", "sampler", "k0"],
+            "bad entries are dropped"
+        );
+        assert_eq!(
+            workflow.params[0].description.as_deref(),
+            Some("What to draw")
+        );
         assert_eq!(workflow.params[1].kind, "integer");
-        assert_eq!((workflow.params[1].min, workflow.params[1].max), (Some(1.0), Some(50.0)));
+        assert_eq!(
+            (workflow.params[1].min, workflow.params[1].max),
+            (Some(1.0), Some(50.0))
+        );
         assert_eq!(workflow.params[2].options.as_ref().unwrap().len(), 2);
         assert_eq!(workflow.params[2].default, Some(json!("euler")));
         let older = json!({"services": [

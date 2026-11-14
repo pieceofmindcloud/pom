@@ -325,16 +325,46 @@ pub(super) fn planned_copies(plan: &Plan) -> Vec<PlannedCopy> {
     };
     if !plan.tp_targets.is_empty() {
         for t in &plan.tp_targets {
-            slice(&t.target_node_id, &t.target_host, t.ready, &t.source_node_id, &t.source_host, &t.name, t.size_bytes, t.start_layer, t.end_layer);
+            slice(
+                &t.target_node_id,
+                &t.target_host,
+                t.ready,
+                &t.source_node_id,
+                &t.source_host,
+                &t.name,
+                t.size_bytes,
+                t.start_layer,
+                t.end_layer,
+            );
         }
     } else {
         for step in &plan.steps {
             if step.merged {
                 for part in &step.parts {
-                    slice(&step.target_node_id, &step.target_host, part.ready, &part.source_node_id, &part.source_host, &part.name, part.size_bytes, part.start_layer, part.end_layer);
+                    slice(
+                        &step.target_node_id,
+                        &step.target_host,
+                        part.ready,
+                        &part.source_node_id,
+                        &part.source_host,
+                        &part.name,
+                        part.size_bytes,
+                        part.start_layer,
+                        part.end_layer,
+                    );
                 }
             } else {
-                slice(&step.target_node_id, &step.target_host, step.ready, &step.source_node_id, &step.source_host, &step.name, step.size_bytes, step.start_layer, step.end_layer);
+                slice(
+                    &step.target_node_id,
+                    &step.target_host,
+                    step.ready,
+                    &step.source_node_id,
+                    &step.source_host,
+                    &step.name,
+                    step.size_bytes,
+                    step.start_layer,
+                    step.end_layer,
+                );
             }
         }
     }
@@ -1474,9 +1504,14 @@ pub(super) fn plan_with_rtt_options(
     };
     for (i, target, overrides) in &chosen {
         let c = &available[*i];
-        let whole = c.start_layer == 0 && total_layers.is_some_and(|total| c.end_layer + 1 == total);
+        let whole =
+            c.start_layer == 0 && total_layers.is_some_and(|total| c.end_layer + 1 == total);
         if prefill_entry(overrides) && !whole {
-            let on = if target.is_empty() { String::new() } else { format!(" on {target}") };
+            let on = if target.is_empty() {
+                String::new()
+            } else {
+                format!(" on {target}")
+            };
             blocked.get_or_insert(format!(
                 "a prefill machine runs the whole model: {}{on} is a slice; choose the whole model for it, or give \
                  it the prefill and decode role",
@@ -1485,11 +1520,14 @@ pub(super) fn plan_with_rtt_options(
         }
     }
     if kind == DeployKind::Shards
-        && chosen.iter().any(|(_, _, overrides)| prefill_entry(overrides))
+        && chosen
+            .iter()
+            .any(|(_, _, overrides)| prefill_entry(overrides))
         && params.inference_service.is_none()
     {
         blocked.get_or_insert(
-            "a prefill machine needs an inference service that splits prefill and decode".to_string(),
+            "a prefill machine needs an inference service that splits prefill and decode"
+                .to_string(),
         );
     }
 
@@ -1830,7 +1868,8 @@ pub(super) fn plan_with_rtt_options(
                 let writes_nothing = from_whole
                     && target.is_some_and(|t| {
                         t.inference_capabilities.as_ref().is_some_and(|caps| {
-                            caps.iter().any(|cap| cap == crate::pipeline::CAP_RANGE_LOAD)
+                            caps.iter()
+                                .any(|cap| cap == crate::pipeline::CAP_RANGE_LOAD)
                         })
                     });
                 if let (None, Some(t)) = (&problem, target) {
@@ -2352,9 +2391,12 @@ pub(super) fn tp_check_verdict(body: &serde_json::Value, label: &str) -> Option<
 /// some step serves less than the whole model.
 pub(super) fn splits_whole_into_ranges(kind: DeployKind, steps: &[Step]) -> bool {
     kind == DeployKind::Whole
-        && steps
-            .iter()
-            .any(|step| step.start_layer > 0 || step.total_layers.is_some_and(|total| step.end_layer + 1 < total))
+        && steps.iter().any(|step| {
+            step.start_layer > 0
+                || step
+                    .total_layers
+                    .is_some_and(|total| step.end_layer + 1 < total)
+        })
 }
 
 pub(super) fn share_whole_model_roles(
@@ -2366,7 +2408,10 @@ pub(super) fn share_whole_model_roles(
     if splits_whole_into_ranges(kind, steps) {
         return;
     }
-    let mut machines: Vec<&str> = steps.iter().map(|step| step.target_node_id.as_str()).collect();
+    let mut machines: Vec<&str> = steps
+        .iter()
+        .map(|step| step.target_node_id.as_str())
+        .collect();
     machines.sort();
     machines.dedup();
     if kind != DeployKind::Whole || machines.len() < 2 {

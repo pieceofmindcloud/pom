@@ -71,7 +71,9 @@ async fn deployment_projector(
         };
         let file = sidecars.get(&node.node_id).and_then(|held| {
             held.iter()
-                .find(|sidecar| sidecar.kind == crate::catalog::SidecarKind::Mmproj && sidecar.path == path)
+                .find(|sidecar| {
+                    sidecar.kind == crate::catalog::SidecarKind::Mmproj && sidecar.path == path
+                })
                 .map(|sidecar| crate::catalog::SidecarFile {
                     file_name: sidecar.file_name.clone(),
                     size_bytes: sidecar.size_bytes,
@@ -92,17 +94,21 @@ fn machine_projectors(
     let Some(shape) = survey.model_shape.as_ref() else {
         return Vec::new();
     };
-    let mut files: Vec<crate::catalog::SidecarFile> = compatible_options(&survey.sidecars, machines, shape)
-        .into_iter()
-        .filter(|option| {
-            option.kind == crate::catalog::SidecarKind::Mmproj
-                && option.holders.iter().any(|holder| holder.node_id == node_id)
-        })
-        .map(|option| crate::catalog::SidecarFile {
-            file_name: option.file_name,
-            size_bytes: option.size_bytes,
-        })
-        .collect();
+    let mut files: Vec<crate::catalog::SidecarFile> =
+        compatible_options(&survey.sidecars, machines, shape)
+            .into_iter()
+            .filter(|option| {
+                option.kind == crate::catalog::SidecarKind::Mmproj
+                    && option
+                        .holders
+                        .iter()
+                        .any(|holder| holder.node_id == node_id)
+            })
+            .map(|option| crate::catalog::SidecarFile {
+                file_name: option.file_name,
+                size_bytes: option.size_bytes,
+            })
+            .collect();
     files.sort_by_key(|file| Some(file) != deployed);
     files
 }
@@ -384,11 +390,19 @@ pub(super) async fn add_node_options_endpoint(
     let record = record_for_group(&state, &req.group).await;
     let deployed = deployment_projector(&state, record.as_ref(), &survey_now.sidecars).await;
     let vision = AddNodeVision {
-        available: !machine_projectors(&survey_now, &survey_now.machines, &req.target_node_id, None).is_empty(),
+        available: !machine_projectors(
+            &survey_now,
+            &survey_now.machines,
+            &req.target_node_id,
+            None,
+        )
+        .is_empty(),
         deployed: deployed.is_some(),
     };
     // The whole file on this machine: its valid cuts, from the same table a pipeline deploy reads.
-    let holds_whole = options.iter().any(|option| option.kind == DeployKind::Whole && option.start_layer == 0);
+    let holds_whole = options
+        .iter()
+        .any(|option| option.kind == DeployKind::Whole && option.start_layer == 0);
     let layer_cuts = if holds_whole {
         let mut target = std::mem::take(&mut survey_now.machines);
         target.retain(|machine| machine.node_id == req.target_node_id);
@@ -561,9 +575,9 @@ pub(super) async fn add_node_endpoint(
             let stages = crate::plugin_engine::services_of(&state, &req.target_node_id)
                 .await
                 .and_then(|services| {
-                    services
-                        .into_iter()
-                        .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference")
+                    services.into_iter().find(|entry| {
+                        entry["plugin_code"] == service && entry["kind"] == "inference"
+                    })
                 })
                 .is_some_and(|entry| {
                     if whole_range {
@@ -679,7 +693,8 @@ pub(super) async fn add_node_endpoint(
 
     // Vision: only the machine that reads the prompt loads the projector, the one the deployment runs with when this
     // machine has it, otherwise a compatible one it holds.
-    let deployed = deployment_projector(&state, existing_record.as_ref(), &survey_now.sidecars).await;
+    let deployed =
+        deployment_projector(&state, existing_record.as_ref(), &survey_now.sidecars).await;
     let reads_prompt = vision_reader(
         req.start_layer,
         req.end_layer,
@@ -688,7 +703,12 @@ pub(super) async fn add_node_endpoint(
     );
     let use_mmproj = req.vision.unwrap_or(deployed.is_some()) && reads_prompt;
     let mmproj_file = if use_mmproj {
-        let projectors = machine_projectors(&survey_now, &machines, &req.target_node_id, deployed.flatten().as_ref());
+        let projectors = machine_projectors(
+            &survey_now,
+            &machines,
+            &req.target_node_id,
+            deployed.flatten().as_ref(),
+        );
         match projectors.into_iter().next() {
             Some(file) => Some(file),
             None => {
@@ -735,7 +755,11 @@ pub(super) async fn add_node_endpoint(
                 end_layer: req.end_layer,
                 // a range of the whole file: the target cuts (or points at) it itself
                 skip_split: !whole_range,
-                part_sha256: if whole_range { None } else { shard_sha256.clone() },
+                part_sha256: if whole_range {
+                    None
+                } else {
+                    shard_sha256.clone()
+                },
                 merge: None,
                 n_gpu_layers: req.n_gpu_layers,
                 offload_kqv: req.offload_kqv,

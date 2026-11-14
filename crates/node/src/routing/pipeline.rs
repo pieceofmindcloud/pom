@@ -53,7 +53,8 @@ impl LoadTracker {
 /// How many requests of `model` have chosen their first stage so far. Each request takes the next value, so requests
 /// that arrive together start their rotation over the heads at different points (see `fastest::rotate_head`).
 pub fn next_head_turn(model: &str) -> usize {
-    static TURNS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, usize>>> = std::sync::OnceLock::new();
+    static TURNS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, usize>>> =
+        std::sync::OnceLock::new();
     let mut turns = TURNS
         .get_or_init(Default::default)
         .lock()

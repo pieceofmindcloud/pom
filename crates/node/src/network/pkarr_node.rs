@@ -12,8 +12,8 @@
 //! record under the same key, and one key holds one record in the DHT - the
 //! two would overwrite each other.
 
-use anyhow::Result;
 use crate::p2p::{EndpointAddr, EndpointId};
+use anyhow::Result;
 use pkarr::{Client, Keypair, SignedPacket};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
@@ -83,7 +83,12 @@ struct TxtPayload {
 impl TxtPayload {
     fn from_record(record: &PkarrRecord) -> Self {
         Self {
-            a: record.addrs.iter().take(MAX_RECORD_ADDRS).cloned().collect(),
+            a: record
+                .addrs
+                .iter()
+                .take(MAX_RECORD_ADDRS)
+                .cloned()
+                .collect(),
             x: record
                 .relays
                 .iter()

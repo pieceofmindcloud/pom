@@ -82,7 +82,12 @@ pub(crate) fn node_id_matches_pubkey(node_id: &str, pubkey_hex: &str) -> bool {
 }
 
 /// HMAC-SHA256 of the challenge and both ids, keyed by `connection_key`.
-pub(crate) fn proof(connection_key: &str, challenge: &[u8], responder: &str, prober: &str) -> [u8; 32] {
+pub(crate) fn proof(
+    connection_key: &str,
+    challenge: &[u8],
+    responder: &str,
+    prober: &str,
+) -> [u8; 32] {
     let mut mac = Hmac::<Sha256>::new_from_slice(connection_key.as_bytes())
         .expect("HMAC takes a key of any size");
     for part in [
@@ -171,7 +176,11 @@ pub async fn handle_handshake(
 ) -> axum::response::Response {
     let keys = {
         let cfg = identity.auth.read().await;
-        if cfg.blocked_nodes.iter().any(|blocked| blocked.eq_ignore_ascii_case(&req.node_id)) {
+        if cfg
+            .blocked_nodes
+            .iter()
+            .any(|blocked| blocked.eq_ignore_ascii_case(&req.node_id))
+        {
             return rejected("blocked");
         }
         crate::auth::accepted_connection_keys(&cfg)
@@ -190,14 +199,19 @@ pub async fn handle_handshake(
     else {
         return rejected("invalid_challenge");
     };
-    let responder = hex::encode(Sha256::digest(identity.signing_key.verifying_key().as_bytes()));
+    let responder = hex::encode(Sha256::digest(
+        identity.signing_key.verifying_key().as_bytes(),
+    ));
     let proofs: Vec<String> = keys
         .iter()
         .map(|key| hex::encode(proof(key, &challenge, &responder, &req.node_id)))
         .collect();
-    let signature = identity
-        .signing_key
-        .sign(&signed_message(&challenge, &responder, &req.node_id, &proofs));
+    let signature = identity.signing_key.sign(&signed_message(
+        &challenge,
+        &responder,
+        &req.node_id,
+        &proofs,
+    ));
     Json(HandshakeResponse {
         node_id: responder,
         proofs,
@@ -259,7 +273,10 @@ mod tests {
         }))
     }
 
-    fn responder(key: &str, blocked: Vec<String>) -> (HandshakeIdentity, crate::identity::Identity) {
+    fn responder(
+        key: &str,
+        blocked: Vec<String>,
+    ) -> (HandshakeIdentity, crate::identity::Identity) {
         let identity = crate::identity::Identity::generate();
         (
             HandshakeIdentity {
@@ -329,11 +346,32 @@ mod tests {
         let answer: HandshakeResponse = serde_json::from_value(body).unwrap();
         let other = crate::identity::Identity::generate();
         // Another challenge: a replayed answer.
-        assert!(!answer_proves_key(&answer, &self::challenge(), &member.node_id.0, &member.public_key_hex(), &prober.node_id.0, "secret"));
+        assert!(!answer_proves_key(
+            &answer,
+            &self::challenge(),
+            &member.node_id.0,
+            &member.public_key_hex(),
+            &prober.node_id.0,
+            "secret"
+        ));
         // Another prober: an answer collected by someone else.
-        assert!(!answer_proves_key(&answer, &challenge, &member.node_id.0, &member.public_key_hex(), &other.node_id.0, "secret"));
+        assert!(!answer_proves_key(
+            &answer,
+            &challenge,
+            &member.node_id.0,
+            &member.public_key_hex(),
+            &other.node_id.0,
+            "secret"
+        ));
         // Another node presenting the member's answer as its own.
-        assert!(!answer_proves_key(&answer, &challenge, &other.node_id.0, &other.public_key_hex(), &prober.node_id.0, "secret"));
+        assert!(!answer_proves_key(
+            &answer,
+            &challenge,
+            &other.node_id.0,
+            &other.public_key_hex(),
+            &prober.node_id.0,
+            "secret"
+        ));
     }
 
     #[tokio::test]
@@ -344,8 +382,23 @@ mod tests {
         let (_, body) = ask(state, &prober, &challenge).await;
         let mut answer: HandshakeResponse = serde_json::from_value(body).unwrap();
         // A forger who knows the key but not the member's node key.
-        answer.proofs = vec![hex::encode(proof("secret", &challenge, &member.node_id.0, &prober.node_id.0)), "00".into()];
-        assert!(!answer_proves_key(&answer, &challenge, &member.node_id.0, &member.public_key_hex(), &prober.node_id.0, "secret"));
+        answer.proofs = vec![
+            hex::encode(proof(
+                "secret",
+                &challenge,
+                &member.node_id.0,
+                &prober.node_id.0,
+            )),
+            "00".into(),
+        ];
+        assert!(!answer_proves_key(
+            &answer,
+            &challenge,
+            &member.node_id.0,
+            &member.public_key_hex(),
+            &prober.node_id.0,
+            "secret"
+        ));
     }
 
     #[tokio::test]

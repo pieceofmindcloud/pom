@@ -943,10 +943,7 @@ pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
             .network_chat
             .admission_of(&peer.node_id)
             .is_some_and(|record| record.role == EnrollmentRole::Visitor)
-        || state
-            .network_chat
-            .admitted_role(&peer.node_id, None)
-            == Some(EnrollmentRole::Visitor)
+        || state.network_chat.admitted_role(&peer.node_id, None) == Some(EnrollmentRole::Visitor)
 }
 
 /// What a node-to-node request may reach, by the caller's identity.
@@ -1012,10 +1009,10 @@ pub(crate) async fn caller_may_ask(
 async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
     crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Worker)
-        || state
-            .network_chat
-            .admitted_role(&peer.node_id, state.admin_trust.revoked_node_at(&peer.node_id))
-            == Some(EnrollmentRole::Worker)
+        || state.network_chat.admitted_role(
+            &peer.node_id,
+            state.admin_trust.revoked_node_at(&peer.node_id),
+        ) == Some(EnrollmentRole::Worker)
         || state.auth.read().await.network.open_admission()
 }
 
@@ -1489,7 +1486,9 @@ pub(crate) async fn ready_for_pipeline(
                     // `last_seen` made the planner drop the peer as dead
                     // (`PEER_TIMEOUT_SECS`) and report a gap at its layers.
                     peer.last_seen = last_seen;
-                    tracing::info!("admission: peer {short} still probing; using its last admission");
+                    tracing::info!(
+                        "admission: peer {short} still probing; using its last admission"
+                    );
                     admitted.push(peer);
                 }
                 None => tracing::info!("admission: peer {short} still probing; left out"),

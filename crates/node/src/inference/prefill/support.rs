@@ -873,7 +873,11 @@ impl TransportSummaryEntry {
         entry.fallback_calls = fallback_calls;
         (entry.rtt_min_ms, entry.rtt_median_ms, entry.rtt_max_ms) = round_trip;
         entry.rtt_p95_ms = round_trip.2;
-        (entry.net_rtt_min_ms, entry.net_rtt_median_ms, entry.net_rtt_max_ms) = network;
+        (
+            entry.net_rtt_min_ms,
+            entry.net_rtt_median_ms,
+            entry.net_rtt_max_ms,
+        ) = network;
         entry.net_rtt_p95_ms = network.2;
         entry
     }
@@ -2054,7 +2058,14 @@ pub struct SessionTransferTrace {
 }
 
 impl SessionTransferTrace {
-    pub fn new(source: &str, target: &str, tokens: u64, bytes: u64, transfer_ms: u64, save_wait_ms: u64) -> Self {
+    pub fn new(
+        source: &str,
+        target: &str,
+        tokens: u64,
+        bytes: u64,
+        transfer_ms: u64,
+        save_wait_ms: u64,
+    ) -> Self {
         let megabytes = bytes as f64 / 1_000_000.0;
         Self {
             source_node_id: source.to_owned(),
@@ -3056,7 +3067,11 @@ impl RequestTrace {
             let mut upstream: u64 = 0;
             let mut best: Option<StageBottleneck> = None;
             for hop in &mut self.hops {
-                let part = if decode { &mut hop.decode } else { &mut hop.prefill };
+                let part = if decode {
+                    &mut hop.decode
+                } else {
+                    &mut hop.prefill
+                };
                 let compute = part.processing_ms;
                 let transfer = part.network_ms;
                 if compute == 0 && transfer == 0 && part.calls == 0 && part.reported_spans == 0 {
@@ -3088,7 +3103,8 @@ impl RequestTrace {
                 balance.prefill = best;
             }
         }
-        self.stage_balance = (balance.prefill.is_some() || balance.decode.is_some()).then_some(balance);
+        self.stage_balance =
+            (balance.prefill.is_some() || balance.decode.is_some()).then_some(balance);
     }
 
     pub fn refresh_telemetry(&mut self, wall_clock_ms: u64) {

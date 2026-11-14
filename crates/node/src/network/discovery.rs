@@ -17,8 +17,8 @@
 //!   to each admin and worker it knows over `AnnounceCodec`, so no other
 //!   visitor, and no other network, ever sees it.
 
-use crate::cluster_logs::{self, ClusterLogs, ClusterLogsCodec, LogOutbound};
 use crate::anon_tunnel::{self, AnonTunnels};
+use crate::cluster_logs::{self, ClusterLogs, ClusterLogsCodec, LogOutbound};
 use crate::infer_tunnel::{self, InferTunnelCodec, TunnelOutbound};
 use crate::network::{Network, P2PMessage, P2pLink, PeerInfo};
 use crate::network_chat::{
@@ -207,7 +207,11 @@ impl iroh_relay::server::AccessControl for GateAccess {
     ) -> iroh_relay::server::Access {
         let pass = request.auth_token();
         let connection = request.connection_id().to_string();
-        if self.0.allows(&request.endpoint_id().to_string(), pass.as_deref(), &connection) {
+        if self.0.allows(
+            &request.endpoint_id().to_string(),
+            pass.as_deref(),
+            &connection,
+        ) {
             iroh_relay::server::Access::Allow
         } else {
             iroh_relay::server::Access::Deny {
@@ -233,10 +237,8 @@ async fn start_relay_server(
     port: u16,
     gate: Arc<crate::network::RelayGate>,
 ) -> Result<iroh_relay::server::Server> {
-    let mut relay = iroh_relay::server::RelayConfig::new(SocketAddr::from((
-        Ipv6Addr::UNSPECIFIED,
-        port,
-    )));
+    let mut relay =
+        iroh_relay::server::RelayConfig::new(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)));
     relay.access = Arc::new(GateAccess(gate.clone()));
     let mut config = iroh_relay::server::ServerConfig::default();
     config.relay = Some(relay);
@@ -318,15 +320,13 @@ fn link_tracker(network: Arc<Network>) -> Arc<dyn Fn(&Connection) + Send + Sync>
                         }
                         // Events were lost: read the selection from the
                         // connection itself, holding it only for that read.
-                        Some(iroh::endpoint::PathEvent::Lagged { .. }) => {
-                            match weak.upgrade() {
-                                Some(connection) => break p2p::selected_path(&connection),
-                                None => {
-                                    network.drop_link(&peer_text, id);
-                                    return;
-                                }
+                        Some(iroh::endpoint::PathEvent::Lagged { .. }) => match weak.upgrade() {
+                            Some(connection) => break p2p::selected_path(&connection),
+                            None => {
+                                network.drop_link(&peer_text, id);
+                                return;
                             }
-                        }
+                        },
                         Some(_) => {}
                         None => {
                             network.drop_link(&peer_text, id);
@@ -639,10 +639,13 @@ impl Discovery {
         };
         let direct_announce = {
             let ctx = ctx.clone();
-            p2p::Serve::new(AnnounceCodec, move |_connection: Connection, sealed: Vec<u8>| {
-                let ctx = ctx.clone();
-                async move { handle_announce(&ctx, &sealed).await }
-            })
+            p2p::Serve::new(
+                AnnounceCodec,
+                move |_connection: Connection, sealed: Vec<u8>| {
+                    let ctx = ctx.clone();
+                    async move { handle_announce(&ctx, &sealed).await }
+                },
+            )
             .on_connection(tracker.clone())
         };
         let logs = {
@@ -699,7 +702,10 @@ impl Discovery {
         iroh::protocol::Router::builder(endpoint.clone())
             .accept(iroh_gossip::ALPN, gossip.clone())
             .accept(InferTunnelCodec::PROTOCOL.as_bytes(), tunnel)
-            .accept(infer_tunnel::INFER_TUNNEL_STREAM_PROTOCOL.as_bytes(), stream_tunnel)
+            .accept(
+                infer_tunnel::INFER_TUNNEL_STREAM_PROTOCOL.as_bytes(),
+                stream_tunnel,
+            )
             .accept(crate::network_lobby::LobbyCodec::PROTOCOL.as_bytes(), lobby)
             .accept(NetworkChatCodec::PROTOCOL.as_bytes(), chat)
             .accept(ClusterLogsCodec::PROTOCOL.as_bytes(), logs)
@@ -1192,7 +1198,10 @@ async fn apply_policy(
             .is_none_or(|last| now.duration_since(last) >= ISOLATED_REJOIN_INTERVAL);
         if policy.neighbors.is_empty() && !admitted.is_empty() && rejoin_due {
             policy.isolated_rejoin = Some(now);
-            debug!("gossip: no neighbor, asking {} peer(s) again", admitted.len());
+            debug!(
+                "gossip: no neighbor, asking {} peer(s) again",
+                admitted.len()
+            );
             if let Err(error) = gossip.join_peers(admitted).await {
                 debug!("gossip: rejoin: {error}");
             }
@@ -1368,7 +1377,10 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
                 .connect(author, &dial_addrs, InferTunnelCodec::PROTOCOL)
                 .await
             {
-                debug!("p2p: could not warm tunnel peer {}: {error}", author.fmt_short());
+                debug!(
+                    "p2p: could not warm tunnel peer {}: {error}",
+                    author.fmt_short()
+                );
             }
         });
     }
@@ -1508,9 +1520,10 @@ fn stamp_tunnel_peer(
     request
         .headers
         .retain(|(name, _)| !name.eq_ignore_ascii_case(infer_tunnel::TUNNEL_PEER_HEADER));
-    request
-        .headers
-        .push((infer_tunnel::TUNNEL_PEER_HEADER.to_string(), peer.to_string()));
+    request.headers.push((
+        infer_tunnel::TUNNEL_PEER_HEADER.to_string(),
+        peer.to_string(),
+    ));
     request
 }
 
@@ -1553,7 +1566,10 @@ async fn answer_tunnel_stream(
     let request = match InferTunnelCodec.read_request(&mut recv.compat()).await {
         Ok(request) => request,
         Err(error) => {
-            debug!("infer-tunnel-stream: unreadable request from {}: {error}", peer.fmt_short());
+            debug!(
+                "infer-tunnel-stream: unreadable request from {}: {error}",
+                peer.fmt_short()
+            );
             return;
         }
     };
@@ -1997,7 +2013,10 @@ async fn answer_lobby_request(
         }
     }
     // The candidate reads its own thread and nothing else.
-    let history = match chat.history(&crate::network_lobby::thread_room(&node_id), LobbyLimits::HISTORY) {
+    let history = match chat.history(
+        &crate::network_lobby::thread_room(&node_id),
+        LobbyLimits::HISTORY,
+    ) {
         Ok(history) => history,
         Err(error) => return LobbyResponse::rejected(error.to_string()),
     };
@@ -2103,7 +2122,10 @@ mod tests {
         let start = std::time::Instant::now();
         let mut policy = PolicyState::default();
 
-        assert!(!policy.forget_failed_join(peer, start), "never asked: nothing to forget");
+        assert!(
+            !policy.forget_failed_join(peer, start),
+            "never asked: nothing to forget"
+        );
 
         policy.joined.insert(peer);
         assert!(policy.forget_failed_join(peer, start));
@@ -2168,7 +2190,8 @@ mod tests {
         };
         let member = |seed: u8| {
             let secret = key(seed);
-            let node_key = ed25519_dalek::VerifyingKey::from_bytes(secret.public().as_bytes()).unwrap();
+            let node_key =
+                ed25519_dalek::VerifyingKey::from_bytes(secret.public().as_bytes()).unwrap();
             let node_id = crate::identity::NodeId::from_pubkey(&node_key).0;
             // The answer names whom the binding proved.
             let handler: anon_tunnel::AnonHandler = Arc::new(|caller, _request| {
@@ -2181,7 +2204,10 @@ mod tests {
             });
             let is_member: anon_tunnel::MemberCheck =
                 Arc::new(|_node_id, _pubkey| Box::pin(async { true }));
-            (secret, AnonTunnels::new(key(seed), node_id, handler, is_member))
+            (
+                secret,
+                AnonTunnels::new(key(seed), node_id, handler, is_member),
+            )
         };
         let (caller_secret, caller) = member(71);
         let (callee_secret, callee) = member(72);
@@ -2212,7 +2238,10 @@ mod tests {
 
         let asked = gate.asked.lock().unwrap().clone();
         assert!(!asked.is_empty());
-        for id in [caller_secret.public().to_string(), callee_secret.public().to_string()] {
+        for id in [
+            caller_secret.public().to_string(),
+            callee_secret.public().to_string(),
+        ] {
             assert!(!asked.contains(&id), "the relay saw a node key");
         }
     }
@@ -2263,7 +2292,8 @@ mod tests {
                 }
             })
         });
-        let nobody: anon_tunnel::MemberCheck = Arc::new(|_node_id, _pubkey| Box::pin(async { false }));
+        let nobody: anon_tunnel::MemberCheck =
+            Arc::new(|_node_id, _pubkey| Box::pin(async { false }));
         let callee = AnonTunnels::new(key(82), "callee".into(), handler.clone(), nobody.clone());
         let caller = AnonTunnels::new(key(81), "caller".into(), handler, nobody);
         caller.sync(&relays()).await;
@@ -2277,7 +2307,10 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         let refused = caller
-            .call(&target.unwrap(), infer_tunnel::TunnelRequest::get("/health"))
+            .call(
+                &target.unwrap(),
+                infer_tunnel::TunnelRequest::get("/health"),
+            )
             .await;
         assert!(matches!(refused, Err(p2p::CallError::BeforeRequest(_))));
     }
@@ -2288,14 +2321,19 @@ mod tests {
     async fn a_direct_announce_round_trips_and_is_bounded() {
         let sealed = seal_announce(&key(3), b"{\"announce\":1}");
         let mut wire = Vec::new();
-        AnnounceCodec.write_request(&mut wire, sealed.clone()).await.unwrap();
+        AnnounceCodec
+            .write_request(&mut wire, sealed.clone())
+            .await
+            .unwrap();
         let read = AnnounceCodec
             .read_request(&mut futures::io::Cursor::new(wire))
             .await
             .unwrap();
         assert_eq!(read, sealed);
 
-        let mut oversized = ((GOSSIP_MAX_MESSAGE_BYTES + 1) as u32).to_be_bytes().to_vec();
+        let mut oversized = ((GOSSIP_MAX_MESSAGE_BYTES + 1) as u32)
+            .to_be_bytes()
+            .to_vec();
         oversized.extend_from_slice(&[0; 8]);
         assert!(AnnounceCodec
             .read_request(&mut futures::io::Cursor::new(oversized))

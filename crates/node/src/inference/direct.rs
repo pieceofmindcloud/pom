@@ -1194,7 +1194,10 @@ async fn deliver_on_loopback(
         Ok(response) if response.status().is_success() => Some(Delivery::Accepted),
         Ok(response) if response.status() == StatusCode::GONE => Some(Delivery::GatewayGone),
         Ok(response) => {
-            debug!("this node's gateway answered {} on loopback", response.status());
+            debug!(
+                "this node's gateway answered {} on loopback",
+                response.status()
+            );
             None
         }
         Err(error) => {
@@ -1575,7 +1578,10 @@ mod tests {
         });
         let clients = crate::peer_client::PeerClients::new(Duration::from_secs(5));
         let delivery = deliver_meta_at(&clients, &reply_to, RELAY_RESULT_PATH, json!({})).await;
-        assert!(delivery.accepted(), "the result did not reach this node's gateway");
+        assert!(
+            delivery.accepted(),
+            "the result did not reach this node's gateway"
+        );
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 

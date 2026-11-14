@@ -159,7 +159,12 @@ fn base58(bytes: &[u8]) -> String {
         }
     }
     let mut text = "1".repeat(zeros);
-    text.extend(digits.iter().rev().map(|digit| ALPHABET[*digit as usize] as char));
+    text.extend(
+        digits
+            .iter()
+            .rev()
+            .map(|digit| ALPHABET[*digit as usize] as char),
+    );
     text
 }
 

@@ -47,7 +47,10 @@ pub(crate) const RELEASE_VERSION: &str = env!("POM_RELEASE_VERSION");
 pub(crate) fn release_version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     VERSION.get_or_init(|| {
-        release_version_from(std::env::var("POM_RELEASE_VERSION").ok().as_deref(), RELEASE_VERSION)
+        release_version_from(
+            std::env::var("POM_RELEASE_VERSION").ok().as_deref(),
+            RELEASE_VERSION,
+        )
     })
 }
 
@@ -443,7 +446,8 @@ impl PomCoreUpdater {
             let url = format!("{api}/repos/{GITHUB_REPOSITORY}/releases?per_page=30");
             match self.get_json::<Vec<GithubRelease>>(&url).await {
                 Ok(releases) => {
-                    let found = newest_after(release_version(), github_candidates(releases, target));
+                    let found =
+                        newest_after(release_version(), github_candidates(releases, target));
                     return Ok((found, "github"));
                 }
                 Err(error) => errors.push(format!("GitHub: {error}")),

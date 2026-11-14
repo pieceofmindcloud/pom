@@ -26,7 +26,7 @@ Quantas máquinas a rede tem e quanta memória de vídeo elas somam. Um traço q
 Os modelos em serviço lá, no máximo três na linha e a lista completa no painel lateral.
 :::
 
-Clicar numa linha abre um painel à direita com a descrição, as regras e os papéis que a rede aceita, e as ações: **Pedir para entrar**, **Lobby** para conversar com os administradores antes de pedir, **Sair da rede** para uma rede em que você está, e **Mais detalhes** com todos os campos técnicos.
+Clicar numa linha abre um painel à direita com a descrição, as regras e os papéis que a rede aceita, e as ações: **Pedir para entrar**, **Lobby** para conversar com os administradores antes de pedir, **Sair da rede** para uma rede em que você está, e **Mais detalhes** com todos os campos técnicos. Ao pedir para entrar como worker, dá para marcar **Entrar como validador**: a máquina passa a reexecutar trabalho amostrado para conferir as máquinas da rede, recebe uma pequena parte, precisa do modelo no disco (GPU é opcional) e nunca serve inferência. Ela lê os prompts e respostas dos pedidos que confere.
 
 ## Barra de ferramentas
 

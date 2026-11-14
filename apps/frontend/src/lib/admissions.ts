@@ -16,6 +16,8 @@ export interface AdmissionRecord {
   decided_at?: string | null;
   /** The account the candidate's home network names (`net:<key>`), when it sent one. */
   account?: string | null;
+  /** A worker asking to join, or admitted, as a validator. */
+  validator?: boolean;
 }
 
 /** An admission request this node made to another network. Never the grant. */

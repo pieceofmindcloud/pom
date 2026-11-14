@@ -195,7 +195,7 @@ function LobbyThreadHeader({ candidate, request, nodeName, deciding, onDecide }:
         <p className="truncate text-[0.68rem] text-faint">
           <span className="font-mono">{shortNodeId(candidate)}</span>
           {" · "}
-          {request ? t("lobby.threadRequest", { role: t(`network.enrollment.${request.role}`) }) : t("lobby.threadNoRequest")}
+          {request ? t("lobby.threadRequest", { role: request.validator ? t("lobby.validatorRole") : t(`network.enrollment.${request.role}`) }) : t("lobby.threadNoRequest")}
         </p>
       </div>
       {request && (

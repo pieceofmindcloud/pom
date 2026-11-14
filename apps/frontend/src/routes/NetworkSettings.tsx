@@ -562,7 +562,7 @@ export function AdmittedMachines({ t }: { t: (key: string, values?: Record<strin
             <li key={record.node_id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
               <div className="min-w-0">
                 <p className="truncate text-sm text-fg">{name}</p>
-                <p className="truncate font-mono text-[0.68rem] text-faint">{record.node_id.slice(0, 12)} · {t(`network.enrollment.${record.role}`)}</p>
+                <p className="truncate font-mono text-[0.68rem] text-faint">{record.node_id.slice(0, 12)} · {record.validator ? t("lobby.validatorRole") : t(`network.enrollment.${record.role}`)}</p>
               </div>
               <Button size="sm" variant="danger" loading={revoking === record.node_id} onClick={() => setTarget({ node_id: record.node_id, name })}>
                 {t("network.admittedRevoke")}

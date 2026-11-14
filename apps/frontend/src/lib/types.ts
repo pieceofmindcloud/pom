@@ -444,6 +444,8 @@ export interface NodeInfo {
   dev_update: boolean;
   /** Whether the development-only POM controls are exposed. */
   pom_dev_mode: boolean;
+  /** A worker admitted as a validator: it re-runs sampled work, serves no model. */
+  validator?: boolean;
   /** The name the operator gave this machine; `null` means the system hostname. */
   node_name: string | null;
   /** Address pinned by the operator. `null` when nothing was pinned. */

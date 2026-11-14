@@ -78,6 +78,8 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [role, setRole] = useState<EnrollmentRole>("worker");
+  // A worker may ask to join as a validator: it re-runs sampled work and serves no model.
+  const [asValidator, setAsValidator] = useState(false);
   const [asking, setAsking] = useState(false);
   const [joinConfirm, setJoinConfirm] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -179,7 +181,14 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
     if (!key || !role || asking) return;
     setAsking(true);
     try {
-      adopt(await api.post<LobbyExchange>(`${endpoint}/admission`, { key, role, name: network?.name ?? "" }));
+      adopt(
+        await api.post<LobbyExchange>(`${endpoint}/admission`, {
+          key,
+          role,
+          name: network?.name ?? "",
+          ...(role === "worker" && asValidator ? { validator: true } : {}),
+        }),
+      );
     } catch {
       setFailure("lobby.errorUnreachable");
     } finally {
@@ -261,6 +270,15 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
                   <Select compact aria-label={t("lobby.admissionRole")} value={askRole} onChange={(event) => setRole(event.target.value as EnrollmentRole)}>
                     {acceptedRoles.map((option) => <option key={option} value={option}>{t(`network.enrollment.${option}`)}</option>)}
                   </Select>
+                  {askRole === "worker" && (
+                    <label className="flex items-start gap-2 text-xs text-muted">
+                      <input type="checkbox" className="mt-0.5" data-testid="lobby-as-validator" checked={asValidator} onChange={(event) => setAsValidator(event.target.checked)} />
+                      <span>
+                        <span className="block text-fg">{t("lobby.asValidator")}</span>
+                        <span className="block text-[0.68rem] text-faint">{t("lobby.asValidatorHint")}</span>
+                      </span>
+                    </label>
+                  )}
                   <Button size="sm" variant="primary" loading={asking} onClick={() => void requestAdmission()}>{t("lobby.admissionAsk")}</Button>
                   <p className="text-[0.68rem] leading-relaxed text-faint">{t("lobby.admissionAskDetail")}</p>
                 </div>

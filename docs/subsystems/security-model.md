@@ -255,6 +255,12 @@ own.
   peer route strips). The other `node.*` metering operations answer admins only.
 - **Visitors.** A visitor gateway's bundle pays the hops (it is the consumer)
   but never earns the gateway fee.
+- **Validators** re-run sampled work from the request's tokens (phase A), so
+  they read the prompts and answers of the requests they check; the admission
+  form says so. They never receive the worker's proofs, only the positions to
+  read, and a validator that answers without computing cannot match the
+  others or the admin's reference. A validator serves no model: it refuses
+  the routes that would make it hold or serve one, as a visitor does.
 
 ## Charging visitors
 

@@ -3244,6 +3244,23 @@ with the ledger is the crate `crates/metering-core`; the node side is
   median <= 2.5, calibrated to catch one skipped layer of 24 - see
   `docs/reports/gpu-work-metering-live-run.md`). It runs as a job polled with
   `node.reexecute_status`.
+- **Validators** (`docs/superpowers/specs/2026-11-10-validators-design.md`,
+  phase A): workers admitted as validators (`Config.validator`, set by the
+  admission grant) announce `metering/validator-v1`, refuse what would make
+  them hold or serve a model and are left out of deployments. When the
+  network has live validators and no single `metering.verifier`, the ledger
+  plugin sends each sample to `validators_per_sample` of them with
+  `node.reexecute` in `readings` mode: the chunk positions only, never the
+  worker's proofs; each answers its reading of each chunk
+  (`toploc::Reading`: its recomputation's top-k indices and bf16 values). The
+  ledger holds the readings to its admin's own reference (a share of the
+  samples, or when they split) or to their strict majority, strikes the ones
+  that disagree, and checks the worker's proofs against the agreed reading
+  (`toploc::check_reading`, the same verdict as `check_chunk`). Two proofs
+  cannot be compared with each other, since a proof does not store its
+  indices; that is why validators answer readings. Pay, strikes and the wait
+  for absent validators are the plugin's (`pom-plugin-metering`
+  `src/validators.rs`).
 - **Capability.** `metering/receipt-v1` is announced in `/health` while metering
   is on.
 - **Split plugin engines (Strata)** are metered by `inference/plugin_metering.rs`

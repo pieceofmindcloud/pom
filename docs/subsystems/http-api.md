@@ -1149,7 +1149,10 @@ every node reads it again within 5 s (`backend/metering.rs`,
   bundle's token sequence, from the gateway), `node.proofs` (a receipt's chunk
   proofs with their Merkle paths, from the hop), `node.roles` (each node's role
   from this node's view), `node.reexecute` / `node.reexecute_status` (the
-  verifier). `node.sign_statement` and `node.settings` answer only this node's
+  verifier; with `mode: "readings"` the request names chunk positions and no
+  proof, and the answer is this node's reading of each chunk - only a
+  validator or an admin answers it), `node.validators` (the live validators)
+  and `node.holds` (whether this machine holds a model whole). `node.sign_statement` and `node.settings` answer only this node's
   own plugin (`local`, which a remote call can never set).
 - The gateway delivers bundles to `peer.metering.submit` of its own plugin,
   else of each live admin running it.

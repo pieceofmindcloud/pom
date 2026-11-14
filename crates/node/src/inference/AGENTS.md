@@ -1273,6 +1273,16 @@ earlier never reaches the server.
 The projector's placement and caps, the hyper-connection `hc` copies, the four M-RoPE positions per
 row, the KV-cell versus logical-position split and the cause of a failed prefill:
 `docs/subsystems/inference.md`, "Multimodal input".
+## Defects noted
+
+- `/health` can read a freed llama.cpp context during an unload: a node
+  crashed with SIGSEGV at address 0x8 in `LlmEngine::n_ctx` called from
+  `infer_server/server.rs` `health_body` right after "model memory returned",
+  while an apply that timed out ("previous supervisor did not stop in 5s")
+  overlapped the unload (seen 2026-11-14 on a CPU node of the metering test
+  setup). The health read needs to see that the engine is gone, or hold off
+  until the unload finishes.
+
 ## Maintaining this file
 
 This file is a map of the folder's responsibilities. When you change an inference interface or a

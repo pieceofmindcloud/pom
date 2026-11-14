@@ -699,7 +699,13 @@ boundary.
   audited hop's TOPLOC chunks: the residual a range hands on, or for the last
   range (and a calibration's shortened last range, `output_head`) its
   post-norm rows through the engine's embeddings output, in chunks of
-  `TAIL_CHUNK` positions.
+  `TAIL_CHUNK` positions. In `readings` mode (a validator's answer) the
+  request names chunk positions and no proof, and the job returns this node's
+  reading of each chunk (`read_chunks`); `metering.rs` lets only a validator or
+  an admin answer it, and adds `node.validators` and `node.holds`. A
+  validator (`Config.validator`) refuses the `visitor_refuses` routes
+  (`gateway/state.rs`) and is left out of the deploy survey and targets
+  (`peer_is_validator`).
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the
   POM's `AuditLog` replicates `begin` and `complete` to the effective admins over the p2p endpoint.

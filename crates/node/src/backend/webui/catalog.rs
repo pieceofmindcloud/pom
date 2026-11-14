@@ -17,6 +17,9 @@ pub struct NodeInfo {
     /// Controls whether development-only POM deployment settings are exposed.
     pub pom_dev_mode: bool,
     pub profile: crate::profile::NodeProfile,
+    /// A worker admitted as a validator (`Config.validator`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub validator: bool,
     /// Human-facing network name shown by the leave action in the main menu.
     pub network_name: String,
     /// This node is the principal of the network it is in: its own network,
@@ -276,6 +279,7 @@ pub(super) async fn node_info(
         dev_update: crate::devupdate::enabled(),
         pom_dev_mode: crate::pom_dev_mode_enabled(),
         profile,
+        validator: state.network.is_validator(),
         network_name,
         own_network: state.admin_trust.document().primary.pubkey
             == state.authority_principal.pubkey,

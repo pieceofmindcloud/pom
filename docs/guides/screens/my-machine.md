@@ -19,7 +19,7 @@ The machine's identity in the network, derived from its key file. It is never th
 ### Ports
 P2P (discovery), gateway (this interface and the API) and inference (the hops between machines).
 ### Profile and authority
-Administrator, worker or visitor, and whether this machine is the principal administrator, a secondary one or neither.
+Administrator, worker, validator or visitor, and whether this machine is the principal administrator, a secondary one or neither. A validator is a worker that re-runs sampled work to check the others and serves no model.
 ### Machine name
 Only a label for the others. Left empty, the system's hostname is used.
 ### Advertised address

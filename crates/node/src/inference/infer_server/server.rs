@@ -86,6 +86,7 @@ impl InferState {
             preserved_specials,
             thinking_open: HashMap::new(),
             meters: Default::default(),
+            tail_embeddings: false,
             no_thinking: cfg.no_thinking,
             // Keeps the behavior of old callers that do not send the
             // flag. The current gateway always states it explicitly per endpoint.

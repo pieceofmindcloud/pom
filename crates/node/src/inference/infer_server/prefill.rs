@@ -1981,6 +1981,10 @@ pub(super) fn prefill_batch_blocking(
                     .ok_or_else(|| {
                         anyhow::anyhow!("batch produced no logits for {}", item.sid_key)
                     })?;
+                // The last stage's post-norm row proves its work (plain steps).
+                if item.n_tokens == 1 {
+                    s.meter_tail_rows(&item.sid_key, item.n_past, logits_index as i32);
+                }
                 let recent = s.sessions[&item.sid_key].recent_tokens.clone();
                 let logits = s.engine.logits_ith(logits_index as i32);
                 let (next_id, sampling_timing) = sample_token_within_budget(
@@ -2370,6 +2374,9 @@ pub(super) fn step_batch_blocking(
         }
     }
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
+    if prepared.iter().any(|(_, item)| item.is_last) {
+        s.meter_tail_ready();
+    }
     let decode_started = Instant::now();
     let decode_result = match &prepared[0].1.input {
         PreparedStepInput::Tokens { .. } => {

@@ -3214,8 +3214,17 @@ with the ledger is the crate `crates/metering-core`; the node side is
   steps, not speculative batches) are proved in chunks of 32 positions with
   `toploc/v1`; each chunk is a Merkle leaf with its positions, stored in
   `metering_proofs`, and the receipt carries the root (`summ`). The tail
-  outputs tokens, not a hidden state, and keeps no proofs: its work is paid on
-  receipts alone (an open item).
+  outputs tokens, not a hidden state: while metering is on it turns
+  llama.cpp's embeddings output on (`InferState::meter_tail_ready`, the
+  engine's `set_output_embeddings`, no capture callback) and proves its final
+  hidden state after the output norm for each plain decode step
+  (`meter_tail_rows`). Its prefill rows stay unproved: only the last prompt
+  position is an output token, and making every position one would compute
+  vocabulary-wide logits for the whole prompt. A verifier re-runs the last
+  range with the same embeddings output in chunks of 64 positions. Measured
+  2026-11-14 on CPU: no slowdown of the tail, honest re-execution mean 1.1-1.4
+  and median 1 against 28-46 and 21-42 with one or five layers skipped, inside
+  and far outside the llama.cpp limits.
 - **The receipt rides the end of the turn.** The gateway mints a bundle nonce
   and sends it as `metering_bundle` in the `/v1/session/rewind` (the normal end
   of a turn) or `/v1/session/release` it already posts to every step; the hop

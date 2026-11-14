@@ -852,6 +852,9 @@ pub(crate) struct InferState {
     pub(super) sessions: HashMap<String, Session>,
     /// GPU work meters of the metered sessions (`meter.rs`).
     pub(super) meters: super::meter::MeterTable,
+    /// Whether llama.cpp's embeddings output is on for the last stage's
+    /// proofs (`InferState::meter_tail_ready`).
+    pub(super) tail_embeddings: bool,
     pub(super) seq_pool: Vec<u32>,
     pub(super) max_sessions: u32,
     pub(super) sampling: SamplingConfig,

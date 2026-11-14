@@ -159,3 +159,28 @@ re-executions cross the f8 boundary (decoded) and another GPU model.
 
 Not measured: Metal or ROCm, other quantizations and models, long prompts.
 A network mixing those backends should run `rpc.calibrate` once.
+
+## Proofs of the last stage, 2026-11-14
+
+Qwen3.8-27B IQ3_S over three CPU-only nodes (0-23, 24-47, 48-64), the last
+stage proving its plain decode steps by its post-norm rows (llama.cpp's
+embeddings output, `pom-plugin-llama.cpp` `set_output_embeddings`). Two of its
+receipts re-executed on a CPU verifier through `rpc.calibrate`:
+
+| variant | exponent mismatches | mean | median |
+|---|---|---|---|
+| honest (4 runs) | 2 - 3 | 1.09 - 1.44 | 1 |
+| skip 1 of 17 layers | 89 - 106 | 34.4 - 40.8 | 31 - 34 |
+| skip 5 of 17 layers | 99 - 111 | 28.3 - 46.1 | 21 - 42 |
+
+- Repeats are identical; every honest chunk passes the llama.cpp limits
+  (mean <= 3.0, median <= 2.5, exponent count <= 12) and every skipped one
+  fails, so the limits stay as they are.
+- `skip:4` (range 48..61) could not load: 61 is not a valid cut of this
+  model's layout (multiples of 4), so `skip:5` stands in for it.
+- With metering on, the last stage generated at 1.13 and 1.17 tok/s against
+  1.13 and 1.04 off: no measurable cost.
+
+Not measured: the last stage on a GPU checked by a CPU verifier (both GPUs
+were busy), and the last stage's prefill, which stays unproved.
+

@@ -187,6 +187,16 @@ impl MeterTable {
         }
     }
 
+    /// The last stage's rows a verifier can reproduce: its final hidden state
+    /// after the output norm (llama.cpp's embeddings output), for plain decode
+    /// steps. The last stage sends tokens, not a hidden state, so these rows
+    /// prove its work and enter no link chain.
+    pub(crate) fn tail_rows(&mut self, sid: &str, first_pos: u32, values: &[f32], width: usize) {
+        if let Some(m) = self.meters.get_mut(sid) {
+            m.proofs.push_rows(values, width, first_pos);
+        }
+    }
+
     pub(crate) fn prefill(&mut self, sid: &str, max_sessions: u32, computed: u32, cached: u32, ms: u64) {
         if let Some(m) = self.open(sid, max_sessions) {
             m.computed.prefill += computed;
@@ -299,6 +309,38 @@ impl InferState {
         self.meters.output(sid, first_pos, rows, encoded, dtype, hidden);
     }
 
+    /// On the last stage, before a decode: llama.cpp's embeddings output on
+    /// while metering is on (the rows `meter_tail_rows` proves), off
+    /// otherwise. Changed only when it differs; a context that cannot give
+    /// per-token rows stays off and its receipts carry no proofs, as before.
+    pub(crate) fn meter_tail_ready(&mut self) {
+        let want = crate::metering::context().is_some() && self.engine.output_embeddings_supported();
+        if want != self.tail_embeddings {
+            match self.engine.set_output_embeddings(want) {
+                Ok(()) => self.tail_embeddings = want,
+                Err(error) => {
+                    tracing::warn!("metering: the last stage cannot prove its work: {error:#}");
+                    self.tail_embeddings = false;
+                }
+            }
+        }
+    }
+
+    /// On the last stage, after a plain decode step: the post-norm row of the
+    /// output `index`, at position `pos`, into the session's proofs.
+    pub(crate) fn meter_tail_rows(&mut self, sid: &str, pos: u32, index: i32) {
+        if !self.tail_embeddings {
+            return;
+        }
+        match self.engine.output_embeddings(&[index]) {
+            Ok(rows) => {
+                let width = self.engine.n_embd;
+                self.meters.tail_rows(sid, pos, &rows, width);
+            }
+            Err(error) => tracing::debug!("metering: no output row for the last stage: {error:#}"),
+        }
+    }
+
     pub(crate) fn meter_prefill(&mut self, sid: &str, computed: u32, cached: u32, ms: u64) {
         self.meters.prefill(sid, self.max_sessions, computed, cached, ms);
     }
@@ -376,6 +418,25 @@ mod tests {
             assert_eq!(seq, vec![5, 6, 7, 8, 9, 10, 11]);
             // The head's input chain covers the computed prompt only.
             assert_eq!(r.in_chain, metering_core::chain::LinkChain::of_tokens(2, &[7, 8, 9]).digest());
+        });
+    }
+
+    #[test]
+    fn the_last_stage_proves_its_decode_rows_without_touching_its_links() {
+        with_context(|| {
+            let mut t = MeterTable::default();
+            let width = 128;
+            t.input_tensor("s", 4, 0, 1, &vec![0.5f32; width], WireDtype::F16);
+            let before = t.meters["s"].out_chain.digest();
+            // One post-norm row per plain decode step, at its own position.
+            for pos in 10..10 + 40u32 {
+                let row: Vec<f32> = (0..width).map(|i| ((i as u32 * 31 + pos) % 97) as f32 / 9.0 - 5.0).collect();
+                t.tail_rows("s", pos, &row, width);
+            }
+            assert_eq!(t.meters["s"].out_chain.digest(), before, "the tail's rows are no output frame");
+            let r = open_receipt(&t.close("s", Some("b".into()), &slice()).unwrap().0).unwrap();
+            assert!(r.summ.is_some(), "the last stage's receipt is provable");
+            assert!(r.chunks.unwrap_or(0) >= 2, "40 rows make a full chunk and a partial one");
         });
     }
 

@@ -68,6 +68,11 @@ pub(crate) struct ReexecuteRequest {
     /// readings come back in full.
     #[serde(default)]
     pub(crate) calibration: bool,
+    /// The audited range ends on the model's output head even when it stops
+    /// short of the last layer: a calibration's `skip:N` of the last stage
+    /// (the ledger's `calibration_request`), compared like the last stage.
+    #[serde(default)]
+    pub(crate) output_head: bool,
 }
 
 /// Verdict of one re-execution.
@@ -548,7 +553,7 @@ fn run(r: &ReexecuteRequest, tokens: &[i32], model_path: &str, total: Option<u32
     let mut input: Option<(Vec<f32>, usize)> = None;
     for (index, [first, last]) in r.ranges.iter().copied().enumerate().take(r.audited + 1) {
         let is_first = first == 0;
-        let is_last = last >= total;
+        let is_last = last >= total || (index == r.audited && r.output_head);
         let out = match run_range(model_path, first, last, total, is_first, is_last, tokens, input.take()) {
             Ok(out) => out,
             Err(e) => return void(format!("range {first}..{last}: {e}")),
@@ -577,8 +582,13 @@ pub(crate) fn roundtrip(values: &[f32], width: usize, dtype: &str) -> anyhow::Re
     }
 }
 
+/// Positions per decode when re-running the last range: each one also outputs
+/// its logits (vocabulary-wide), so the chunk stays small.
+const TAIL_CHUNK: usize = 64;
+
 /// Cuts `[first, last)` of the model, loads it alone, runs the sequence and
-/// returns the range's output rows and width.
+/// returns the range's output rows and width: the residual it hands on, or for
+/// the last range its post-norm rows.
 #[allow(clippy::too_many_arguments)]
 fn run_range(
     model_path: &str,
@@ -615,18 +625,36 @@ fn run_range(
     node.mtp_enabled = false;
     node.speculative_decoding_enabled = false;
     node.peer_count = 2;
-    let engine_cfg = crate::runtime::engine_config_from_node(&node, true)?;
+    // The last range is proved by its post-norm rows (llama.cpp's embeddings
+    // output, as the serving stage does, `InferState::meter_tail_ready`), the
+    // others by the residual they hand on (the capture callback).
+    let engine_cfg = crate::runtime::engine_config_from_node(&node, !is_last)?;
     let cache = crate::llm::ModelCache::new();
     let mut engine = crate::llm::LlmEngine::load_with_cache(&node.model_path, &engine_cfg, &cache, false)?;
     let width = engine.n_embd;
-    let batch = engine_cfg.n_batch.max(1) as usize;
+    let mut batch = engine_cfg.n_batch.max(1) as usize;
+    if is_last {
+        if let Err(error) = engine.set_output_embeddings(true) {
+            engine.unload();
+            return Err(error);
+        }
+        // Every position outputs its logits too: small chunks keep that buffer small.
+        batch = batch.min(TAIL_CHUNK);
+    }
+    let rows_of = |engine: &crate::llm::LlmEngine, n: usize| -> anyhow::Result<Vec<f32>> {
+        if is_last {
+            engine.output_embeddings(&(0..n as i32).collect::<Vec<_>>())
+        } else {
+            Ok(engine.take_residual(n)?.values)
+        }
+    };
     let mut output = Vec::with_capacity(tokens.len() * width);
     let result = (|| -> anyhow::Result<()> {
         match &input {
             None => {
                 for (i, chunk) in tokens.chunks(batch).enumerate() {
-                    engine.decode_tokens(chunk, (i * batch) as u32, 0, false)?;
-                    output.extend(engine.take_residual(chunk.len())?.values);
+                    engine.decode_tokens(chunk, (i * batch) as u32, 0, is_last)?;
+                    output.extend(rows_of(&engine, chunk.len())?);
                 }
             }
             Some((hidden, in_width)) => {
@@ -636,8 +664,8 @@ fn run_range(
                     let slice = &hidden[start * in_width..(start + n) * in_width];
                     let shape = vec![n, *in_width];
                     let ids = &tokens[start.min(tokens.len())..(start + n).min(tokens.len())];
-                    engine.decode_hidden_with_positions(slice, &shape, n, start as u32, 0, false, Some(ids), None)?;
-                    output.extend(engine.take_residual(n)?.values);
+                    engine.decode_hidden_with_positions(slice, &shape, n, start as u32, 0, is_last, Some(ids), None)?;
+                    output.extend(rows_of(&engine, n)?);
                 }
             }
         }
@@ -663,6 +691,7 @@ mod tests {
             params: None,
             engine: None,
             calibration: false,
+            output_head: false,
         }
     }
 

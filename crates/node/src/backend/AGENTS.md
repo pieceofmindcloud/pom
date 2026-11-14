@@ -689,7 +689,10 @@ boundary.
 - `metering_verify.rs` - re-execution for the ledger (`node.reexecute`, an
   asynchronous job): cuts and loads each range of the local whole model, runs
   the head's sequence teacher-forced with each boundary's codec, and checks the
-  audited hop's TOPLOC chunks.
+  audited hop's TOPLOC chunks: the residual a range hands on, or for the last
+  range (and a calibration's shortened last range, `output_head`) its
+  post-norm rows through the engine's embeddings output, in chunks of
+  `TAIL_CHUNK` positions.
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the
   POM's `AuditLog` replicates `begin` and `complete` to the effective admins over the p2p endpoint.

@@ -753,7 +753,11 @@ inference service runs a whole model instead through `plugin_engine.rs`.
   digests, the head's computed sequence and the TOPLOC proof buffer, fed from
   the compute functions; `close` signs the turn's receipt when the gateway's
   nonce arrives in the rewind or release (`server.rs`, `close_meter` /
-  `attach_receipt`). See `docs/subsystems/inference.md` 10.1.
+  `attach_receipt`). The last stage proves its plain decode steps by its
+  post-norm rows: `InferState::meter_tail_ready` turns the engine's
+  embeddings output on while metering is on, `meter_tail_rows` reads the row
+  of the output token (`step_blocking.rs`, `step_batch_blocking`). See
+  `docs/subsystems/inference.md` 10.1.
 - `infer_server/ram_cache.rs` - the host-memory KV cache (`--cache-ram`):
   `KvRamCache` parks the serialized `prompt_seq` of a retained session that
   loses its sequence and `InferState::park_session`/`unpark_session`

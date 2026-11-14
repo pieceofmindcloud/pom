@@ -122,6 +122,9 @@ pub(crate) fn step_blocking(
     if let Some((hidden, shape)) = tensor.as_ref() {
         s.meter_input_tensor(&sid_key, n_past, shape[0] as u32, hidden, wire_dtype);
     }
+    if is_last {
+        s.meter_tail_ready();
+    }
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state. `decode_hidden` already
         // handles any `n_tokens` — a speculative batch needs no special
@@ -501,6 +504,10 @@ pub(crate) fn step_blocking(
             return Ok(TimedReply { bytes, timings });
         }
 
+        // A plain step of the last stage: its post-norm row proves its work.
+        if n_tokens == 1 {
+            s.meter_tail_rows(&sid_key, n_past, 0);
+        }
         let logits_access_started = Instant::now();
         let recent = s.sessions[&sid_key].recent_tokens.clone();
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);

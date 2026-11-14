@@ -47,6 +47,14 @@ are either workers or visitors.
   chain, else its announced profile. A visitor's own announce goes straight to
   its admins and workers, never on the gossip topic or the LAN broadcast
   (`p2p-network.md`, "Admission before the `peers` table").
+- The principal decides which iroh relays the network uses
+  (`NetworkSettings.relay_policy`: `all`, `members` for only the network's own
+  dedicated and member relays, `none` for direct connections only). A relay
+  never reads the end-to-end encrypted QUIC it carries, but it sees which
+  endpoints talk, when and how much; the policy keeps third parties out of
+  that. Each machine enforces it on its own side by keeping a disallowed relay
+  out of its relay map, so a machine that ignores the policy still cannot reach
+  a compliant one through such a relay (`p2p-network.md`).
 - A visitor may relay for its network anonymously (`relay.anonymous`, off by
   default): it admits anyone with an admin-signed relay pass for its URL
   (`crate::relay_pass`). An admin signs passes only for a relay URL on a
@@ -183,6 +191,11 @@ session gate; another node goes through `caller_may_ask` (`gateway/state.rs`).
 
 - `/api/transfer/*` (model files) needs a signed request; the connection key
   alone pulls nothing.
+- From another node, starting, cancelling, retrying or dismissing a model
+  download (`POST /api/ui/model-provider/downloads...`) and
+  `/api/ui/models/rescan` take an admin's signature, not a worker's
+  (`node_to_node_scope`): a worker downloads for itself, only an admin makes
+  another machine download. Reading the downloads stays `ServingMember`.
 - A forwarded `POST /api/ui/leave` (removing another machine) needs an admin's
   signature, and the principal's when the machine leaving is an admin.
 - **The administrative UI** uses an in-memory session with an `HttpOnly`,
@@ -253,29 +266,81 @@ plugin never sees a cookie. Design:
   with a per-address lock-out after three failures (doubling up to 15 min) and
   a global one past 30 failures a minute. That session ends after 30 minutes
   idle.
+- **Demo mode needs the principal** (`user_session::demo_mode`). `DEMO_MODE=1`
+  only asks for it (`demo_requested`): the demonstration runs while the
+  network's principal allows it, set by `DEMO_MODE_ACTIVE=true` in the
+  principal's environment (no screen sets it). The principal puts it in
+  `NetworkSettings.demo_mode_active` of the network settings it answers and
+  fans out (`/api/cluster/network-settings`), whatever an edit sent; a member
+  records what it receives from the principal (`set_demo_authorized`), and the
+  principal reads its own variable. Until then, and when the principal stops
+  allowing it, a person's session gets 503 `demo_not_authorized` (never the
+  ordinary user surface) and the guest sign-in is off. A node asked to be a
+  demonstration keeps fetching the principal's settings instead of stopping
+  after the first sync, so a withdrawal reaches it. An older principal sends no
+  field, which reads as false.
 - **Demo mode** (`DEMO_MODE=1`) removes own API keys and redacts from what a
   user session reads every address-shaped field and value and every node id
   (replaced by a stable per-process alias), on the dashboard reads, the
-  request log and plugin RPC answers. It also shows a person, read-only, the
+  request log and plugin RPC answers. A machine's name (`hostname`) stays, so
+  a person can tell the machines apart, unless the value is itself an address;
+  an alias the page sends back as the Chat's `inference_head` is resolved to
+  the real node among this node and its live peers (`unalias_node`). It also shows a person, read-only, the
   installed plugins and the catalog (`GET /api/ui/plugins`,
   `/api/ui/plugins/github-repositories`, `/api/ui/plugin-catalog`), the local
   catalog (`GET /api/ui/models`), a slicing preview (`POST /api/ui/slice/plan`;
   starting a job stays refused), the current network (`/api/ui/network/info`,
   redacted) and their own budget (`GET /api/ui/quota`, answered from the
-  sign-in plugin's `rpc.me`). Plugins listed in `DEMO_PLUGINS` (every active
+  sign-in plugin's `rpc.me`), the Networks screen (`GET /api/ui/networks/known`,
+  `/api/ui/networks/pinned`, `/api/ui/network/relay`, redacted; adding,
+  sharing, joining, leaving and saving the quick setup stay refused), the
+  network Chat (`GET /api/ui/network-chat`, the members' room only: a `room`
+  other than it answers 404 and the snapshot never carries the lobby) and
+  the Deploy screen's survey (`POST /api/ui/deploy/plan`, `GET
+  /api/ui/cache-types`, `/api/ui/model-sidecar-links`; `/api/ui/deploy` and
+  the history stay refused). A demonstration node is a worker, which refuses
+  the deploy routes, so the gateway lets that one survey through on a worker
+  in demo mode (`demo_previews_deploy`). A person's message to the network
+  Chat (`POST /api/ui/network-chat`) never reaches `network_chat_action`: the
+  session gate takes only the text of a text message to the members' room,
+  up to 2000 characters, prefixes it with `[demo] ` and posts it as this node
+  (`demo_network_chat_post`); files, typing, notices and direct messages are
+  refused. Plugins listed in `DEMO_PLUGINS` (every active
   one when unset) open their assets, RPCs and web proxy to a person; the
   sign-in plugin's `auth` screen and its `rpc.auth.*` never do.
+- **Demo without sign-in** (`DEMO_NO_AUTH=1`, only with `DEMO_MODE`). A
+  plugin whose `auth.providers` answer carries `"guest": true` opens guest
+  sessions: `/api/access` names its `guest_url` and the login screen goes
+  there at once, showing only the brand animation. The node passes
+  `demo_no_auth` and `guest_key` (a hash of the visitor's address,
+  `User-Agent` and `Accept-Language`) to the plugin's `auth.http`; the plugin
+  refuses `/guest/start` unless `demo_no_auth` is true. A guest is a user
+  session like any other (provider `guest`), so it gets the same seats,
+  redaction and quota. When a guest's seat runs out the session is revoked
+  and, for `DEMO_GUEST_COOLDOWN` minutes, every session of that guest ends
+  and a new one is refused (`/admin-ui/?demo_cooldown=<secs>`; the `/` redirect keeps a query string, and a tab sent to the guest start that comes back without a session within 15 s stops at the gate instead of reloading). Anyone can change
+  their fingerprint (another browser or address): the cool-down and the
+  per-guest budget slow casual reuse, they are not identity.
 - **Demo seats** (`backend/demo_slots.rs`). In demo mode a signed-in person
   takes one of `DEMO_MAX_SESSIONS` seats (default 10) for
   `DEMO_SESSION_TIME` minutes (default 20). Past the seats they wait in a FIFO
   queue and reach only `/api/ui/me`, `/api/ui/demo/session` and sign-out (423
   `demo_queue` elsewhere); `GET /api/ui/demo/session` answers the seat
   (`state`, `remaining_secs`, `expires_at`) or the place (`position`,
-  `waiting`, `eta_secs`, estimated from the seats' remaining times). A queued
+  `waiting`, `eta_secs`, estimated from the seats' remaining times), plus
+  `active_sessions`, the seats held now, which the top bar shows beside the
+  clock. The queue screen (and a guest start that came back without a
+  session) reloads itself every 5 minutes to try again; a visit whose time
+  ran out does not, so a tab left open never signs back in. After signing out,
+  a guest tab stays at the gate ("You left the demonstration") until the
+  visitor asks for a new visit. A queued
   place nobody polls for 45 s is dropped. Sign-out frees the seat at once; an
   expired seat revokes the session and its chat tokens (401
   `demo_session_expired`). One person holds one seat across browsers. The
-  state is in memory: a restart empties it.
+  state is in memory: a restart empties it. The Chat's image generation
+  (`POST /api/ui/chat/image`, `GET /api/ui/chat/image/:hash`) is on the
+  user surface, and a demonstration visitor also reads
+  `GET /api/ui/image-deployments` (the Dashboard's image models).
 - **A person's folder.** `<workspace_root>/users/<hash>` (`user_folder`: 16 hex
   of SHA-256 over plugin and user id), created on first use. The plugin proxy
   sends it to the plugin as `x-pom-user` (the hash) and

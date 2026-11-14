@@ -79,7 +79,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `inferenceServices.ts` - `inferenceServicesOf` groups the `inference` services that plugins publish in `node.plugin_services` (Strata, for example) by plugin code, with the GGUF architectures the engine runs, the settings it publishes and the machines that can take a model; `serviceRunsModel` is the architecture filter the Deploy screen applies to whole models.
-- `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
+- `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders and `source`, the Hugging Face repository and file any holder downloaded it from (matched by path in the peer's `hf_sources`), with the other parts of a split file. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state
   labels, including the `idle` state distinct from `serving` and `noAir`.
 - `thermal.ts` - pure temperature-band and highest-known-reading helpers used by
@@ -133,6 +133,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   jobs and offers slow to 10s when idle and return to 2s while active.
   `useModelDownloads` derives the `model_download` jobs from `/api/ui/jobs` and
   is shared by the remote-model and transfers screens.
+  `useServingMachines` lists the other live peers that are not visitors (where a download
+  can start) and `useMachineDownloads(nodeId)` polls that machine's downloads through
+  `listRemoteModelDownloads`; `api.ts` passes an optional `nodeId` to every download call and
+  `rescanModels(nodeId)` asks a machine to walk its models folders again.
   `useCacheTypes` reads the installation-wide K/V cache representation from
   `/api/ui/cache-types`; the deployment inspector applies combo changes through
   the same endpoint. The add-machine dialog reads and updates the selected
@@ -189,12 +193,16 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `transferLabel.ts` - how a slice names itself on screen (model + layers, hash on the side).
 - `modelProvider.ts` - serializes the remote search, filters download jobs,
   computes the derived cadence and only computes a percentage when the backend
-  knows the total bytes. `useRemoteModelProviderStatus` in `queries.ts` reads the
-  structured state of the CLI and of the Hugging Face session; `publicModelDiscovery.ts`
-  queries the public Hugging Face API to list trending GGUFs without credentials.
-- `api.ts` and `queries.ts` also expose `getHuggingFaceTokenConfig`,
-  `saveHuggingFaceToken` and `useHuggingFaceTokenConfig`; the response type
-  contains only `configured`, `masked` and `source`, never the raw token.
+  knows the total bytes. `api.ts` keeps the typed client of every
+  `/api/ui/model-provider/*` route (the token config answers only `configured`,
+  `masked` and `source`, never the raw token), but the search, downloads and
+  token screens are the Hugging Face plugin's (`pom-plugin-hugging-face`): the
+  POM only uses the download calls for the deploy screen's **Download here**
+  (`useMachineDownloads`, `startRemoteModelDownload`).
+- `modelSearch.ts` - `MODEL_SEARCH_ROUTE` (`/huggingface/models`) and
+  `modelSearchRoute()`, that route while the Hugging Face plugin serves it or
+  `null`; the Chat's download step and the first run guide use it, falling back
+  to `/plugins`.
 - `peerName.ts` - how a **machine** names itself on screen: `peerDisplayName` (announced name, short id only as a last resort) and `uniquePeerName` (tie-break by id when two nodes share a hostname). Used by `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source,
   including `ClusterLogEntry` and the authority state of the logs switch.
@@ -387,23 +395,22 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   pipeline steps, including the source hash/path used by a transfer.
   `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized
   off for tensor parallel deployment. `RuntimeParams.fit_memory_margin_mb` is
-  the per-device safety reserve, defaulting to 256 MiB. `RuntimeParams.inference_mode` is the
-  persisted `auto`/`dense`/`moe` preference. `DeployPlan.is_moe` comes from the
+  the per-device safety reserve, defaulting to 256 MiB. There is no engine
+  choice: llama.cpp runs every model the POM serves (a plugin inference service
+  is `inference_service`). `DeployPlan.is_moe` comes from the
   node's GGUF expert metadata; the deploy screen must not infer MoE from a
   filename. `inference_mode_supported` and `inference_mode_reason` keep an
-  unsupported path visible instead of presenting a misleading selection.
+  unsupported execution mode (Tensor Parallelism of a MoE model) visible.
   The capacity preview is an analytic planning estimate, not the effective
   placement reported by the real load; the deploy screen keeps that distinction
   visible in its capacity warning.
   `DeployPlan.capabilities` is the backend tri-state contract for conditional
   global controls, including source and reason. The UI does not infer model or
   topology support from names; unknown remains visible but disabled.
-  `PeerRuntimeHealth` carries the selected path and effective MoE ownership
-  (`moe_requested`, `moe_executor`, dtypes and `moe_executor_reason`) alongside
+  `PeerRuntimeHealth` carries the selected path (`dense/llama.cpp`) alongside
   `mtp_ready` and an optional `mtp_allocation` and `mtp_unavailable_reason`;
-  the dashboard detail card reads these fields from `usePeerRuntime` so a
-  requested-but-unused executor, actual VRAM/RAM placement and a failed MTP
-  attach are visible.
+  the dashboard detail card reads these fields from `usePeerRuntime` so the
+  actual VRAM/RAM placement and a failed MTP attach are visible.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
   size-, tensor- and budget-driven slicing plans. Budget-driven shards expose
@@ -690,7 +697,7 @@ would go.
 - `networkPeers` is used by `components/ModelNetworkCanvas.tsx`,
   `components/PipelineRail.tsx` and `routes/Dashboard.tsx` (`pipelinePeers`),
   and by `components/PeerDetailCard.tsx` (`hasSlice`).
-- `routes/WholeModels.tsx` and `routes/Shards.tsx` both use `deleteModel`.
+- `routes/WholeModels.tsx` uses `deleteModel`.
 - `components/Notifications.tsx` and `routes/Transfers.tsx` use `transferStatus` and `transferLabel`.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
@@ -718,8 +725,8 @@ The mechanism lives in `docs/subsystems/plugins-ui.md`; these are the files that
   router read (`setPluginUi`, `resolvePluginRoute`, `pluginRouteProfiles`, `pluginMenuItems`,
   `pluginLabel`, `pluginAssetUrl`, `pluginSlot`). It knows no specific plugin.
 - `pluginHost.ts` - the SDK on `globalThis.__POM_HOST__` (React, React Query, the design kit, i18n,
-  theme, `api.get`...) that plugin screens use instead of packaging their own copies. Its version
-  history is in `plugins-ui.md`.
+  theme, `api.get`, `api.post` from version 8...) that plugin screens use instead of packaging their
+  own copies. Its version history is in `plugins-ui.md`.
 - `pluginReady.ts` - the "finished rendering" signal of a plugin screen: `usePluginReady` arms the
   gate on the host mount and opens it on `__POM_HOST__.ready()` or after `PLUGIN_READY_GRACE_MS`,
   whichever comes first, or when the plugin opens its screen through its loader. The signal is never

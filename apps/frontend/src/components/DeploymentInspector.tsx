@@ -54,7 +54,6 @@ import {
 import type { EngineSetting, InferenceRole, MtpPlacement, PomSetting, SidecarOption, SidecarSlot } from "../lib/types";
 import type {
   DeploymentCapabilities,
-  InferenceMode,
   KvCacheType,
   RuntimeCapability,
   RuntimeParams,
@@ -370,20 +369,16 @@ export function DeploymentInspector({
   merge,
   vision,
   sidecars,
-  /**
-   * The engine is only a question when the model is MoE: in a dense model there is no
-   * choice to make, and a combo with a single answer is noise. The History
-   * always shows it, because there it is a record of what came up, not a question.
-   */
-  showInferenceMode = false,
-  inferenceModeAlert,
   /** The hidden-state precision only exists when the pipeline crosses machines. */
   showHiddenStateDtype = false,
   machineRoles,
   onMachineRole,
   pomDevMode = false,
   inferenceService,
+  contextLimit,
 }: {
+  /** The model's declared `context_length`: the field refuses an `n_ctx` above it. */
+  contextLimit?: number | null;
   value: RuntimeParams;
   onChange?: (next: RuntimeParams) => void;
   readOnly?: boolean;
@@ -392,8 +387,6 @@ export function DeploymentInspector({
   merge?: MergeControl;
   vision?: VisionControl;
   sidecars?: SidecarControls;
-  showInferenceMode?: boolean;
-  inferenceModeAlert?: string | null;
   showHiddenStateDtype?: boolean;
   /** A whole model on several machines split into prefill and decode: each machine's role, edited in the POM card. */
   machineRoles?: { nodeId: string; label: string; role: InferenceRole }[];
@@ -441,14 +434,17 @@ export function DeploymentInspector({
       : hiddenStateDtype === "i4g128"
         ? capabilities?.hidden_state_i4g128
         : undefined;
-  const hiddenStateUnavailable = hiddenStateCapability
-    ? hiddenStateCapability.state !== "supported"
-    : false;
-  const f8Unavailable = capabilities?.hidden_state_f8
-    ? capabilities.hidden_state_f8.state !== "supported"
-    : false;
-  const i4g64Unavailable = capabilities?.hidden_state_i4g64?.state !== "supported";
-  const i4g128Unavailable = capabilities?.hidden_state_i4g128?.state !== "supported";
+  /*
+   * Only a peer that says no blocks a lossy format here. The plan the screen
+   * surveys names no range, so it has no steps and every hidden-state
+   * capability comes back `unknown`; disabling on `unknown` locked f8/i4 for
+   * good. Deploy plans the real rows and refuses an unconfirmed format there
+   * (`requested_capability_block`).
+   */
+  const hiddenStateUnavailable = hiddenStateCapability?.state === "unsupported";
+  const f8Unavailable = capabilities?.hidden_state_f8?.state === "unsupported";
+  const i4g64Unavailable = capabilities?.hidden_state_i4g64?.state === "unsupported";
+  const i4g128Unavailable = capabilities?.hidden_state_i4g128?.state === "unsupported";
 
   /*
    * `auto` is no longer in the combo, but may arrive from an API or from a
@@ -459,7 +455,11 @@ export function DeploymentInspector({
 
   function setKnob(key: NumericKey, text: string) {
     setDrafts((current) => ({ ...current, [key]: text }));
-    const parsed = Number(text);
+    let parsed = Number(text);
+    if (key === "n_ctx" && contextLimit && parsed > contextLimit) {
+      parsed = contextLimit;
+      setDrafts((current) => ({ ...current, [key]: String(contextLimit) }));
+    }
     if (text !== "" && Number.isFinite(parsed)) set({ [key]: parsed } as Partial<RuntimeParams>);
   }
 
@@ -474,7 +474,9 @@ export function DeploymentInspector({
             aria-label={label}
             name={key}
             type="number"
-            min={key === "idle_minutes" ? 1 : key === "moe_cache_mib" ? 0 : undefined}
+            min={key === "idle_minutes" || key === "n_ctx" ? 1 : key === "moe_cache_mib" ? 0 : undefined}
+            max={key === "n_ctx" && contextLimit ? contextLimit : undefined}
+            title={key === "n_ctx" && contextLimit ? t("inspector.contextLimit", { n: contextLimit.toLocaleString() }) : undefined}
             step={NUMERIC_STEP[key]}
             value={shown(key)}
             onChange={(event) => setKnob(key, event.target.value)}
@@ -1010,32 +1012,6 @@ export function DeploymentInspector({
       </Section>
 
       {pomDevMode && <Section title={t("inspector.sectionPomDev")} tone="amber">
-        {showInferenceMode && (
-          <InspectorRow
-            label={t("inspector.inferenceMode")}
-            tip={t("inspector.inferenceModeHint")}
-            alert={inferenceModeAlert ?? undefined}
-          >
-            {readOnly ? (
-              <ReadValue>{t("inspector.engine." + (value.inference_mode ?? "dense"))}</ReadValue>
-            ) : (
-              <Select
-                aria-label={t("inspector.inferenceMode")}
-                name="inference_mode"
-                value={value.inference_mode === "auto" ? "dense" : (value.inference_mode ?? "dense")}
-                onChange={(event) =>
-                  set({ inference_mode: event.target.value as InferenceMode })
-                }
-                compact
-              >
-                {/* "Automático" continues to exist in the backend; it leaves here because
-                    the interface now decides per llama.cpp. */}
-                <option value="dense">{t("inspector.engine.dense")}</option>
-                <option value="moe">{t("inspector.engine.moe")}</option>
-              </Select>
-            )}
-          </InspectorRow>
-        )}
         {toggle({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),

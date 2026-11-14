@@ -23,6 +23,12 @@ export interface PluginMenuItem {
   profiles?: Profile[];
   /** Submenus: the item becomes an expandable section of the side menu. */
   children?: PluginMenuChild[];
+  /**
+   * Where a leaf entry goes: `"settings"` places it inside POM's Settings
+   * section (before About) instead of the root. Unknown values, or an item
+   * with children, keep the root.
+   */
+  section?: string | null;
 }
 
 export interface PluginMenuChild {
@@ -378,7 +384,8 @@ function normalizePlugin(
       (candidate.roles !== undefined && !isMenuRoleArray(candidate.roles)) ||
       (candidate.profiles !== undefined && !isProfileArray(candidate.profiles)) ||
       (candidate.icon !== undefined && candidate.icon !== null && typeof candidate.icon !== "string") ||
-      (candidate.group !== undefined && candidate.group !== null && typeof candidate.group !== "string")
+      (candidate.group !== undefined && candidate.group !== null && typeof candidate.group !== "string") ||
+      (candidate.section !== undefined && candidate.section !== null && typeof candidate.section !== "string")
     ) {
       return null;
     }
@@ -403,6 +410,7 @@ function normalizePlugin(
       ...(isNonEmptyString(iconImage) ? { iconImage } : {}),
       ...(candidate.icon !== undefined ? { icon: candidate.icon as string | null } : {}),
       ...(candidate.group !== undefined ? { group: candidate.group as string | null } : {}),
+      ...(isNonEmptyString(candidate.section) ? { section: candidate.section } : {}),
     });
     rawMenu.push({
       id: candidate.id,
@@ -412,6 +420,7 @@ function normalizePlugin(
       ...(candidate.profiles !== undefined ? { profiles: [...(candidate.profiles as Profile[])] } : {}),
       ...(candidate.icon !== undefined ? { icon: candidate.icon as string | null } : {}),
       ...(candidate.group !== undefined ? { group: candidate.group as string | null } : {}),
+      ...(isNonEmptyString(candidate.section) ? { section: candidate.section } : {}),
       ...(children.length > 0
         ? {
             children: (candidate.children as Record<string, unknown>[]).map((child) => ({

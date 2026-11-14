@@ -8,7 +8,7 @@ order: 110
 ---
 
 :::lead
-Deployments is the history: every deployment the network registered, newest activation first, with the machines it uses, whether it is serving and which one answers when a request names only the model.
+Deployments is the history, opened from the History button beside Deploy on the Deploy screen: every deployment the network registered, newest activation first, with the machines it uses, whether it is serving and which one answers when a request names only the model.
 :::
 
 ![Deployments: one row per deployment, with its shape, machines, last activation, state and actions.](../images/en/deployments.webp)

@@ -808,6 +808,17 @@ mod capacity_preview_tests {
     }
 
     #[test]
+    fn the_layers_that_fit_stop_at_the_free_vram_and_the_rest_go_to_the_cpu() {
+        // 1 GiB per layer plus a fixed 512 MiB head.
+        let gib = 1024u64 * 1024 * 1024;
+        let cost = |layers: u32| Some(gib / 2 + u64::from(layers) * gib);
+        assert_eq!(gpu_layers_that_fit(24, 30 * gib, cost), 24, "everything fits");
+        assert_eq!(gpu_layers_that_fit(24, 18 * gib, cost), 17);
+        assert_eq!(gpu_layers_that_fit(24, gib / 4, cost), 0, "not even one layer");
+        assert_eq!(gpu_layers_that_fit(24, 30 * gib, |_| None), 0, "an unknown cost does not fit");
+    }
+
+    #[test]
     fn single_gpu_takes_the_whole_projection() {
         let gpus = vec![gpu(0, 16_000.0, 2_000.0)];
         let (projections, fits, note) = split_projection(4_000 * 1024 * 1024, &gpus);

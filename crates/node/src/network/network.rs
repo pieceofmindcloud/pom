@@ -135,6 +135,9 @@ pub struct RelayGate {
     pass_ledger: std::sync::Mutex<crate::relay_pass::PassLedger>,
     /// The URL the relay server answers on, when this node has a public host.
     url: std::sync::RwLock<Option<String>>,
+    /// The network's `RelayPolicy` (`as_u8`): with `none` this node relays
+    /// for nobody, whatever the options above say.
+    policy: std::sync::atomic::AtomicU8,
     /// Every endpoint that asked to connect, for the tests to read what a
     /// relay learns.
     #[cfg(test)]
@@ -179,6 +182,7 @@ impl RelayGate {
             available: AtomicBool::new(true),
             members: std::sync::RwLock::new(Default::default()),
             url: std::sync::RwLock::new(None),
+            policy: std::sync::atomic::AtomicU8::new(0),
             anonymous: AtomicBool::new(false),
             passes: std::sync::RwLock::new(None),
             pass_ledger: std::sync::Mutex::new(Default::default()),
@@ -202,8 +206,18 @@ impl RelayGate {
 
     /// Relaying for pass holders right now: asked for, the internet reaches
     /// this node, the server is up and there is a URL to hand out.
+    /// The network's relay policy, as the principal last set it.
+    pub fn policy(&self) -> crate::config::RelayPolicy {
+        crate::config::RelayPolicy::from_u8(self.policy.load(Ordering::Relaxed))
+    }
+
+    pub fn set_policy(&self, policy: crate::config::RelayPolicy) {
+        self.policy.store(policy.as_u8(), Ordering::Relaxed);
+    }
+
     pub fn anonymous_serving(&self) -> bool {
-        self.anonymous.load(Ordering::Relaxed)
+        self.policy().allows_any()
+            && self.anonymous.load(Ordering::Relaxed)
             && self.available.load(Ordering::Relaxed)
             && self.reachable.load(Ordering::Relaxed)
             && self.url.read().is_ok_and(|url| url.is_some())
@@ -279,12 +293,13 @@ impl RelayGate {
 
     /// A public relay: it relays for any node of any network.
     pub fn everyone(&self) -> bool {
-        self.everyone.load(Ordering::Relaxed)
+        self.policy().allows_any() && self.everyone.load(Ordering::Relaxed)
     }
 
     /// Whether this node relays at all right now.
     pub fn serving(&self) -> bool {
-        self.available.load(Ordering::Relaxed)
+        self.policy().allows_any()
+            && self.available.load(Ordering::Relaxed)
             && (self.everyone()
                 || (self.cluster.load(Ordering::Relaxed)
                     && self.reachable.load(Ordering::Relaxed)))
@@ -2621,6 +2636,9 @@ impl Network {
                 }
                 if self.slot_persist_ready() {
                     caps.push(crate::pipeline::CAP_SLOT_PERSIST.into());
+                }
+                if crate::plan::virtual_slices_enabled() {
+                    caps.push(crate::pipeline::CAP_RANGE_LOAD.into());
                 }
                 if self.p2p_tunnel_ready() {
                     caps.push("transport/iroh-tunnel-v1".into());
@@ -6336,6 +6354,34 @@ mod tests {
         assert!(network.path_carries_transfers(Some(&direct)).await);
         // A connection with no path does not.
         assert!(!network.path_carries_transfers(None).await);
+    }
+
+    /// A network whose policy allows no relay: this node relays for nobody,
+    /// members, the public or pass holders, and offers nothing; `members`
+    /// keeps relaying for the cluster.
+    #[test]
+    fn a_network_without_relays_makes_no_node_relay() {
+        use crate::config::RelayPolicy;
+        let member = crate::p2p::random_endpoint_id().to_string();
+        let gate = RelayGate::new(true, true, true);
+        gate.set_members([member.clone()]);
+        gate.set_reachable(true);
+        gate.set_url(Some("http://203.0.113.9:52777".into()));
+        assert!(gate.allows(&member, None, "conn-1"));
+
+        gate.set_policy(RelayPolicy::Members);
+        assert!(gate.serving());
+        assert!(gate.allows(&member, None, "conn-2"));
+
+        gate.set_policy(RelayPolicy::None);
+        assert!(!gate.serving());
+        assert!(!gate.everyone());
+        assert!(!gate.anonymous_serving());
+        assert_eq!(gate.offer(), None);
+        assert!(!gate.allows(&member, None, "conn-3"));
+
+        gate.set_policy(RelayPolicy::All);
+        assert!(gate.allows(&member, None, "conn-4"));
     }
 
     /// Whom a node relays for: everyone on a public relay; the members of

@@ -30,6 +30,7 @@ pom*.json
 /.pom-dev-plugin-builds/
 # local trust chain and the replay ledger next to it (single-node state)
 .pom-admin-trust*.json
+.pom-model-hashes.json
 
 # macOS Finder junk; it used to enter the repo on its own
 .DS_Store
@@ -61,3 +62,6 @@ apps/frontend/src/docs/
 # valid for anyone else. The versioned docker-compose.yml is not touched.
 docker-compose-ksia.yml
 dist-release-ksia/
+
+# Operator sign-in path a node makes on first start (secret)
+.*-operator-path

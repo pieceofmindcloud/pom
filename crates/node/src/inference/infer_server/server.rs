@@ -29,9 +29,6 @@ impl InferState {
     pub(super) fn new(
         engine: LlmEngine,
         cfg: &NodeConfig,
-        inference_path: crate::executor::InferencePath,
-        moe: Option<Arc<crate::moe::runtime::MoeRuntime>>,
-        moe_fallback_reason: Option<String>,
     ) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
@@ -60,8 +57,6 @@ impl InferState {
             .collect();
         Self {
             engine,
-            moe,
-            moe_fallback_reason,
             sessions: HashMap::new(),
             seq_pool,
             max_sessions,
@@ -122,49 +117,10 @@ impl InferState {
             },
             slot_freed: Arc::new(tokio::sync::Notify::new()),
             original_block_count: None, // filled in after engine load
-            inference_path,
             mtp_min_probability: cfg.mtp_min_probability,
             tp: cfg.tp.clone(),
             perf: perf::SlicePerf::default(),
         }
-    }
-
-    pub(super) fn apply_moe_hidden(
-        &self,
-        hidden: Vec<f32>,
-        n_tokens: usize,
-        capture_block: Option<u32>,
-        timings: &mut NodeTimings,
-    ) -> Result<Vec<f32>> {
-        // A runtime object is not ownership. Only the explicitly selected MoE
-        // path may claim the boundary block; a dense model must never execute
-        // the sidecar merely because one was accidentally constructed.
-        if !self.inference_path.is_moe() {
-            return Ok(hidden);
-        }
-        if self.engine.moe_hook_enabled() {
-            return Ok(hidden);
-        }
-        if self.engine.moe_external_executor_enabled() {
-            bail!(
-                "external MoE executor is active, but the hook is not installed; refusing to avoid running the experts twice"
-            );
-        }
-        let Some(moe) = self.moe.as_ref() else {
-            if let Some(reason) = self.moe_fallback_reason.as_deref() {
-                timings.record_moe_reason(reason);
-            }
-            return Ok(hidden);
-        };
-        let layer = capture_block.unwrap_or_else(|| moe.layers().saturating_sub(1));
-        let forward_started = Instant::now();
-        let output = moe
-            .forward_batch(layer, &hidden, n_tokens)
-            .map_err(|error| anyhow::anyhow!("MoE forward failed: {error}"))?;
-        timings.record_moe_telemetry(moe.executor_telemetry());
-        timings.record_moe_forward(forward_started.elapsed().as_micros() as u64);
-        timings.record_engine(crate::executor::ExecutionEngine::Moe);
-        Ok(output)
     }
 
     pub(super) fn alloc_seq(&mut self) -> Option<u32> {
@@ -828,49 +784,10 @@ pub async fn run(
             None
         }
     };
-    let inference_mode = configured_inference_mode(cfg.inference_mode)?;
-    let inference_path = crate::executor::select(inference_mode, model_info.as_ref())?;
-    info!(
-        "selected inference path: {} (mode {:?})",
-        inference_path.as_str(),
-        inference_mode
-    );
-
-    // The terminal MoE hop also needs the captured boundary residual so its
-    // own executor can run before the response is sampled. Dense single-peer
-    // contexts keep the old fast path without installing the callback.
-    let need_embeddings = cfg.needs_residual_export() || inference_path.is_moe();
     // `rs_seq_window` (largest speculative batch width, across the two mechanisms
     // lookup and MTP) is now computed inside `engine_config_from_node` -
     // see the doc of `EngineConfig::rs_seq_window`.
-    let moe_plan = if inference_path.is_moe() {
-        Some(
-            crate::moe::runtime::MoeRuntime::external_executor_plan(&cfg.model_path)
-                .map_err(|error| anyhow::anyhow!("MoE ownership planning failed: {error}"))?,
-        )
-    } else {
-        None
-    };
-    let moe_external_executor = moe_plan.as_ref().is_some_and(|plan| plan.enabled());
-    if let Some(plan) = moe_plan.as_ref().filter(|plan| !plan.enabled()) {
-        let reason = plan
-            .reason
-            .as_deref()
-            .unwrap_or("no layer has an external executor available");
-        return Err(anyhow::anyhow!(
-            "MoE combination not supported before loading the model: GGML dtypes {:?}; {reason}; the MoE path requires an external executor and will not use native llama.cpp",
-            plan.dtypes
-        ));
-    }
-    let engine_cfg = crate::runtime::engine_config_from_node(
-        &cfg,
-        need_embeddings,
-        moe_external_executor,
-        moe_plan
-            .as_ref()
-            .map(|plan| plan.layers.clone())
-            .unwrap_or_default(),
-    )?;
+    let engine_cfg = crate::runtime::engine_config_from_node(&cfg, cfg.needs_residual_export())?;
 
     let model_path = cfg.model_path.clone();
     let mut engine = tokio::task::spawn_blocking(move || {
@@ -893,77 +810,7 @@ pub async fn run(
     // GGUF, not on the configuration. See `Network::mtp_ready`.
     mtp_ready.store(engine.mtp_ready(), std::sync::atomic::Ordering::Relaxed);
 
-    let moe = if inference_path.is_moe() && moe_external_executor {
-        let info = model_info.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("the MoE path requires GGUF metadata to prepare the router")
-        })?;
-        let experts = info
-            .expert_count
-            .ok_or_else(|| anyhow::anyhow!("the MoE path requires expert_count in the GGUF"))?;
-        let top_k = info.expert_used_count.unwrap_or(1).max(1) as usize;
-        let weights_bytes = std::fs::metadata(&cfg.model_path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        let cuda_compute_bytes = engine.cuda_compute_bytes_by_device();
-        Some(Arc::new(
-            crate::moe::runtime::MoeRuntime::open(
-                &cfg.model_path,
-                cfg.model_label.clone(),
-                experts,
-                top_k,
-                weights_bytes,
-                cuda_compute_bytes,
-            )
-            .map_err(|error| anyhow::anyhow!("MoE runtime unavailable: {error}"))?,
-        ))
-    } else {
-        None
-    };
-
-    if let Some(runtime) = moe.as_ref() {
-        let telemetry = runtime.executor_telemetry();
-        // llama.cpp's `offloaded N/N layers to GPU` counts only the tensors it
-        // allocates itself. With `moe_external_executor` the expert weights are
-        // not even allocated there (see `EngineConfig::moe_external_executor`),
-        // so that total is both true and misleading: on a 35 B model the model
-        // buffers on GPU add up to ~1.6 GB and the operator concludes, rightly,
-        // that "the model is all in RAM". Saying here whose the experts are is
-        // what prevents that wrong reading.
-        tracing::info!(
-            model = %cfg.model_label,
-            moe_executor = telemetry.executor.as_str(),
-            "the expert weights are outside the llama.cpp `offloaded N/N layers` count: the POM MoE executor hosts them, not llama.cpp"
-        );
-        if telemetry.executor == crate::moe::runtime::MoeExecutorKind::CpuReference {
-            tracing::warn!(
-                model = %cfg.model_label,
-                requested_n_gpu_layers = cfg.n_gpu_layers,
-                moe_executor = telemetry.executor.as_str(),
-                dtypes = ?telemetry.dtypes,
-                reason = ?telemetry.reason,
-                "MoE is using CPUReference: the expert weights stay mapped in RAM and n_gpu_layers does not take them to the GPU. A SINGLE dtype without a CUDA bridge is enough to bring down the whole route; check the `dtypes` list, not the file name"
-            );
-        } else {
-            tracing::info!(
-                model = %cfg.model_label,
-                requested_n_gpu_layers = cfg.n_gpu_layers,
-                moe_executor = telemetry.executor.as_str(),
-                dtypes = ?telemetry.dtypes,
-                devices = ?telemetry
-                    .diagnostics
-                    .as_ref()
-                    .map(|diagnostics| &diagnostics.device_cache_devices),
-                "CUDA MoE executor selected; experts will be admitted to the resident cache partitioned per GPU"
-            );
-        }
-        runtime.start_device_warmup();
-        engine.set_moe_runtime(Arc::clone(runtime))?;
-    }
-    let moe_fallback_reason = moe_plan
-        .as_ref()
-        .filter(|plan| !plan.enabled())
-        .and_then(|plan| plan.reason.clone());
-    let mut state_inner = InferState::new(engine, &cfg, inference_path, moe, moe_fallback_reason);
+    let mut state_inner = InferState::new(engine, &cfg);
     state_inner.original_block_count = model_info
         .as_ref()
         .and_then(|info| info.original_block_count);
@@ -1117,19 +964,6 @@ pub async fn run(
         })
         .await;
     crate::relay::clear_local_inference(generation).await;
-
-    // The warm-up is cooperative and may be reading the GGUF while the server
-    // is reconfigured. Signal the stop before freeing the engine, so that no old
-    // generation keeps admitting experts onto the device.
-    if let Some(runtime) = app_state
-        .state
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .moe
-        .clone()
-    {
-        runtime.cancel_device_warmup();
-    }
 
     if let Some(handle) = local_barrier_handle {
         crate::tp::clear_local_barrier(handle);
@@ -1578,13 +1412,6 @@ fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -
     }
     let n_ctx_total = s.engine.n_ctx();
     let n_ctx_per_session = context_per_session(n_ctx_total, s.max_sessions);
-    let moe_telemetry = s.moe.as_ref().map(|runtime| runtime.executor_telemetry());
-    let (moe_requested, moe_executor, moe_executor_dtypes, moe_executor_reason) =
-        moe_health_summary(
-            s.inference_path,
-            moe_telemetry.as_ref(),
-            s.moe_fallback_reason.as_deref(),
-        );
     // Keep the native diagnostics as named boundaries. If a Windows native
     // access violation happens while `/health` is being assembled, the last
     // marker identifies which FFI snapshot crossed the bad pointer boundary.
@@ -1599,11 +1426,7 @@ fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -
         "status": "ok",
         "model_loaded": true,
         "original_block_count": s.original_block_count,
-        "selected_path": s.inference_path.as_str(),
-        "moe_requested": moe_requested,
-        "moe_executor": moe_executor,
-        "moe_executor_dtypes": moe_executor_dtypes,
-        "moe_executor_reason": moe_executor_reason,
+        "selected_path": crate::executor::LLAMA_CPP_PATH,
         "hidden_dim": s.engine.n_embd,
         "vocab_size": s.engine.n_vocab,
         "max_sessions": s.max_sessions,

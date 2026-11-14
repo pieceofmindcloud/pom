@@ -46,6 +46,8 @@ export const GATEWAY_HEIGHT = 140;
 
 export type CardSize = { width: number; height: number };
 export const CARD_SIZE: CardSize = { width: CARD_WIDTH, height: CARD_HEIGHT };
+/** The Deploy Studio's machine card: name, ranges, GPU and RAM only. */
+export const DEPLOY_CARD_SIZE: CardSize = { width: CARD_WIDTH, height: 150 };
 export const COMPACT_CARD_SIZE: CardSize = { width: COMPACT_CARD_WIDTH, height: COMPACT_CARD_HEIGHT };
 export const GATEWAY_SIZE: CardSize = { width: GATEWAY_WIDTH, height: GATEWAY_HEIGHT };
 
@@ -56,6 +58,8 @@ export const GATEWAY_SIZE: CardSize = { width: GATEWAY_WIDTH, height: GATEWAY_HE
 export const GATEWAY_LAYOUT_ID = "__gateway__";
 const GAP_X = 148;
 const GAP_Y = 40;
+const DEPLOY_GAP_X = 172;
+const DEPLOY_GAP_Y = 56;
 const ORIGIN_X = 48;
 /** Horizontal axis around which each column is centered. */
 const AXIS_Y = 300;
@@ -175,6 +179,7 @@ export interface LayoutNode {
 export function autoLayout(
   nodes: LayoutNode[],
   sizeOf: (id: string) => CardSize = () => CARD_SIZE,
+  gaps: { x: number; y: number } = { x: GAP_X, y: GAP_Y },
 ): Record<string, CanvasPosition> {
   if (nodes.length === 0) return {};
 
@@ -229,7 +234,7 @@ export function autoLayout(
     }
     const groups = [...ranges.values()].map((group) => [...group].sort((a, b) => a.id.localeCompare(b.id)));
     const sizes = column.map((node) => sizeOf(node.id));
-    const gap = sizes.every((size) => size.height < CARD_HEIGHT) ? GAP_Y / 2 : GAP_Y;
+    const gap = sizes.every((size) => size.height < CARD_HEIGHT) ? gaps.y / 2 : gaps.y;
     const heightOf = (group: LayoutNode[]) =>
       group.reduce((sum, node) => sum + sizeOf(node.id).height, 0) + (group.length - 1) * gap;
     let top = AXIS_Y - heightOf(groups[0]) / 2;
@@ -239,41 +244,28 @@ export function autoLayout(
         top += sizeOf(node.id).height + gap;
       }
     }
-    left += Math.max(...sizes.map((size) => size.width)) + GAP_X;
+    left += Math.max(...sizes.map((size) => size.width)) + gaps.x;
   });
   return positions;
 }
 
 /**
- * The Deploy Studio's arrangement. It differs from the Flow's on one point: the
- * deploy map is where machines are being *chosen*, and a column of cards stacked one
- * under the other read as a pipeline that does not exist.
- *
- * - A pipeline of several stages keeps `autoLayout`: one column per stage, replicas
- *   stacked, so the edges between stages read left to right.
- * - A single stage (a whole model, or replicas of one range) has no edge between its
- *   machines, so they sit side by side on the axis.
- * - Machines on the map without a range yet are not part of any stage: they sit side
- *   by side in a row under the plan (on the axis when nothing is assigned), never in
- *   the column of whatever range they happen to hold.
+ * The Deploy Studio's arrangement, the Flow's (`autoLayout`) with more room: one
+ * column per depth in the layer chain, so the heads (whoever serves layer 0) are
+ * the first column, stacked one under the other, and each later range follows
+ * the ranges it continues. Machines on the map without a range yet are not part
+ * of any stage: they sit side by side in a row under the plan (on the axis when
+ * nothing is assigned).
  */
 export function deployLayout(
   assigned: LayoutNode[],
   unassignedIds: string[],
-  size: CardSize = CARD_SIZE,
+  size: CardSize = DEPLOY_CARD_SIZE,
 ): Record<string, CanvasPosition> {
-  const rowGap = GAP_Y + 8;
-  let positions = autoLayout(assigned, () => size);
-  const lefts = new Set(Object.values(positions).map((position) => position.left));
-  if (assigned.length > 1 && lefts.size === 1) {
-    const ordered = [...assigned].sort(
-      (a, b) => a.start_layer - b.start_layer || a.end_layer - b.end_layer || a.id.localeCompare(b.id),
-    );
-    positions = Object.fromEntries(ordered.map((node, index) => [
-      node.id,
-      { left: ORIGIN_X + index * (size.width + rowGap), top: AXIS_Y - size.height / 2 },
-    ]));
-  }
+  // Wider than the Flow's: the deploy cards may carry a footer (the model a
+  // machine lacks, its download) and the RTT label sits on the edge between columns.
+  const rowGap = DEPLOY_GAP_Y + 16;
+  const positions = autoLayout(assigned, () => size, { x: DEPLOY_GAP_X, y: DEPLOY_GAP_Y });
   const bottom = assigned.length > 0
     ? Math.max(...Object.values(positions).map((position) => position.top + size.height))
     : null;

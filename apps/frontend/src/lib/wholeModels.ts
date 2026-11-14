@@ -27,11 +27,30 @@ export interface WholeModelEntry {
   size_bytes: number;
   quant: string | null;
   architecture: string | null;
+  /** `<arch>.context_length` from the header: the largest `n_ctx` the model takes. */
+  context_length: number | null;
   mmproj_path: string | null;
   mmproj_candidates: string[];
   mmproj_reason: string | null;
   /** Node ids that have this file. */
   holders: string[];
+  /**
+   * The repository it was downloaded from, by any holder, with the other parts
+   * of a split file: what Download here asks a machine that lacks it to fetch.
+   * `null` when every copy was placed by hand.
+   */
+  source: { repo_id: string; revision: string | null; filename: string; extra_files: string[] } | null;
+}
+
+/** The source of `model` on `peer`, when that peer downloaded it through POM. */
+function sourceOf(peer: PeerCatalog, model: { path?: string; multipart_parts?: { path: string }[] }) {
+  const found = (peer.hf_sources ?? []).find((source) => source.path === model.path);
+  if (!found) return null;
+  const base = (path: string) => path.split(/[\\/]/).pop() ?? path;
+  const extra_files = (model.multipart_parts ?? [])
+    .map((part) => base(part.path))
+    .filter((name) => name !== base(found.filename));
+  return { repo_id: found.repo_id, revision: found.revision, filename: found.filename, extra_files };
 }
 
 export interface TensorParallelRankEntry {
@@ -78,20 +97,24 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
           size_bytes: model.size_bytes,
           quant: model.quant,
           architecture: model.architecture,
+          context_length: model.context_length ?? null,
           mmproj_path: model.mmproj_path ?? null,
           mmproj_candidates: candidates,
           mmproj_reason: model.mmproj_reason ?? null,
           holders: [peer.node_id],
+          source: sourceOf(peer, model),
         });
         continue;
       }
       if (!found.holders.includes(peer.node_id)) found.holders.push(peer.node_id);
+      found.source ??= sourceOf(peer, model);
       // One machine reading the header and another failing to is a fact about
       // one file, not about the model: the answer that exists wins over the
       // absent one, and the deploy is planned against the machine that has it.
       found.total_layers ??= model.total_layers;
       found.quant ??= model.quant;
       found.architecture ??= model.architecture;
+      found.context_length ??= model.context_length ?? null;
       found.mmproj_path ??= model.mmproj_path ?? null;
       for (const candidate of model.mmproj_candidates ?? []) {
         if (!found.mmproj_candidates.includes(candidate)) found.mmproj_candidates.push(candidate);
@@ -150,4 +173,16 @@ export function tensorParallelModelsOf(
       holders: entry.holders.slice().sort(),
     }))
     .sort((a, b) => a.label.localeCompare(b.label) || a.tp_size - b.tp_size);
+}
+
+/**
+ * Where `nodeId` downloaded the file named `fileName` (a sidecar the plan
+ * would copy from it), read from its `hf_sources`; `null` when that machine
+ * did not download it through POM.
+ */
+export function fileSourceOn(peers: PeerCatalog[] | undefined, nodeId: string, fileName: string) {
+  const peer = (peers ?? []).find((candidate) => candidate.node_id === nodeId);
+  const base = (path: string) => path.split(/[\\/]/).pop() ?? path;
+  const found = (peer?.hf_sources ?? []).find((source) => base(source.path) === fileName || base(source.filename) === fileName);
+  return found ? { repo_id: found.repo_id, revision: found.revision, filename: found.filename, extra_files: [] as string[] } : null;
 }

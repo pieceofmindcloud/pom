@@ -4,6 +4,7 @@ import { api } from "./api";
 import type {
   ImageDeployment,
   ImageFileIdentity,
+  ImageLoraChoice,
   ImagePlan,
   ImagePlanRequest,
   ImageStageName,
@@ -15,6 +16,25 @@ export const IMAGE_STAGES: ImageStageName[] = ["text_encoder", "diffusion", "vae
 export interface StageChoice {
   file: ImageFileIdentity | null;
   nodeIds: string[];
+  /** The diffusion stage's LoRAs, in the order they apply. */
+  loras?: ImageLoraChoice[];
+}
+
+/** Adds a LoRA to the diffusion stage at full strength; one already there stays once. */
+export function addLora(choices: StageChoices, file: ImageFileIdentity): StageChoices {
+  const loras = choices.diffusion.loras ?? [];
+  if (loras.some((l) => l.file.name === file.name && l.file.size_bytes === file.size_bytes)) return choices;
+  return { ...choices, diffusion: { ...choices.diffusion, loras: [...loras, { file, strength: 1 }] } };
+}
+
+export function setLoraStrength(choices: StageChoices, index: number, strength: number): StageChoices {
+  const loras = (choices.diffusion.loras ?? []).map((l, i) => (i === index ? { ...l, strength } : l));
+  return { ...choices, diffusion: { ...choices.diffusion, loras } };
+}
+
+export function removeLora(choices: StageChoices, index: number): StageChoices {
+  const loras = (choices.diffusion.loras ?? []).filter((_, i) => i !== index);
+  return { ...choices, diffusion: { ...choices.diffusion, loras } };
 }
 
 export type StageChoices = Record<ImageStageName, StageChoice>;
@@ -47,6 +67,7 @@ export function planRequest(name: string, choices: StageChoices, allowTransfers 
       component: stage,
       file: choices[stage].file as ImageFileIdentity,
       node_ids: choices[stage].nodeIds,
+      ...(stage === "diffusion" && (choices[stage].loras?.length ?? 0) > 0 ? { loras: choices[stage].loras } : {}),
     })),
     ...(allowTransfers ? { allow_transfers: true } : {}),
   };

@@ -39,6 +39,7 @@ import { ChatHero } from "../components/ChatHero";
 import { MissingPiece } from "../components/MissingPiece";
 import { Link } from "react-router-dom";
 import { canAccessRoute } from "../lib/access";
+import { modelSearchRoute } from "../lib/modelSearch";
 import { ChatWaitingLine } from "../components/ChatWaitingLine";
 import { PluginSlot, usePluginSlot } from "../components/PluginSlot";
 import { TelemetryLine } from "../components/TelemetryLine";
@@ -388,7 +389,8 @@ function NoModelSteps({ hasLocalModel }: { hasLocalModel: boolean }) {
   const { t } = useI18n();
   const current = hasLocalModel ? 1 : 0;
   const steps = [
-    { key: "download", to: "/models/remote", icon: Download },
+    // Without the Hugging Face plugin there is no search screen: Plugins offers it.
+    { key: "download", to: modelSearchRoute() ?? "/plugins", icon: Download },
     { key: "deploy", to: "/deploy", icon: Boxes },
     { key: "talk", to: null, icon: MessageCircle },
   ] as const;

@@ -108,6 +108,36 @@ pub(crate) async fn apply_assignment(
             format!("{path} is not an image model file of this machine"),
         ));
     }
+    // The diffusion's LoRAs (`options.loras`) are files of this machine too.
+    if let Some(loras) = assignment.options.get("loras") {
+        if assignment.component != "diffusion" {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "only the diffusion takes LoRAs".into(),
+            ));
+        }
+        let Some(loras) = loras.as_array() else {
+            return Err((StatusCode::BAD_REQUEST, "loras must be a list".into()));
+        };
+        for lora in loras {
+            let path = lora["path"].as_str().unwrap_or_default();
+            if !catalog.iter().any(|known| known == path) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("{path} is not an image model file of this machine"),
+                ));
+            }
+            if !lora["strength"]
+                .as_f64()
+                .is_some_and(|s| s.is_finite() && s.abs() <= 10.0)
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "a LoRA needs a strength between -10 and 10".into(),
+                ));
+            }
+        }
+    }
     let payload = serde_json::to_value(&assignment).unwrap_or(Value::Null);
     call(
         assignment.plugin_code.clone(),
@@ -1508,6 +1538,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_diffusion_loras_are_files_of_this_machine() {
+        let (_dir, db) = db();
+        let (call, seen) = recording(Ok(()));
+        let catalog = vec![
+            "/m/z.safetensors".to_owned(),
+            "/l/turbo.safetensors".to_owned(),
+        ];
+        let with = |component: &str, lora: &str, strength: f64| {
+            let mut a = assignment("img-1", component, "/m/z.safetensors");
+            a.options = serde_json::json!({ "loras": [{ "path": lora, "strength": strength }] });
+            a
+        };
+        apply_assignment(
+            &db,
+            &catalog,
+            &call,
+            with("diffusion", "/l/turbo.safetensors", 0.8),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            seen.lock().unwrap()[0].1["options"]["loras"][0]["strength"],
+            0.8
+        );
+        for (assignment, why) in [
+            (
+                with("diffusion", "/etc/passwd", 0.8),
+                "a LoRA outside the catalog",
+            ),
+            (
+                with("diffusion", "/l/turbo.safetensors", 99.0),
+                "a strength out of range",
+            ),
+            (with("vae", "/l/turbo.safetensors", 0.8), "a LoRA on the VAE"),
+        ] {
+            let error = apply_assignment(&db, &catalog, &call, assignment)
+                .await
+                .unwrap_err();
+            assert_eq!(error.0, axum::http::StatusCode::BAD_REQUEST, "{why}");
+        }
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "a refused assignment never reaches the plugin"
+        );
+    }
+
+    #[tokio::test]
     async fn a_plugin_refusal_stores_nothing() {
         let (_dir, db) = db();
         let (call, _) = recording(Err("ComfyUI is not installed".into()));
@@ -1894,7 +1972,8 @@ mod tests {
         let stage = |component: &str, file: &str, nodes: &[&str]| ImageStage {
             component: component.into(),
             file: FileIdentity { name: file.into(), size_bytes: 5 },
-            replicas: nodes.iter().map(|n| Replica { node_id: (*n).into(), hostname: String::new(), path: format!("/m/{file}") }).collect(),
+            replicas: nodes.iter().map(|n| Replica { node_id: (*n).into(), hostname: String::new(), path: format!("/m/{file}"), lora_paths: Vec::new() }).collect(),
+            loras: Vec::new(),
         };
         ImageDeployment::new(
             "img-1".into(), "Z-Image".into(), "me", None,

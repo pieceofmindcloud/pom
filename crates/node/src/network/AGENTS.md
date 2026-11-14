@@ -57,7 +57,7 @@ dedicated or member, with iroh's hole punching), are in
   `transfer_chunk_is_bounded` hold the file rule on the receiving side (a piece is a bounded
   range, refused with `TRANSFER_ROUTE_REFUSED_STATUS` 421 on a connection that crosses a public
   relay - the receiver checks the connection's selected path); `gateway_path_is_allowed` is the closed exact-comparison list, plus the plugin calls in
-  their fixed shape (`plugin_path_is_allowed`: services, `<code>/peer/<op>`, `<code>/engine/generate`); `serve_loopback` hands
+  their fixed shape (`plugin_path_is_allowed`: services, `<code>/peer/<op>`, `<code>/engine/generate`), and the model download calls an admin forwards to a worker (`model_download_path_is_allowed`: `downloads` and `downloads/<id>/{cancel,retry,dismiss}`) plus `/api/ui/models/rescan`; `serve_loopback` hands
   the call to the gateway over `127.0.0.1` and marks it with `TUNNEL_ORIGIN_HEADER` and
   `tunnel_mark` so `serve::request_origin` never reads it as local. `peer_client::send_to_gateway_over`
   is the control plane's sender: each announced address and, last, the tunnel. `measure_rtt`
@@ -124,6 +124,12 @@ dedicated or member, with iroh's hole punching), are in
 - `network_chat_policy.rs` - the authenticated ratchet of the Network Chat switch;
   the announced boolean is a trigger and the authenticated read on the principal is
   the effective source.
+- `discovery.rs` - the network's relay policy (`apply_relay_policy`, called by
+  every policy round, and the first relay map in `Discovery::new`) keeps n0's
+  public relays and the dedicated ones in the endpoint's map only while
+  `RelayGate::policy` allows them; member relays and the anonymous relay
+  tunnels follow the same policy. See `p2p-network.md`, "The network's relay
+  policy".
 - `discovery.rs` - the iroh endpoint and everything on it: the endpoint under the
   node key on UDP `p2p_port + 10000` (n0's relays unless `--no-default-relays`, the
   dedicated `relay_peers` URLs, member relays added live), mDNS, iroh-gossip (one

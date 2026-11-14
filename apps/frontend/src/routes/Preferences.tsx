@@ -2,11 +2,10 @@
  * Local preferences of this node: administrative boundary, TLS between nodes,
  * thermal protection and optional credential for the Hugging Face provider.
  */
-import { Ban, KeyRound, Lock, MessagesSquare, RadioTower, ScrollText, ShieldCheck, Thermometer, Zap } from "lucide-react";
+import { Ban, KeyRound, Lock, MessagesSquare, RadioTower, Route, ScrollText, ShieldCheck, Thermometer, TriangleAlert, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { HttpsCertificatePanel } from "../components/HttpsCertificatePanel";
-import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import {
   Badge,
   Button,
@@ -20,10 +19,10 @@ import {
   Select,
 } from "../components/ui";
 import { api, clearAdminAccessToken } from "../lib/api";
-import { useAdminAccess, useAdminAccessInfo, useEnterpriseStatus, useInvalidate, useNode } from "../lib/queries";
+import { useAdminAccess, useAdminAccessInfo, useEnterpriseStatus, useInvalidate, useNetworkInfo, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useProfile } from "../lib/profile";
-import type { AdminAccessInfo, AdminExposure, ThermalPolicy } from "../lib/types";
+import { RELAY_POLICIES, type AdminAccessInfo, type AdminExposure, type RelayPolicy, type ThermalPolicy } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 const DEFAULT_THERMAL_POLICY: ThermalPolicy = {
@@ -180,6 +179,59 @@ export function NetworkChatPanel({
             {t("network.networkChatNotAuthority")}
           </Footnote>
         )}
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * Which relays the network's machines may use: all (n0's public relays
+ * included), only the network's own (dedicated and member relays), or none
+ * (direct connections only). The principal decides; every machine applies it
+ * to its own relay map and relay server.
+ */
+export function RelayPolicyPanel({
+  policy,
+  authority,
+  busy = false,
+  onChange,
+}: {
+  policy: RelayPolicy;
+  authority: boolean;
+  busy?: boolean;
+  onChange?: (next: RelayPolicy) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <Panel>
+      <PanelHeader title={t("network.relayPolicyTitle")} subtitle={t("network.relayPolicySubtitle")} />
+      <div className="space-y-3 px-5 py-4">
+        <div role="radiogroup" aria-label={t("network.relayPolicyTitle")} className="grid gap-2 sm:grid-cols-3">
+          {RELAY_POLICIES.map((option) => {
+            const checked = option === policy;
+            return (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={checked}
+                disabled={!authority || busy}
+                onClick={() => !checked && onChange?.(option)}
+                className={`rounded-lg border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                  checked ? "border-iris/60 bg-iris/10" : "border-line hover:border-line-strong"
+                }`}
+              >
+                <span className="block text-sm font-medium text-fg">{t(`network.relayPolicy.${option}`)}</span>
+                <span className="mt-0.5 block text-xs leading-relaxed text-muted">{t(`network.relayPolicy.${option}Detail`)}</span>
+              </button>
+            );
+          })}
+        </div>
+        {policy === "none" && (
+          <Footnote icon={<TriangleAlert className="h-3.5 w-3.5" />}>{t("network.relayPolicyNoneWarning")}</Footnote>
+        )}
+        <Footnote icon={<Route className="h-3.5 w-3.5" />}>{t("network.relayPolicyHowItWorks")}</Footnote>
+        {!authority && <Footnote icon={<Ban className="h-3.5 w-3.5" />}>{t("network.relayPolicyNotAuthority")}</Footnote>}
       </div>
     </Panel>
   );
@@ -500,6 +552,9 @@ export function Preferences({ administrative = false }: { administrative?: boole
   const [autoDiscoveryLoaded, setAutoDiscoveryLoaded] = useState(!administrative);
   const [autoDiscoverySaving, setAutoDiscoverySaving] = useState(false);
   const quicEnabled = node.data?.quic_enabled ?? false;
+  const networkInfo = useNetworkInfo(administrative);
+  const [relayPolicySaving, setRelayPolicySaving] = useState(false);
+  const relayPolicy: RelayPolicy = networkInfo.data?.network?.relay_policy ?? "all";
 
   useEffect(() => {
     if (!administrative || autoDiscoveryLoaded) return;
@@ -581,6 +636,20 @@ export function Preferences({ administrative = false }: { administrative?: boole
     }
   }
 
+  async function saveRelayPolicy(next: RelayPolicy) {
+    setRelayPolicySaving(true);
+    try {
+      await api.post("/api/ui/network/relay-policy", { relay_policy: next });
+      toast.success(t(`network.relayPolicy.${next}`), t("network.relayPolicyPropagates"));
+      invalidate();
+      void networkInfo.refetch();
+    } catch (error) {
+      toast.fromError(t("network.relayPolicyFailed"), error);
+    } finally {
+      setRelayPolicySaving(false);
+    }
+  }
+
   async function toggleAutoDiscovery(next: boolean) {
     setAutoDiscoverySaving(true);
     try {
@@ -611,13 +680,13 @@ export function Preferences({ administrative = false }: { administrative?: boole
           <QuicPanel enabled={quicEnabled} authority={node.data?.quic_authority ?? false} busy={quicSaving} onToggle={(next) => void toggleQuic(next)} />
           {logsPlugin.data.active && <ClusterLogsPanel enabled={node.data?.cluster_logs_enabled ?? false} authority={node.data?.cluster_logs_authority ?? false} busy={logsSaving} onToggle={(next) => void toggleLogs(next)} />}
           <NetworkChatPanel enabled={node.data?.network_chat_enabled ?? false} authority={node.data?.network_chat_authority ?? false} busy={networkChatSaving} onToggle={(next) => void toggleNetworkChat(next)} />
+          {networkInfo.data && <RelayPolicyPanel policy={relayPolicy} authority={node.data?.quic_authority ?? false} busy={relayPolicySaving} onChange={(next) => void saveRelayPolicy(next)} />}
           {autoDiscoveryLoaded && <AutoDiscoveryPanel status={autoDiscovery} authority={node.data?.quic_authority ?? false} busy={autoDiscoverySaving} onToggle={(next) => void toggleAutoDiscovery(next)} />}
         </> : <>
           <PasswordPanel />
           <AdminAccessPanel />
           <HttpsCertificatePanel />
           {!inferOnly && <ThermalPanel policy={node.data?.thermal} busy={thermalSaving} onSave={(next) => void saveThermal(next)} />}
-          {!inferOnly && <HuggingFaceSettingsPanel />}
         </>}
       </div>
     </>

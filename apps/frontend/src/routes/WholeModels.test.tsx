@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { WholeModels } from "./WholeModels";
 
-const { catalogData } = vi.hoisted(() => ({
+const { catalogData, deleteModelMock, catalogRefetch } = vi.hoisted(() => ({
+  deleteModelMock: vi.fn(),
+  catalogRefetch: vi.fn(),
   catalogData: {
     hostname: "ksia",
     models: [
@@ -26,6 +28,25 @@ const { catalogData } = vi.hoisted(() => ({
         active_version: 0,
       },
       {
+        id: "model-multipart",
+        name: "multipart.gguf",
+        source: "folder",
+        source_label: "Folder",
+        path: "/models/multipart-00001-of-00002.gguf",
+        mmproj_path: null,
+        size_bytes: 3_000_000_000,
+        architecture: "qwen3",
+        total_layers: 28,
+        quant: "Q4_K_M",
+        shard_range: null,
+        shard_group: null,
+        multipart: true,
+        multipart_parts: [
+          { index: 0, path: "/models/multipart-00001-of-00002.gguf", bytes: 1_000_000, tensor_count: 0 },
+          { index: 1, path: "/models/multipart-00002-of-00002.gguf", bytes: 2_999_000_000, tensor_count: 128 },
+        ],
+      },
+      {
         id: "model-text",
         name: "qwen.gguf",
         source: "folder",
@@ -40,6 +61,28 @@ const { catalogData } = vi.hoisted(() => ({
         shard_group: null,
         versions: [],
         active_version: 0,
+      },
+    ],
+    sidecars: [
+      {
+        kind: "mmproj",
+        path: "/models/mmproj-gemma-f16.gguf",
+        file_name: "mmproj-gemma-f16.gguf",
+        size_bytes: 2_000_000_000,
+        architecture: "clip",
+        dim: 4096,
+        general_name: "Gemma vision projector",
+        quant: "F16",
+      },
+      {
+        kind: "mtp",
+        path: "/models/mtp-gemma-q8.gguf",
+        file_name: "mtp-gemma-q8.gguf",
+        size_bytes: 1_000_000_000,
+        architecture: "gemma3",
+        dim: 4096,
+        general_name: "Gemma MTP draft",
+        quant: "Q8_0",
       },
     ],
     image_files: [
@@ -63,19 +106,41 @@ const { catalogData } = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/queries", () => ({
+  useTransfers: () => ({ data: { jobs: [] } }),
+  useOffers: () => ({ data: { offers: [] } }),
+  useClusterCatalog: () => ({ data: { peers: [] } }),
   useLocalCatalog: () => ({
     data: catalogData,
     isLoading: false,
     isError: false,
     error: null,
     isFetching: false,
-    refetch: vi.fn(),
+    refetch: catalogRefetch,
   }),
+}));
+
+vi.mock("../lib/deleteModel", () => ({
+  deleteModel: deleteModelMock,
 }));
 
 vi.mock("../lib/toast", () => ({
   useToast: () => ({ success: vi.fn(), fromError: vi.fn() }),
 }));
+
+beforeEach(() => {
+  deleteModelMock.mockReset();
+  deleteModelMock.mockImplementation(async (
+    _path: string,
+    name: string,
+    confirm: (message: string) => boolean | Promise<boolean>,
+  ) => {
+    const confirmed = await confirm(`Delete ${name}?`);
+    return confirmed
+      ? { status: "deleted", freedBytes: 1_000_000 }
+      : { status: "cancelled" };
+  });
+  catalogRefetch.mockReset();
+});
 
 afterEach(cleanup);
 
@@ -102,12 +167,68 @@ describe("WholeModels", () => {
     expect(textRow?.textContent).toContain("No projector");
   });
 
-  it("renders every model as a full-width table row with its actions", () => {
+  it("renders each model as one full-width row, without a Slice action", () => {
     renderScreen();
     const table = screen.getByRole("table");
     expect(table).toBeTruthy();
-    expect(screen.getAllByRole("row")).toHaveLength(3); // header + 2 models
-    expect(screen.getAllByRole("button", { name: "Slice" })).toHaveLength(2);
+    expect(screen.getAllByRole("row")).toHaveLength(5); // header + 3 models + one multipart card row
+    expect(screen.queryByRole("button", { name: "Slice" })).toBeNull();
+  });
+
+  it("shows each physical multipart file and asks in a dialog before deleting one", async () => {
+    renderScreen();
+    expect(screen.getByText("multipart.gguf")).toBeTruthy();
+    expect(screen.getByText("multipart-00001-of-00002.gguf")).toBeTruthy();
+    expect(screen.getByText("multipart-00002-of-00002.gguf")).toBeTruthy();
+    expect(screen.getByText("977 KB")).toBeTruthy();
+    const secondPart = screen.getByText("multipart-00002-of-00002.gguf").closest("li");
+    expect(secondPart?.textContent).toContain("2.8 GB");
+    expect(screen.getByText("2 physical files in this multipart model")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete multipart-00002-of-00002.gguf from disk" }));
+    const dialog = screen.getByRole("dialog", { name: "Confirm file deletion" });
+    expect(within(dialog).getByText("Delete multipart-00002-of-00002.gguf?")).toBeTruthy();
+    expect(deleteModelMock).toHaveBeenCalledWith(
+      "/models/multipart-00002-of-00002.gguf",
+      "multipart-00002-of-00002.gguf",
+      expect.any(Function),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(catalogRefetch).toHaveBeenCalled());
+  });
+
+  it("cancels deletion when the confirmation dialog is dismissed", async () => {
+    renderScreen();
+    fireEvent.click(screen.getByRole("button", { name: "Delete gemma-3-4b-it.gguf from disk" }));
+    const dialog = screen.getByRole("dialog", { name: "Confirm file deletion" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(deleteModelMock).toHaveBeenCalled());
+    expect(catalogRefetch).not.toHaveBeenCalled();
+  });
+
+  it("shows mmproj and MTP files in their own tabs with confirmed delete actions", async () => {
+    renderScreen();
+    fireEvent.click(screen.getByRole("tab", { name: "Vision (mmproj)" }));
+    expect(screen.getByText("mmproj-gemma-f16.gguf")).toBeTruthy();
+    expect(screen.getByText("Gemma vision projector")).toBeTruthy();
+    expect(screen.getByText("1.9 GB")).toBeTruthy();
+    expect(screen.queryByText("mtp-gemma-q8.gguf")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Delete mmproj-gemma-f16.gguf from disk" }));
+    const mmprojDialog = screen.getByRole("dialog", { name: "Confirm file deletion" });
+    fireEvent.click(within(mmprojDialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(catalogRefetch).toHaveBeenCalledTimes(1));
+    expect(deleteModelMock).toHaveBeenCalledWith("/models/mmproj-gemma-f16.gguf", "mmproj-gemma-f16.gguf", expect.any(Function));
+
+    fireEvent.click(screen.getByRole("tab", { name: "MTP drafts" }));
+    expect(screen.getByText("mtp-gemma-q8.gguf")).toBeTruthy();
+    expect(screen.getByText("Gemma MTP draft")).toBeTruthy();
+    expect(screen.getByText("954 MB")).toBeTruthy();
+    expect(screen.queryByText("mmproj-gemma-f16.gguf")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Delete mtp-gemma-q8.gguf from disk" }));
+    const mtpDialog = screen.getByRole("dialog", { name: "Confirm file deletion" });
+    fireEvent.click(within(mtpDialog).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(catalogRefetch).toHaveBeenCalledTimes(2));
+    expect(deleteModelMock).toHaveBeenLastCalledWith("/models/mtp-gemma-q8.gguf", "mtp-gemma-q8.gguf", expect.any(Function));
   });
 
   it("shows image files under the Image switch", () => {
@@ -122,10 +243,11 @@ describe("WholeModels", () => {
     expect(screen.queryByText("qwen.gguf")).toBeNull();
   });
 
-  it("image rows offer delete and no slice", () => {
+  it("image rows offer delete with confirmation and no slice", () => {
     renderScreen();
     fireEvent.click(screen.getByRole("tab", { name: "Image" }));
-    expect(screen.getByRole("button", { name: /Delete pub\/repo\/ae.safetensors/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Delete pub\/repo\/ae.safetensors/ }));
+    expect(screen.getByRole("dialog", { name: "Confirm file deletion" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Slice" })).toBeNull();
   });
 });

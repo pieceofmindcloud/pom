@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 
-const { post, extra } = vi.hoisted(() => ({ post: vi.fn(), extra: { value: {} as Record<string, unknown> } }));
+const { post, rescanModels, extra } = vi.hoisted(() => ({ post: vi.fn(), rescanModels: vi.fn().mockResolvedValue({}), extra: { value: {} as Record<string, unknown> } }));
 
-vi.mock("../lib/api", () => ({ api: { post } }));
+vi.mock("../lib/api", () => ({ api: { post }, rescanModels }));
 vi.mock("../lib/queries", () => ({
   usePaths: () => ({
     data: {
@@ -42,7 +42,7 @@ vi.mock("../lib/queries", () => ({
   useInvalidate: () => vi.fn(),
 }));
 vi.mock("../lib/toast", () => ({
-  useToast: () => ({ success: vi.fn(), fromError: vi.fn() }),
+  useToast: () => ({ success: vi.fn(), info: vi.fn(), fromError: vi.fn() }),
 }));
 
 import { ModelPaths } from "./ModelPaths";
@@ -53,7 +53,19 @@ describe("ModelPaths", () => {
     extra.value = {};
   });
 
-  it("shows the slice storage limit and current usage", () => {
+  it("asks this machine to walk its model folders again", async () => {
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LocaleProvider initialLocale="en">
+          <ModelPaths />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Rescan folders" }));
+    await waitFor(() => expect(rescanModels).toHaveBeenCalledWith());
+  });
+
+  it("has no slice folder: received files go to a model folder", () => {
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
@@ -64,9 +76,8 @@ describe("ModelPaths", () => {
 
     expect(screen.getByText("Armazenamento")).toBeTruthy();
     expect(screen.getByDisplayValue("/data/workspace")).toBeTruthy();
-    expect((screen.getByRole("spinbutton") as HTMLInputElement).value).toBe("100");
-    expect(screen.getByText("25 GB usados de 100 GB")).toBeTruthy();
-    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("25");
+    expect(screen.queryByText("Pasta de fatias")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
   });
 
   it("persists the shared workspace path with the other storage settings", async () => {
@@ -138,9 +149,7 @@ describe("ModelPaths", () => {
 
     expect(screen.getByText("Definido por POM_MODEL_DIRS")).toBeTruthy();
     expect(screen.getByText(/A variável de ambiente POM_MODEL_DIRS define este valor/)).toBeTruthy();
-    expect(screen.getByText(/A variável de ambiente POM_SHARD_DIR define este valor/)).toBeTruthy();
     expect((screen.getByDisplayValue("/data/models") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByDisplayValue("/models/slices") as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByDisplayValue("/data/workspace") as HTMLInputElement).disabled).toBe(false);
   });
 });

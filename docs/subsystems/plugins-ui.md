@@ -47,7 +47,7 @@ namespace. The real code of Request Logs and Statistics lives in
 | `lifecycle` | optional; `resident` (default, the process starts with POM and the heartbeat restarts it) or `on_demand` (see "On-demand processes"). Any other value refuses the manifest |
 | `description` | optional; short text per language (`en` required, up to 2000 bytes each), shown on the Plugins screen card |
 | `screenshots` | optional; up to 8 images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) as paths relative to the root of the plugin's GitHub repository or `https://` URLs without credentials. They are not assets and the node never serves them: relative paths become `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>` and the browser loads them straight from GitHub |
-| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`worker`/`visitor`) or legacy `profiles`; both fields are validated and retained for compatibility, but do not restrict plugin UI visibility in the current POM. `group` is accepted but does not organize items |
+| `menu[]` | `id` (unique in the manifest, including children), `label` per language (`en` required), `icon` (a known name, otherwise generic), `to`, optional `roles` (`admin`/`worker`/`visitor`) or legacy `profiles`; both fields are validated and retained for compatibility, but do not restrict plugin UI visibility in the current POM. `group` is accepted but does not organize items. Optional `section: "settings"` puts a leaf item inside POM's Settings section, before About (older hosts ignore it and keep it at the root) |
 | `menu[].children[]` | optional; submenus with `id`, `label`, `icon`, `to` and optional role metadata. With children, the item becomes an expandable section of the sidebar; the parent's `to` is still required for hosts without submenu support |
 | `routes[]` | `path`, `screen`, optional `roles` (`admin`/`worker`/`visitor`) or legacy `profiles` (`admin`/`worker`/`visitor`, non-empty), `full_bleed`; role metadata is validated and retained, but does not restrict plugin routes in the current POM |
 | `screens{}` | `module` (ES asset), `export` (default `default`), `styles[]` |
@@ -155,7 +155,7 @@ targets of the same `plugin_code`, so an internal navigation does not retain
 the previous route's component. The plugin does not bundle another React:
 `lib/pluginHost.ts` exposes on `globalThis.__POM_HOST__` React, ReactDOM, the
 JSX runtime, React Query, the design kit (`components/ui`), `format`,
-`useI18n`, `useTheme`, `useCluster`, `api.get`, `Modal`, `TelemetryLine`,
+`useI18n`, `useTheme`, `useCluster`, `api.get`, `api.post`, `Modal`, `TelemetryLine`,
 `ExecutionTelemetry`, `Markdown` and `storageKey`. The plugin swaps those
 imports for reads of that object when bundling; hooks and contexts are the
 application's. The surface is versioned (`PLUGIN_HOST_VERSION`) and only grows
@@ -171,7 +171,11 @@ one marked by a teal line on top, drawn from the theme's `--tab-*` tokens
 `--tab-accent`, `--tab-icon`, full colours in both themes). Version 6 added
 `ready()`, the screen's "finished rendering" signal described below. Version 7
 added `plugin(code).loader`, POM's loader and installer over the screen (below,
-"POM's loader and installer"). The plugin's CSS
+"POM's loader and installer"). Version 8 added `api.post`, a same-origin POST
+to the node's API with the panel's own credentials (the connection key and the
+admin access token the tab holds), so a screen can act on the node routes it
+draws; the Hugging Face plugin starts downloads and saves the token with it.
+The node still authorizes every call. The plugin's CSS
 uses the same color tokens (CSS variables) as POM.
 
 ## Opening a plugin screen
@@ -548,7 +552,16 @@ is offered and deployed on that service as the whole model only
 (`plugin_engine::runs_slices`, checked by `deploy_block` at plan, deploy and
 add-machine time, and `serviceRunsSlices` on the Deploy screen). Strata
 publishes `["qwen4exp"]`, so Qwen3.6 (`qwen35moe`) runs whole on it, while
-llama.cpp still slices that architecture. A service whose engine takes a
+llama.cpp still slices that architecture. A service whose engine can also cut
+a stage from the whole model at run time names those architectures in
+`stage_ranges`: a Pipeline deployment then splits the whole model in ranges
+over the machines that hold it (`whole_ranges`, `serviceCutsRanges` on the
+Deploy screen), `deploy_block` checks each machine with
+`plugin_engine::runs_ranges`, the apply keeps the whole file
+(`plugin_cuts_range` in `webui/jobs_apply.rs`) and `engine.load` carries
+`range: {start_layer, end_layer}` whenever a stage's file is the whole model
+(`load_params`). Strata publishes `["qwen4exp"]` on its `pom-whole-range`
+branch. A service whose engine takes a
 drafter file from the deployment names the model architectures in
 `draft_architectures`: the Deploy screen then offers the compatible files
 (`serviceTakesDraft`), the plan resolves the choice on the stage with the last

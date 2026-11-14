@@ -55,7 +55,7 @@ mod user_session;
 // etc. keep resolving across all of `node` without touching the ~40 files that
 // use them. See `docs/subsystems/build-and-run.md`.
 use ::brand;
-pub use llama_engine::{collective, gguf, kv_budget, llm, moe, mtp, multipart, sysmon, wire};
+pub use llama_engine::{collective, gguf, kv_budget, llm, mtp, multipart, sysmon, wire};
 #[path = "admin_trust.rs"]
 mod admin_trust;
 #[path = "network/anon_tunnel.rs"]
@@ -1598,6 +1598,9 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
     net.relay_gate().set_reachable(args.public_addr_configured);
+    // The network's relay policy holds from the first relay map on.
+    net.relay_gate()
+        .set_policy(args.auth.read().await.network.relay_policy);
     net.set_policy_principal_pubkey(primary_authority_pubkey);
     // TLS between nodes is always on: set before the probing task, so no
     // URL is ever built as plain HTTP.
@@ -1762,6 +1765,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::plugins::spawn_serving_watcher(gw_state.clone());
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
     crate::webui::spawn_public_stats_publisher(gw_state.clone());
+    crate::webui::spawn_gpu_metrics_sampler(gw_state.clone());
     crate::gateway::spawn_directory_board_publisher(gw_state.clone());
     crate::gateway::spawn_directory_publisher(gw_state.clone());
     crate::webui::spawn_admission_poller(gw_state.clone());

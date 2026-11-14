@@ -126,6 +126,13 @@ pub struct Step {
     pub(super) source_sha256: Option<String>,
     /// True when the source is a virtual range backed by a whole GGUF.
     pub(super) source_needs_split: bool,
+    /// The target's own whole GGUF this range comes from, when the target is
+    /// also the virtual range's source. Nothing is cut or copied by the deploy:
+    /// the target is applied with the whole file and the range, and cuts its
+    /// range locally, or points at it with a virtual slice
+    /// (`webui::jobs_apply::run_apply`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) from_whole_path: Option<String>,
     /// Where it will be on the target once it lands, when known up front.
     pub(super) target_path: Option<String>,
     /// Entry point of the pipeline — whoever holds layer 0.
@@ -200,9 +207,9 @@ pub struct Plan {
     /// True only when the surveyed GGUF metadata reports more than one expert.
     /// The UI must never infer this from a filename or architecture label.
     pub(super) is_moe: bool,
-    /// Whether this plan can honor the requested inference mode.
+    /// Whether llama.cpp can run this plan's execution mode for this model.
     pub(super) inference_mode_supported: bool,
-    /// Explicit reason when the selected execution mode cannot be honored.
+    /// Explicit reason when it cannot (Tensor Parallelism of a MoE model).
     pub(super) inference_mode_reason: Option<String>,
     /// Conditional capabilities determined for the targets of this plan.
     pub(super) capabilities: crate::capabilities::DeploymentCapabilities,
@@ -357,6 +364,35 @@ pub(super) fn planned_copies(plan: &Plan) -> Vec<PlannedCopy> {
         });
     }
     out
+}
+
+/// Why a plan that would copy files cannot go on. Deployments no longer copy
+/// weights between machines: each machine serves from its own copy of the
+/// model, downloaded there or placed by hand (`/api/transfer/*` stays only so
+/// an older admin can still deploy to this node, and is deprecated). The
+/// reason names each machine and what it lacks, `None` when nothing would be
+/// copied.
+pub(crate) fn copies_refusal(copies: &[PlannedCopy]) -> Option<String> {
+    if copies.is_empty() {
+        return None;
+    }
+    let mut lacking: Vec<String> = Vec::new();
+    for copy in copies {
+        let what = match (copy.kind, copy.layers) {
+            ("slice", Some([start, end])) => format!("{} (layers {start}-{end})", copy.name),
+            ("mmproj", _) => format!("the vision projector {}", copy.name),
+            ("mtp", _) => format!("the MTP draft {}", copy.name),
+            _ => copy.name.clone(),
+        };
+        let line = format!("{} has no {what}", copy.target_host);
+        if !lacking.contains(&line) {
+            lacking.push(line);
+        }
+    }
+    Some(format!(
+        "{}. Files are not copied between machines: download the model there, or place the file in one of its model folders and rescan",
+        lacking.join("; ")
+    ))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1199,9 +1235,7 @@ pub(super) fn plan_with_rtt_options(
         .iter()
         .flat_map(|machine| &machine.held)
         .any(|shard| shard.is_moe);
-    let inference_mode_reason = if params.inference_mode == InferenceMode::Moe && !is_moe {
-        Some("MoE requires real expert metadata in the GGUF of this model.".to_string())
-    } else if kind == DeployKind::TensorParallel && is_moe {
+    let inference_mode_reason = if kind == DeployKind::TensorParallel && is_moe {
         Some("Tensor Parallelism does not support MoE in this version.".to_string())
     } else {
         None
@@ -1460,28 +1494,80 @@ pub(super) fn plan_with_rtt_options(
     }
 
     // ── Coverage: gaps and overlap refuse ───────────────────────────────────
+    //
+    // Coverage is checked by path, as the inference routes run: a range is fine
+    // when it lies on some chain of contiguous ranges from layer 0 to the last
+    // layer. Two heads - the whole model on one machine, slices of it on others -
+    // are two such paths and overlap legitimately; a range on no complete path
+    // (one that half-overlaps another) would run layers twice and is a stop.
+    let mut ranges: Vec<(u32, u32)> = chosen
+        .iter()
+        .filter(|(_, _, overrides)| !prefill_entry(overrides))
+        .map(|(i, _, _)| (available[*i].start_layer, available[*i].end_layer))
+        .collect();
+    ranges.sort_unstable();
+    ranges.dedup();
     let mut missing: Vec<[u32; 2]> = Vec::new();
     let mut overlap: Vec<[u32; 2]> = Vec::new();
+    let span_end =
+        total_layers.unwrap_or_else(|| ranges.iter().map(|r| r.1 + 1).max().unwrap_or(0));
+    // layers no chosen range covers
     let mut next = 0u32;
-    let mut covered_exact: Option<(u32, u32)> = None;
-    for (i, _, overrides) in &chosen {
-        if prefill_entry(overrides) {
-            continue;
+    for &(start, end) in &ranges {
+        if start > next {
+            missing.push([next, start - 1]);
         }
-        let c = &available[*i];
-        if covered_exact == Some((c.start_layer, c.end_layer)) {
-            continue;
-        }
-        covered_exact = Some((c.start_layer, c.end_layer));
-        if c.start_layer > next {
-            missing.push([next, c.start_layer - 1]);
-        } else if c.start_layer < next {
-            overlap.push([c.start_layer, next.min(c.end_layer + 1) - 1]);
-        }
-        next = next.max(c.end_layer.saturating_add(1));
+        next = next.max(end.saturating_add(1));
     }
-    if let Some(total) = total_layers.filter(|t| next < *t) {
-        missing.push([next, total - 1]);
+    if next < span_end {
+        missing.push([next, span_end - 1]);
+    }
+    if missing.is_empty() && !ranges.is_empty() {
+        let last = span_end.saturating_sub(1);
+        let mut from_start: Vec<bool> = ranges.iter().map(|r| r.0 == 0).collect();
+        let mut to_end: Vec<bool> = ranges.iter().map(|r| r.1 == last).collect();
+        // propagate along contiguous ranges until nothing changes
+        loop {
+            let mut changed = false;
+            for a in 0..ranges.len() {
+                for b in 0..ranges.len() {
+                    if ranges[b].0 == ranges[a].1.saturating_add(1) {
+                        if from_start[a] && !from_start[b] {
+                            from_start[b] = true;
+                            changed = true;
+                        }
+                        if to_end[b] && !to_end[a] {
+                            to_end[a] = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // A plugin's split stages must form a path of their own. In whole-model
+        // mode, a chosen L0-last range is another complete head, not an extra
+        // stage on the split path; the plugin can run either route separately.
+        // Keep refusing partial overlaps or a split without a complete path.
+        let one_path = params.inference_service.is_some();
+        let independent_whole = kind == DeployKind::Whole && ranges.contains(&(0, last));
+        for (index, &(start, end)) in ranges.iter().enumerate() {
+            if from_start[index] && to_end[index] && (!one_path || independent_whole) {
+                continue;
+            }
+            // the layers this off-path range shares with another chosen range
+            if let Some(&(other_start, other_end)) = ranges
+                .iter()
+                .find(|other| **other != (start, end) && other.0 <= end && start <= other.1)
+            {
+                let shared = [start.max(other_start), end.min(other_end)];
+                if !overlap.contains(&shared) {
+                    overlap.push(shared);
+                }
+            }
+        }
     }
     let complete = missing.is_empty() && overlap.is_empty() && !chosen.is_empty();
 
@@ -1646,7 +1732,7 @@ pub(super) fn plan_with_rtt_options(
                     ));
                 } else if !ready {
                     note = Some(format!(
-                        "{} GB over the network before starting",
+                        "this machine does not have this file ({} GB): files are not copied between machines",
                         gb(mem_need)
                     ));
                 }
@@ -1682,6 +1768,7 @@ pub(super) fn plan_with_rtt_options(
                 source_path: None,
                 source_sha256: None,
                 source_needs_split: false,
+                from_whole_path: None,
                 target_path: None,
                 primary: start_layer == 0,
                 n_gpu_layers: grp[0].2.n_gpu_layers,
@@ -1734,9 +1821,21 @@ pub(super) fn plan_with_rtt_options(
                     problem = Some(format!("{unit} exists on no machine of the cluster"));
                 }
 
+                // A target that points at its range of its own whole model
+                // writes no slice (`CAP_RANGE_LOAD`).
+                let from_whole = source
+                    .filter(|m| m.node_id == *target_id)
+                    .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                    .is_some_and(|shard| shard.virtual_slice);
+                let writes_nothing = from_whole
+                    && target.is_some_and(|t| {
+                        t.inference_capabilities.as_ref().is_some_and(|caps| {
+                            caps.iter().any(|cap| cap == crate::pipeline::CAP_RANGE_LOAD)
+                        })
+                    });
                 if let (None, Some(t)) = (&problem, target) {
                     let need = needed_mb(c.size_bytes);
-                    if !ready && t.disk_free_mb > 0 && need > t.disk_free_mb {
+                    if !ready && !writes_nothing && t.disk_free_mb > 0 && need > t.disk_free_mb {
                         problem = Some(format!(
                             "{} has {} GB free on disk and {unit} weighs {} GB",
                             t.label(),
@@ -1751,25 +1850,34 @@ pub(super) fn plan_with_rtt_options(
                             kind.indefinite(),
                             gb(need)
                         ));
-                    } else if !ready {
-                        // The pull direction is the one the sender did not
-                        // choose, so `transfer::safe_model_path` keeps it inside
-                        // the sender's slice folder. A whole model is routinely
-                        // outside it — an LM Studio library, an Ollama store —
-                        // and that copy is refused at the far end, which is a
-                        // thing to read before pressing the button rather than
-                        // after the job fails.
+                    } else if !ready && !from_whole {
+                        // Files are not copied between machines any more: this
+                        // plan is blocked (`copies_refusal`). The note says what
+                        // the machine lacks and how it gets it.
                         note = Some(if kind.whole() {
                             format!(
-                                "{} GB over the network before starting - the source machine only sends on its own what is in its slices folder; from outside it, send the file from the Transfers screen first",
+                                "this machine does not have the model ({} GB): download it here, or place the file in one of its model folders and rescan",
                                 gb(need)
                             )
                         } else {
-                            format!("{} GB over the network before starting", gb(need))
+                            format!(
+                                "this machine does not have this slice ({} GB): files are not copied between machines",
+                                gb(need)
+                            )
                         });
                     }
                 }
 
+                // Nothing travels, but a target without range loading still
+                // writes the range as a real slice: say so before the deploy.
+                if problem.is_none() && note.is_none() && from_whole && !writes_nothing {
+                    note = Some(format!(
+                        "{} cuts this range from its own copy: {} GB written to disk (it does not announce {})",
+                        target.map(|t| t.label()).unwrap_or_default(),
+                        gb(needed_mb(c.size_bytes)),
+                        crate::pipeline::CAP_RANGE_LOAD
+                    ));
+                }
                 if let Some(p) = &problem {
                     blocked.get_or_insert(p.clone());
                 }
@@ -1801,6 +1909,11 @@ pub(super) fn plan_with_rtt_options(
                         m.holds(c.start_layer, c.end_layer)
                             .is_some_and(|shard| shard.virtual_slice)
                     }),
+                    from_whole_path: source
+                        .filter(|m| m.node_id == *target_id)
+                        .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                        .filter(|shard| shard.virtual_slice)
+                        .map(|shard| shard.path.clone()),
                     target_path: target
                         .and_then(|t| t.holds_ready(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
@@ -1963,10 +2076,19 @@ pub(super) fn plan_with_rtt_options(
         }
     }
 
+    // A whole-model head sorts between a split's first and last stages. Look
+    // for actual layer adjacency, not neighboring rows in display order.
+    let adjacent: Vec<_> = stage_ranges
+        .iter()
+        .flat_map(|from| {
+            stage_ranges
+                .iter()
+                .filter(move |to| to.0 == from.1.saturating_add(1))
+                .map(move |to| (*from, *to))
+        })
+        .collect();
     let mut route_options = Vec::new();
-    for pair in stage_ranges.windows(2) {
-        let from_range = pair[0];
-        let to_range = pair[1];
+    for (from_range, to_range) in adjacent {
         let from_nodes: Vec<String> = steps
             .iter()
             .filter(|step| {
@@ -2226,11 +2348,24 @@ pub(super) fn tp_check_verdict(body: &serde_json::Value, label: &str) -> Option<
 /// A whole model on several machines: each machine left at `Both` (its own role, else the deployment's) runs as
 /// `Shared`, which keeps its plugin's sessions on, so the machines can hand conversations to each other and take a
 /// prompt a prefill machine read. Nothing to do for one machine or for slices.
+/// A whole-model plan cut into ranges, one stage per machine (`whole_ranges`):
+/// some step serves less than the whole model.
+pub(super) fn splits_whole_into_ranges(kind: DeployKind, steps: &[Step]) -> bool {
+    kind == DeployKind::Whole
+        && steps
+            .iter()
+            .any(|step| step.start_layer > 0 || step.total_layers.is_some_and(|total| step.end_layer + 1 < total))
+}
+
 pub(super) fn share_whole_model_roles(
     kind: DeployKind,
     steps: &mut [Step],
     default: crate::webui::InferenceRole,
 ) {
+    // the stages of a range split are not replicas: they share no conversations
+    if splits_whole_into_ranges(kind, steps) {
+        return;
+    }
     let mut machines: Vec<&str> = steps.iter().map(|step| step.target_node_id.as_str()).collect();
     machines.sort();
     machines.dedup();

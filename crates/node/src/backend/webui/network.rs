@@ -62,6 +62,8 @@ pub(crate) async fn network_settings_policy(
     // document. A member that needs the current key claims it from the
     // principal, which checks the member list (`network_lobby::ClaimKey`).
     let connection_key = String::new();
+    let mut network = network;
+    network.demo_mode_active = crate::user_session::demo_mode_active_env();
     Json(NetworkSettingsEnvelope {
         network,
         connection_key,
@@ -150,7 +152,7 @@ pub(crate) async fn geo_nearest(
 pub(crate) async fn save_network_settings(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
-    Json(settings): Json<NetworkSettings>,
+    Json(mut settings): Json<NetworkSettings>,
 ) -> Response {
     if !super::local_is_primary(&state).await {
         return network_error(
@@ -159,6 +161,9 @@ pub(crate) async fn save_network_settings(
             "only an authorized administrator can edit the network",
         );
     }
+    // The relay policy has its own route: a screen that does not know the
+    // field never turns it back to `all`.
+    settings.relay_policy = state.auth.read().await.network.relay_policy;
 
     match apply_network_settings_with_key(&state, settings, true, None, None).await {
         Ok(synced_peers) => {
@@ -166,6 +171,42 @@ pub(crate) async fn save_network_settings(
             Json(json!({
                 "network": view.network,
                 "can_edit": view.can_edit,
+                "synced_peers": synced_peers,
+            }))
+            .into_response()
+        }
+        Err(error) => network_error(StatusCode::BAD_REQUEST, "network_settings_invalid", &error),
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RelayPolicyRequest {
+    pub relay_policy: config::RelayPolicy,
+}
+
+/// `POST /api/ui/network/relay-policy`: the principal decides which relays
+/// every machine may use. The policy travels in `NetworkSettings` to the
+/// members, and each one applies it to its own relay map
+/// (`discovery::apply_relay_policy`) and relay server (`RelayGate`).
+pub(crate) async fn save_relay_policy(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(request): Json<RelayPolicyRequest>,
+) -> Response {
+    if !super::local_is_primary(&state).await {
+        return network_error(
+            StatusCode::FORBIDDEN,
+            "admin_authority_required",
+            "only the principal admin decides which relays the network uses",
+        );
+    }
+    let mut settings = state.auth.read().await.network.clone();
+    settings.relay_policy = request.relay_policy;
+    match apply_network_settings_with_key(&state, settings, true, None, None).await {
+        Ok(synced_peers) => {
+            info!(policy = ?request.relay_policy, synced_peers, "relay policy set from the interface");
+            Json(json!({
+                "relay_policy": request.relay_policy,
                 "synced_peers": synced_peers,
             }))
             .into_response()
@@ -201,6 +242,11 @@ async fn apply_network_settings_with_key(
     }
     config::validate_network_settings(&settings).map_err(|error| error.to_string())?;
 
+    // The principal's own edit (`fanout`) never decides the demonstration;
+    // what it receives from the principal does.
+    if !fanout {
+        crate::user_session::set_demo_authorized(settings.demo_mode_active);
+    }
     let connection_key = {
         let mut cfg = state.auth.write().await;
         cfg.network = settings.clone();
@@ -226,6 +272,8 @@ async fn apply_network_settings_with_key(
         .database
         .save_network_settings(&settings)
         .map_err(|error| format!("save network details: {error:#}"))?;
+    // The next policy round puts the relay map in line with it.
+    state.network.relay_gate().set_policy(settings.relay_policy);
 
     // Discovery is the difference between `local` and the other two: off, the
     // node announces nothing and no key lookup finds it; on, it goes looking
@@ -276,7 +324,10 @@ async fn fanout_network_settings(
                         .timeout(crate::webui::PEER_TIMEOUT),
                     NETWORK_SETTINGS_PATH,
                     &NetworkSettingsEnvelope {
-                        network: settings.clone(),
+                        network: NetworkSettings {
+                            demo_mode_active: crate::user_session::demo_mode_active_env(),
+                            ..settings.clone()
+                        },
                         connection_key: if !settings.open_admission() {
                             connection_key.to_string()
                         } else {
@@ -621,6 +672,14 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, bool)>();
     state.network.set_network_settings_probe(tx);
     tokio::spawn(async move {
+        // The principal authorizes a demonstration on itself from its own
+        // environment; every other node waits for the principal's answer.
+        let profile = state.auth.read().await.profile;
+        if state.admin_trust.effective_authority(&state.authority_principal, profile)
+            == Some(crate::admin_trust::EffectiveAuthority::Principal)
+        {
+            crate::user_session::set_demo_authorized(crate::user_session::demo_mode_active_env());
+        }
         let mut last_attempt: Option<(String, Instant)> = None;
         // Consecutive failures: the trigger arrives on every Announce (~5 s)
         // until the sync succeeds, and only the 1st, 2nd, 4th, 8th... becomes
@@ -723,7 +782,11 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
             .await
             {
                 Ok(_) => {
-                    state.network.mark_network_settings_synced();
+                    // A node asked to run as a demonstration keeps asking, so
+                    // the principal can withdraw it (`DEMO_MODE_ACTIVE`).
+                    if !crate::user_session::demo_requested() {
+                        state.network.mark_network_settings_synced();
+                    }
                     info!(principal = %principal, "complete network details adopted from the principal");
                 }
                 Err(error) => {

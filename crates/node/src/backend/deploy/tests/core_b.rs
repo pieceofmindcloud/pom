@@ -173,9 +173,8 @@ fn tensor_parallel_plans_disable_llama_fit() {
 }
 
 #[test]
-fn inference_mode_round_trips_for_whole_shards_and_tensor_parallel() {
+fn params_round_trip_for_whole_shards_and_tensor_parallel() {
     let mut requested = RuntimeParams::default();
-    requested.inference_mode = InferenceMode::Moe;
     requested.mtp_cpu_fallback_enabled = false;
     requested.unload_if_idle = true;
     requested.idle_minutes = 2;
@@ -195,8 +194,7 @@ fn inference_mode_round_trips_for_whole_shards_and_tensor_parallel() {
 
 #[test]
 fn moe_capability_is_reported_for_whole_shards_and_tensor_parallel() {
-    let mut params = RuntimeParams::default();
-    params.inference_mode = InferenceMode::Moe;
+    let params = RuntimeParams::default();
 
     let mut whole = whole_machine("whole", 900_000, true);
     whole.held[0].is_moe = true;
@@ -672,8 +670,25 @@ fn the_copies_a_deploy_makes_are_listed_for_authorization() {
     assert!(planned_copies(&local).is_empty());
 }
 
-/// A machine that does not have the file receives a copy, exactly like a
-/// slice - and the plan names who sends it.
+/// Nothing is copied any more: a plan that would copy names the machine and
+/// what it lacks, and one that copies nothing is not refused.
+#[test]
+fn a_plan_that_would_copy_is_refused_by_name() {
+    let ms = vec![
+        whole_machine("tem", 900_000, true),
+        whole_machine("nao-tem", 900_000, false),
+    ];
+    let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
+    let reason = super::planning::copies_refusal(&planned_copies(&p)).unwrap();
+    assert!(reason.contains("has no"), "{reason}");
+    assert!(reason.contains("layers 0-31"), "{reason}");
+    assert!(reason.contains("download the model there"), "{reason}");
+    let local = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "tem")]));
+    assert_eq!(super::planning::copies_refusal(&planned_copies(&local)), None);
+}
+
+/// A machine that does not have the file is planned as a copy, exactly like a
+/// slice, and its note says how it gets the model instead.
 #[test]
 fn a_machine_without_the_model_is_planned_as_a_copy() {
     let ms = vec![
@@ -688,14 +703,13 @@ fn a_machine_without_the_model_is_planned_as_a_copy() {
     assert_eq!(s.source_node_id.as_deref(), Some("tem"));
     assert_eq!(s.source_path.as_deref(), Some("/tem/qwen3.5-9b.gguf"));
     assert_eq!(p.transfer_bytes, 5 * GIB);
-    // The warning exists because `transfer::safe_model_path` pins the "pull"
-    // direction to the sender's slice folder, and a whole model almost
-    // always lives outside it.
+    // The step says what the machine lacks and how it gets the model; the
+    // preview then blocks the plan (`copies_refusal`).
     assert!(
         s.note
             .as_deref()
             .unwrap_or_default()
-            .contains("Transfers"),
+            .contains("download it here"),
         "the copy of a whole model must say where it can come from: {:?}",
         s.note
     );
@@ -1655,6 +1669,39 @@ fn the_whole_model_decoding_beside_the_slices_overlaps_them() {
         Some("strata"),
     );
     assert!(p.blocked.as_deref().is_some_and(|b| b.contains("two chosen slices")), "{:?}", p.blocked);
+}
+
+#[test]
+fn two_heads_the_whole_model_and_its_slices_are_two_paths() {
+    // llama.cpp: the whole model on p and the slices on a and b are two routes
+    // from layer 0 to the last layer, not layers run twice
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[pick(0, 15, "a"), pick(16, 31, "b"), pick(0, 31, "p")]),
+        None,
+    );
+    assert!(p.blocked.is_none(), "{:?}", p.blocked);
+    assert!(p.complete && p.overlap.is_empty());
+}
+
+#[test]
+fn a_range_on_no_complete_path_still_overlaps() {
+    // 16-31 continues nothing that starts at 0 (0-15 is not chosen), and shares
+    // layers with the whole model: it would run them twice
+    let machines = sliced_with_whole();
+    let p = plan_shards_with(
+        &machines,
+        Some(&[pick(16, 31, "b"), pick(0, 31, "p")]),
+        None,
+    );
+    assert!(
+        p.blocked
+            .as_deref()
+            .is_some_and(|b| b.contains("two chosen slices")),
+        "{:?}",
+        p.blocked
+    );
 }
 
 #[test]

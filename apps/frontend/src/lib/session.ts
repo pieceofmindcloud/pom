@@ -27,6 +27,8 @@ export interface DemoSeat {
   eta_secs?: number;
   session_secs?: number;
   max_sessions?: number;
+  /** Seats held right now across the demonstration. */
+  active_sessions?: number;
 }
 
 export interface SessionInfo {
@@ -70,7 +72,15 @@ export async function loadSession(): Promise<SessionInfo> {
   return current;
 }
 
+/** Set by `signOut`: the gate does not open a new guest visit by itself (`DEMO_NO_AUTH`). */
+export const SIGNED_OUT_FLAG = "pom.demo.signedOut";
+
 export async function signOut() {
+  try {
+    window.sessionStorage.setItem(SIGNED_OUT_FLAG, "1");
+  } catch {
+    // without storage, a guest node opens a new visit after signing out
+  }
   try {
     const { api } = await import("./api");
     await api.post("/api/ui/logout", {});
@@ -86,6 +96,17 @@ export const USER_ROUTES = ["/", "/chat", "/logs", "/statistics", "/documentatio
 /**
  * What a demonstration node also shows a person, read-only: the plugins, the
  * models and slices, and the network it is in. Searching and downloading
- * models (`/models/remote`) is not among them.
+ * models (the Hugging Face plugin's screen) is not among them.
  */
-export const DEMO_USER_ROUTES = ["/plugins", "/models", "/models/slice", "/shards", "/config/network"] as const;
+export const DEMO_USER_ROUTES = [
+  "/plugins",
+  "/models",
+  "/models/slice",
+  "/shards",
+  "/config/network",
+  // Networks read-only (its quick setup walks but never saves), the network
+  // Chat, and Deploy to play with: never deploys, and never the history.
+  "/public-networks",
+  "/network-chat",
+  "/deploy",
+] as const;

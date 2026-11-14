@@ -46,93 +46,10 @@ pub(crate) const SPECULATION_REASON_PEER_WITHOUT_SLICED_MTP_WIRE: &str =
 pub(super) const SPECULATION_REASON_TAIL_DRAFT_EMPTY: &str = "tail_mtp_draft_empty";
 const PROFILE_SPAN_LIMIT: usize = 64;
 
-/// Resolves the preference persisted by the deploy into the operational selector.
-///
-/// An explicit choice in the UI cannot be overridden by a process
-/// variable. `Auto` keeps accepting `POM_INFERENCE_MODE` to preserve the
-/// existing operational override; without it, `executor::select` decides by the
-/// real GGUF metadata.
-pub(super) fn configured_inference_mode(
-    mode: crate::webui::InferenceMode,
-) -> Result<crate::executor::InferenceMode> {
-    match mode {
-        crate::webui::InferenceMode::Auto => crate::executor::InferenceMode::from_env(),
-        crate::webui::InferenceMode::Dense => Ok(crate::executor::InferenceMode::Dense),
-        crate::webui::InferenceMode::Moe => Ok(crate::executor::InferenceMode::Moe),
-    }
-}
-
 /// Timings measured on the inference node itself. The names deliberately name
 /// the boundary being measured instead of guessing whether a CUDA call is
 /// asynchronous. In particular, `residual_ms` contains the GPU -> host copy
 /// and the CUDA stream synchronization performed by `take_residual()`.
-#[derive(Default)]
-pub(super) struct MoeTimings {
-    pub(super) forward_us: u64,
-    pub(super) executors: Vec<crate::moe::runtime::MoeExecutorKind>,
-    pub(super) dtypes: Vec<u32>,
-    pub(super) reasons: Vec<String>,
-    pub(super) diagnostics: Option<crate::moe::runtime::MoeExecutorDiagnostics>,
-}
-
-impl MoeTimings {
-    pub(super) fn record_executor(&mut self, executor: crate::moe::runtime::MoeExecutorKind) {
-        if !self.executors.contains(&executor) {
-            self.executors.push(executor);
-        }
-    }
-
-    pub(super) fn record_telemetry(
-        &mut self,
-        telemetry: &crate::moe::runtime::MoeExecutorTelemetry,
-    ) {
-        self.record_executor(telemetry.executor);
-        for dtype in &telemetry.dtypes {
-            if !self.dtypes.contains(dtype) {
-                self.dtypes.push(*dtype);
-            }
-        }
-        if let Some(reason) = &telemetry.reason {
-            if !self.reasons.contains(reason) {
-                self.reasons.push(reason.clone());
-            }
-        }
-        if telemetry.diagnostics.is_some() {
-            self.diagnostics = telemetry.diagnostics.clone();
-        }
-    }
-
-    pub(super) fn record_forward(&mut self, elapsed_us: u64) {
-        self.forward_us = self.forward_us.saturating_add(elapsed_us);
-    }
-
-    pub(super) fn record_reason(&mut self, reason: &str) {
-        if !self.reasons.iter().any(|existing| existing == reason) {
-            self.reasons.push(reason.to_string());
-        }
-    }
-
-    pub(super) fn merge(&mut self, other: &Self) {
-        self.forward_us = self.forward_us.saturating_add(other.forward_us);
-        for executor in &other.executors {
-            self.record_executor(*executor);
-        }
-        for dtype in &other.dtypes {
-            if !self.dtypes.contains(dtype) {
-                self.dtypes.push(*dtype);
-            }
-        }
-        for reason in &other.reasons {
-            if !self.reasons.contains(reason) {
-                self.reasons.push(reason.clone());
-            }
-        }
-        if other.diagnostics.is_some() {
-            self.diagnostics = other.diagnostics.clone();
-        }
-    }
-}
-
 #[derive(Default)]
 pub(super) struct NodeTimings {
     /// Logical identity received in the frame. The peer never creates a new
@@ -210,9 +127,7 @@ pub(super) struct NodeTimings {
     pub(super) first_token_produced_at_ms: u64,
     /// Wall-clock correlation point immediately before serialization.
     pub(super) first_token_serialized_at_ms: u64,
-    pub(super) selected_path: crate::executor::InferencePath,
     pub(super) executed_engines: Vec<crate::executor::ExecutionEngine>,
-    pub(super) moe: MoeTimings,
     pub(super) tp: Option<crate::tp::TpDecodeTelemetry>,
     /// MTP token counters on this hop and in this step call.
     /// Increments happen once per batch, never in the per-token loop.
@@ -262,7 +177,7 @@ impl NodeTimings {
     }
 
     pub(super) fn engine_mismatch(&self) -> bool {
-        let expected = self.selected_path.execution_engine();
+        let expected = crate::executor::ExecutionEngine::LlamaCpp;
         if self.executed_engines.is_empty() {
             return false;
         }
@@ -270,42 +185,6 @@ impl NodeTimings {
             return !self.executed_engines.contains(&expected);
         }
         self.executed_engine() != expected
-    }
-
-    pub(super) fn record_moe_executor(&mut self, executor: crate::moe::runtime::MoeExecutorKind) {
-        self.moe.record_executor(executor);
-    }
-
-    pub(super) fn record_moe_telemetry(
-        &mut self,
-        telemetry: crate::moe::runtime::MoeExecutorTelemetry,
-    ) {
-        self.moe.record_telemetry(&telemetry);
-    }
-
-    pub(super) fn record_moe_forward(&mut self, elapsed_us: u64) {
-        self.moe.record_forward(elapsed_us);
-    }
-
-    pub(super) fn record_moe_reason(&mut self, reason: &str) {
-        self.moe.record_reason(reason);
-    }
-
-    pub(super) fn merge_moe(&mut self, other: &MoeTimings) {
-        self.moe.merge(other);
-    }
-
-    pub(super) fn merge_engine_moe(&mut self, other: &crate::llm::DecodeTimings) {
-        if other.moe_forward_us != 0 {
-            self.record_moe_forward(other.moe_forward_us);
-            for executor in &other.moe_executors {
-                self.record_moe_executor(*executor);
-            }
-            if let Some(telemetry) = &other.moe_executor {
-                self.record_moe_telemetry(telemetry.clone());
-            }
-            self.record_engine(crate::executor::ExecutionEngine::Moe);
-        }
     }
 
     pub(super) fn merge_engine_capture(&mut self, other: &crate::llm::DecodeTimings) {
@@ -324,14 +203,6 @@ impl NodeTimings {
         self.residual_capture_copies = self
             .residual_capture_copies
             .saturating_add(other.residual_capture_copies);
-    }
-
-    pub(super) fn moe_executor(&self) -> &'static str {
-        match self.moe.executors.as_slice() {
-            [executor] => executor.as_str(),
-            [] => "not-run",
-            _ => "mixed",
-        }
     }
 
     pub(super) fn record_profile_span(
@@ -386,19 +257,7 @@ impl NodeTimings {
             "first_token_serialized_ms": ms(self.first_token_serialized_us),
             "first_token_produced_at_ms": self.first_token_produced_at_ms,
             "first_token_serialized_at_ms": self.first_token_serialized_at_ms,
-            "moe_forward_ms": ms(self.moe.forward_us),
-            "moe_executor": self.moe_executor(),
-            "moe_executors": self
-                .moe
-                .executors
-                .iter()
-                .map(|executor| executor.as_str())
-                .collect::<Vec<_>>(),
-            "moe_executor_dtypes": self.moe.dtypes,
-            "moe_executor_reason": self.moe.reasons.first(),
-            "moe_executor_reasons": self.moe.reasons,
-            "moe_executor_diagnostics": self.moe.diagnostics,
-            "selected_path": self.selected_path.as_str(),
+            "selected_path": crate::executor::LLAMA_CPP_PATH,
             "executed_engine": self.executed_engine().as_str(),
             "executed_engines": self
                 .executed_engines
@@ -449,28 +308,6 @@ impl NodeTimings {
         }
         value
     }
-}
-
-pub(super) fn moe_health_summary(
-    inference_path: crate::executor::InferencePath,
-    telemetry: Option<&crate::moe::runtime::MoeExecutorTelemetry>,
-    fallback_reason: Option<&str>,
-) -> (bool, &'static str, Vec<u32>, Option<String>) {
-    let requested = inference_path.is_moe();
-    let executor = telemetry
-        .map(|value| value.executor.as_str())
-        .unwrap_or(if requested {
-            "not-installed"
-        } else {
-            "not-requested"
-        });
-    let dtypes = telemetry
-        .map(|value| value.dtypes.clone())
-        .unwrap_or_default();
-    let reason = telemetry
-        .and_then(|value| value.reason.clone())
-        .or_else(|| fallback_reason.map(str::to_owned));
-    (requested, executor, dtypes, reason)
 }
 
 pub(crate) struct TimedReply {
@@ -1444,154 +1281,26 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_separates_the_selected_path_from_the_real_executor() {
-        let mut timings = NodeTimings {
-            selected_path: crate::executor::InferencePath::MoeQ4_0,
-            ..Default::default()
-        };
+    fn telemetry_reports_the_llama_cpp_path_and_the_real_executor() {
+        let mut timings = NodeTimings::default();
         timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
 
         let value = timings.json();
 
-        assert_eq!(value["selected_path"], "moe/q4_0");
+        assert_eq!(value["selected_path"], "dense/llama.cpp");
         assert_eq!(value["executed_engine"], "llama.cpp");
         assert_eq!(value["executed_engines"], serde_json::json!(["llama.cpp"]));
-        assert!(value["engine_mismatch"].as_bool().unwrap());
+        assert!(!value["engine_mismatch"].as_bool().unwrap());
         assert!(!value["mixed_execution"].as_bool().unwrap());
     }
 
     #[test]
     fn telemetry_without_an_observed_executor_invents_no_divergence() {
-        let timings = NodeTimings {
-            selected_path: crate::executor::InferencePath::DenseLlamaCpp,
-            ..Default::default()
-        };
-
-        let value = timings.json();
+        let value = NodeTimings::default().json();
 
         assert_eq!(value["executed_engine"], "unknown");
         assert_eq!(value["executed_engines"], serde_json::json!([]));
         assert!(!value["engine_mismatch"].as_bool().unwrap());
-    }
-
-    #[test]
-    fn moe_health_exposes_a_request_without_executor_and_the_reason() {
-        let (requested, executor, dtypes, reason) = moe_health_summary(
-            crate::executor::InferencePath::MoeQ4_0,
-            None,
-            Some("MoE executor unavailable: format without a decoder"),
-        );
-        assert!(requested);
-        assert_eq!(executor, "not-installed");
-        assert!(dtypes.is_empty());
-        assert_eq!(
-            reason.as_deref(),
-            Some("MoE executor unavailable: format without a decoder")
-        );
-    }
-
-    #[test]
-    fn dense_health_does_not_signal_a_moe_executor() {
-        let (requested, executor, dtypes, reason) =
-            moe_health_summary(crate::executor::InferencePath::DenseLlamaCpp, None, None);
-
-        assert!(!requested);
-        assert_eq!(executor, "not-requested");
-        assert!(dtypes.is_empty());
-        assert!(reason.is_none());
-    }
-
-    #[test]
-    fn telemetry_detects_mixed_execution_in_the_same_hop() {
-        let mut timings = NodeTimings {
-            selected_path: crate::executor::InferencePath::MoeQ4_0,
-            ..Default::default()
-        };
-        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
-        timings.record_engine(crate::executor::ExecutionEngine::Moe);
-
-        let value = timings.json();
-
-        assert_eq!(value["executed_engine"], "unknown");
-        assert_eq!(
-            value["executed_engines"],
-            serde_json::json!(["llama.cpp", "moe"])
-        );
-        assert!(!value["engine_mismatch"].as_bool().unwrap());
-        assert!(value["mixed_execution"].as_bool().unwrap());
-    }
-
-    #[test]
-    fn telemetry_exposes_the_real_expert_backend_after_the_forward() {
-        let mut timings = NodeTimings {
-            selected_path: crate::executor::InferencePath::MoeQ4_0,
-            ..Default::default()
-        };
-        timings.record_moe_executor(crate::moe::runtime::MoeExecutorKind::Cuda);
-        timings.record_moe_forward(12_345);
-
-        let value = timings.json();
-
-        assert_eq!(value["moe_executor"], "cuda");
-        assert_eq!(value["moe_executors"], serde_json::json!(["cuda"]));
-        assert_eq!(value["moe_forward_ms"].as_f64(), Some(12.345));
-    }
-
-    #[test]
-    fn telemetry_names_the_dtype_and_reason_of_the_cpu_executor() {
-        let mut timings = NodeTimings {
-            selected_path: crate::executor::InferencePath::MoeQ4_0,
-            ..Default::default()
-        };
-        timings.record_moe_telemetry(crate::moe::runtime::MoeExecutorTelemetry {
-            executor: crate::moe::runtime::MoeExecutorKind::CpuReference,
-            dtypes: vec![21, 22, 23],
-            reason: Some(
-                "dtypes IQ3_S, IQ2_S and IQ4_XS without a CUDA bridge; CPUReference selected"
-                    .into(),
-            ),
-            diagnostics: None,
-        });
-
-        let value = timings.json();
-
-        assert_eq!(value["moe_executor"], "cpu-reference");
-        assert_eq!(
-            value["moe_executor_dtypes"],
-            serde_json::json!([21, 22, 23])
-        );
-        assert_eq!(
-            value["moe_executor_reason"],
-            "dtypes IQ3_S, IQ2_S and IQ4_XS without a CUDA bridge; CPUReference selected"
-        );
-    }
-
-    #[test]
-    fn the_explicit_deploy_mode_reaches_the_selector_without_being_overridden_by_the_environment() {
-        assert_eq!(
-            configured_inference_mode(crate::webui::InferenceMode::Dense).unwrap(),
-            crate::executor::InferenceMode::Dense
-        );
-        assert_eq!(
-            configured_inference_mode(crate::webui::InferenceMode::Moe).unwrap(),
-            crate::executor::InferenceMode::Moe
-        );
-    }
-
-    #[test]
-    fn a_terminal_moe_hop_publishes_moe_after_a_real_forward() {
-        let mut timings = NodeTimings {
-            selected_path: crate::executor::InferencePath::MoeQ4_0,
-            ..Default::default()
-        };
-
-        record_terminal_engine(&mut timings, crate::executor::InferencePath::MoeQ4_0, true);
-
-        let value = timings.json();
-        assert_eq!(value["executed_engine"], "moe");
-        assert_eq!(value["executed_engines"], serde_json::json!(["moe"]));
-        assert!(!value["engine_mismatch"].as_bool().unwrap());
-        assert!(!value["mixed_execution"].as_bool().unwrap());
     }
 
     #[test]
@@ -1766,7 +1475,6 @@ mod tests {
             peer_count: 2,
             peer_index: 0,
             primary: true,
-            inference_mode: Default::default(),
             inference_service: None,
             engine_settings: Default::default(),
             inference_role: Default::default(),

@@ -1,11 +1,29 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { CARD_HEIGHT, CARD_WIDTH, routeGeometry, type CanvasPosition } from "../lib/networkLayout";
 import type { DeployMachine, DeployPlan, DeploySelection, DeployStep } from "../lib/types";
 import { DeployNetworkCanvas } from "./DeployNetworkCanvas";
 import type { PipelineCycleCost } from "./PipelineGatewayNode";
+
+// jsdom has no PointerEvent nor pointer capture: a MouseEvent that keeps the
+// pointer fields, and no-op captures
+if (typeof window !== "undefined" && !("PointerEvent" in window)) {
+  class PointerEventShim extends MouseEvent {
+    pointerId: number;
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+    }
+  }
+  (window as unknown as { PointerEvent: typeof PointerEventShim }).PointerEvent = PointerEventShim;
+}
+if (typeof Element !== "undefined" && !Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+  Element.prototype.hasPointerCapture = () => false;
+}
 
 const params = {
   n_gpu_layers: 0,
@@ -189,16 +207,146 @@ describe("DeployNetworkCanvas", () => {
     view.unmount();
   });
 
-  it("says when the machine load was not observed instead of showing zero", () => {
-    const current = plan([step(0, 3, "a", 1)], []);
-    current.machines = current.machines.map((item) => item.node_id === "a" ? { ...item, load: null } : item);
+  it("moves a card to its pipeline column once it gets a range, without Reset", async () => {
+    const draw = (rows: DeploySelection[]) => (
+      <LocaleProvider initialLocale="pt-BR">
+        <DeployNetworkCanvas
+          plan={plan(rows.map((row, index) => step(row.start_layer, row.end_layer, row.target_node_id, index + 1)), [])}
+          rows={rows}
+          inspectedNodeId="a"
+          onInspect={vi.fn()}
+          onAddPeer={vi.fn()}
+          onRemovePeer={vi.fn()}
+          onDropPeer={vi.fn()}
+          labelOf={(nodeId) => nodeId}
+          mapNodeIds={["a", "b"]}
+        />
+      </LocaleProvider>
+    );
+    const cardOf = (nodeId: string) => screen.getByRole("heading", { name: new RegExp(`^${nodeId}\\b`) }).closest("article") as HTMLElement;
+    // b is on the map without a range: it waits on the row under the pipeline
+    const view = render(draw([{ start_layer: 0, end_layer: 11, target_node_id: "a" }]));
+    await waitFor(() => expect(cardOf("b").style.top).not.toBe(cardOf("a").style.top));
 
-    const view = renderCanvas(current, [{ start_layer: 0, end_layer: 3, target_node_id: "a" }]);
-
-    const card = screen.getByText("carga em voo indisponível").closest("article");
-    expect(card).not.toBeNull();
-    expect(within(card!).queryByText("0 em voo")).toBeNull();
+    view.rerender(draw([
+      { start_layer: 0, end_layer: 3, target_node_id: "a" },
+      { start_layer: 4, end_layer: 11, target_node_id: "b" },
+    ]));
+    // with a range it joins the pipeline on the same axis, after a
+    await waitFor(() => expect(cardOf("b").style.top).toBe(cardOf("a").style.top));
+    expect(parseFloat(cardOf("b").style.left)).toBeGreaterThan(parseFloat(cardOf("a").style.left));
     view.unmount();
+  });
+
+  it("marks a machine with Shift+click instead of inspecting it", () => {
+    const onInspect = vi.fn();
+    const onToggleMarked = vi.fn();
+    const rows = [
+      { start_layer: 0, end_layer: 3, target_node_id: "a" },
+      { start_layer: 4, end_layer: 11, target_node_id: "b" },
+    ];
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <DeployNetworkCanvas
+          plan={plan([step(0, 3, "a", 1), step(4, 11, "b", 2)], [])}
+          rows={rows}
+          inspectedNodeId={null}
+          onInspect={onInspect}
+          onAddPeer={vi.fn()}
+          onRemovePeer={vi.fn()}
+          onDropPeer={vi.fn()}
+          labelOf={(nodeId) => nodeId}
+          mapNodeIds={["a", "b"]}
+          markedNodeIds={[]}
+          onToggleMarked={onToggleMarked}
+        />
+      </LocaleProvider>,
+    );
+    const cardB = screen.getByRole("heading", { name: /^b/ }).closest("article")!;
+    fireEvent.click(cardB, { shiftKey: true });
+    expect(onToggleMarked).toHaveBeenCalledWith("b");
+    expect(onInspect).not.toHaveBeenCalled();
+    fireEvent.click(cardB);
+    expect(onInspect).toHaveBeenCalledWith("b");
+  });
+
+  it("stacks two heads and leaves the pipeline from the head to the machine that continues it", async () => {
+    const rows = [
+      { start_layer: 0, end_layer: 11, target_node_id: "a" },
+      { start_layer: 0, end_layer: 3, target_node_id: "b" },
+      { start_layer: 4, end_layer: 11, target_node_id: "c" },
+    ];
+    renderCanvas(
+      plan(rows.map((row, index) => step(row.start_layer, row.end_layer, row.target_node_id, index + 1)), []),
+      rows,
+    );
+    const cardOf = (nodeId: string) => screen.getByRole("heading", { name: new RegExp(`^${nodeId}`) }).closest("article") as HTMLElement;
+    // the two heads share the first column, one under the other
+    await waitFor(() => expect(cardOf("a").style.left).toBe(cardOf("b").style.left));
+    expect(parseFloat(cardOf("b").style.top)).not.toBe(parseFloat(cardOf("a").style.top));
+    expect(parseFloat(cardOf("c").style.left)).toBeGreaterThan(parseFloat(cardOf("b").style.left));
+    // one hop (b -> c, layer 4 follows layer 3) and the answer from both machines on the last layer
+    const canvas = screen.getByText("Mapa da implantação").closest("section")!;
+    expect(canvas.querySelectorAll('svg[aria-hidden="true"] path[marker-end]')).toHaveLength(3);
+    expect(within(canvas).getByText("a | b")).toBeTruthy();
+  });
+
+  it("scrolls the map when the dotted background is dragged, not when a card is", () => {
+    const steps = [step(0, 3, "a", 1), step(4, 11, "b", 2)];
+    renderCanvas(plan(steps, []), steps.map(({ start_layer, end_layer, target_node_id }) => ({ start_layer, end_layer, target_node_id })));
+    const scroll = screen.getByTestId("deploy-map-scroll");
+    scroll.scrollLeft = 100;
+    scroll.scrollTop = 80;
+
+    fireEvent.pointerDown(scroll, { button: 0, clientX: 300, clientY: 300, pointerId: 1 });
+    fireEvent.pointerMove(scroll, { clientX: 260, clientY: 270, pointerId: 1 });
+    fireEvent.pointerUp(scroll, { clientX: 260, clientY: 270, pointerId: 1 });
+    expect(scroll.scrollLeft).toBe(140);
+    expect(scroll.scrollTop).toBe(110);
+
+    // a drag that starts on a card moves the card, not the map
+    const card = screen.getByRole("heading", { name: /^a/ }).closest("article")!;
+    fireEvent.pointerDown(card, { button: 0, clientX: 300, clientY: 300, pointerId: 2 });
+    fireEvent.pointerMove(scroll, { clientX: 200, clientY: 200, pointerId: 2 });
+    expect(scroll.scrollLeft).toBe(140);
+  });
+
+  it("zooms with the wheel and the trackpad pinch", async () => {
+    const steps = [step(0, 3, "a", 1)];
+    renderCanvas(plan(steps, []), [{ start_layer: 0, end_layer: 3, target_node_id: "a" }]);
+    const scroll = screen.getByTestId("deploy-map-scroll");
+    const layer = () => scroll.querySelector<HTMLElement>("div.origin-top-left")!;
+    expect(layer().style.transform).toBe("scale(1)");
+
+    // the wheel down zooms out, a pinch (ctrlKey) zooms in
+    fireEvent.wheel(scroll, { deltaY: 200, clientX: 10, clientY: 10 });
+    await waitFor(() => expect(parseFloat(layer().style.transform.slice(6))).toBeLessThan(1));
+    const out = parseFloat(layer().style.transform.slice(6));
+    fireEvent.wheel(scroll, { deltaY: -40, ctrlKey: true, clientX: 10, clientY: 10 });
+    await waitFor(() => expect(parseFloat(layer().style.transform.slice(6))).toBeGreaterThan(out));
+  });
+
+  it("keeps the toolbar, the legend and the route chips out of the area that scrolls", () => {
+    const steps = [step(0, 3, "a", 1), step(4, 11, "b", 2)];
+    renderCanvas(
+      plan(steps, [{ from_node_id: "a", to_node_id: "b", rtt_ms: 3.2, selected: true, note: "" }]),
+      steps.map(({ start_layer, end_layer, target_node_id }) => ({ start_layer, end_layer, target_node_id })),
+    );
+    const scroll = screen.getByTestId("deploy-map-scroll");
+    expect(scroll.contains(screen.getByText("Mapa da implantação"))).toBe(false);
+    expect(scroll.contains(screen.getByText("a → b · 3.2 ms"))).toBe(false);
+    expect(scroll.contains(screen.getByText("resposta"))).toBe(false);
+    // the cards scroll with the map
+    expect(scroll.contains(screen.getByRole("heading", { name: /^a/ }))).toBe(true);
+  });
+
+  it("shows no in-flight load on a deploy card: it says nothing about the deployment", () => {
+    const current = plan([step(0, 3, "a", 1)], []);
+    renderCanvas(current, [{ start_layer: 0, end_layer: 3, target_node_id: "a" }]);
+    const card = screen.getByRole("heading", { name: /^a/ }).closest("article")!;
+    expect(within(card as HTMLElement).queryByText(/em voo/)).toBeNull();
+    // the range sits in the header, next to the X
+    expect(within(card as HTMLElement).getByText("L0–3")).toBeTruthy();
   });
 
   it("anchors the curve on the correct side when the receiver is on the left", () => {

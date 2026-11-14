@@ -26,6 +26,9 @@ export interface InferenceServiceEntry {
   stages: boolean;
   /** The architectures it runs in slices, when the service names them (empty: every one it runs). */
   stageArchitectures: string[];
+  /** The architectures whose stage it also cuts from the whole model, so a machine serves a range of its own whole
+   *  file with no slice written. */
+  stageRanges: string[];
   /** The model architectures whose drafter file its engine takes from the deployment. */
   draftArchitectures: string[];
   /** Its engine reads images through the deployment's vision projector, as the plugin declares. */
@@ -57,6 +60,7 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
         nodeIds: [],
         stages: false,
         stageArchitectures: [],
+        stageRanges: [],
         draftArchitectures: [],
         vision: false,
       };
@@ -64,6 +68,9 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
       if (service.vision) entry.vision = true;
       for (const architecture of service.stage_architectures ?? []) {
         if (!entry.stageArchitectures.includes(architecture)) entry.stageArchitectures.push(architecture);
+      }
+      for (const architecture of service.stage_ranges ?? []) {
+        if (!entry.stageRanges.includes(architecture)) entry.stageRanges.push(architecture);
       }
       for (const architecture of service.draft_architectures ?? []) {
         if (!entry.draftArchitectures.includes(architecture)) entry.draftArchitectures.push(architecture);
@@ -95,6 +102,11 @@ export function serviceRunsModel(service: InferenceServiceEntry, architecture: s
 export function serviceRunsSlices(service: InferenceServiceEntry, architecture: string | null): boolean {
   if (!service.stages || !serviceRunsModel(service, architecture)) return false;
   return service.stageArchitectures.length === 0 || (architecture != null && service.stageArchitectures.includes(architecture));
+}
+
+/** Whether the service can serve ranges of a whole model of `architecture`, each machine from its own whole file. */
+export function serviceCutsRanges(service: InferenceServiceEntry, architecture: string | null): boolean {
+  return service.stages && architecture != null && service.stageRanges.includes(architecture);
 }
 
 /** Whether the deploy screen offers a drafter file for a model of `architecture` on the service. Another

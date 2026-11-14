@@ -131,7 +131,7 @@ describe("signed-in person (user session)", () => {
     try {
       expect(canAccessRoute("/", "admin")).toBe(true);
       expect(canAccessRoute("/chat", "worker")).toBe(true);
-      expect(canAccessRoute("/deploy", "admin")).toBe(false);
+      expect(canAccessRoute("/deployments", "admin")).toBe(false);
       expect(canAccessRoute("/config/keys/api", "admin")).toBe(false);
       expect(canAccessRoute("/config/my-keys", "admin")).toBe(false);
       session.setSessionInfo({ kind: "user", demo_mode: false, can_mint_keys: true });
@@ -145,15 +145,16 @@ describe("signed-in person (user session)", () => {
     const session = await import("./session");
     session.setSessionInfo({ kind: "user", demo_mode: true, can_mint_keys: false });
     try {
-      for (const path of ["/plugins", "/models", "/models/slice", "/shards", "/config/network"]) {
+      for (const path of ["/plugins", "/models", "/models/slice", "/shards", "/config/network", "/public-networks", "/network-chat", "/deploy"]) {
         expect(canAccessRoute(path, "admin")).toBe(true);
       }
-      for (const path of ["/models/remote", "/transfers", "/network-chat", "/deployments/logs", "/config/network/participants"]) {
+      for (const path of ["/models/remote", "/transfers", "/deployments", "/deployments/logs", "/config/network/participants"]) {
         expect(canAccessRoute(path, "admin")).toBe(false);
       }
       expect(homeRoute("admin")).toBe("/chat");
       session.setSessionInfo({ kind: "user", demo_mode: false });
       expect(canAccessRoute("/plugins", "admin")).toBe(false);
+      expect(canAccessRoute("/deploy", "admin")).toBe(false);
     } finally {
       session.setSessionInfo(null);
     }

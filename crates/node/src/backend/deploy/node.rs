@@ -29,6 +29,10 @@ pub struct AddNodeOptions {
     pub cache_types: serde_json::Value,
     pub defaults: AddNodeDefaults,
     pub vision: AddNodeVision,
+    /// When the machine holds the whole model: the layers a range of it may end at (the GGUF's valid cuts), so the
+    /// dialog picks any range of the whole file (served as a virtual slice). Absent otherwise or on an older node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer_cuts: Option<Vec<u32>>,
 }
 
 /// The dialog's vision switch for the new machine.
@@ -376,12 +380,24 @@ pub(super) async fn add_node_options_endpoint(
         Ok(value) => value,
         Err(error) => return bad(json!({ "error": error })),
     };
-    let survey_now = survey(&state, &req.group, req.kind, None, None).await;
+    let mut survey_now = survey(&state, &req.group, req.kind, None, None).await;
     let record = record_for_group(&state, &req.group).await;
     let deployed = deployment_projector(&state, record.as_ref(), &survey_now.sidecars).await;
     let vision = AddNodeVision {
         available: !machine_projectors(&survey_now, &survey_now.machines, &req.target_node_id, None).is_empty(),
         deployed: deployed.is_some(),
+    };
+    // The whole file on this machine: its valid cuts, from the same table a pipeline deploy reads.
+    let holds_whole = options.iter().any(|option| option.kind == DeployKind::Whole && option.start_layer == 0);
+    let layer_cuts = if holds_whole {
+        let mut target = std::mem::take(&mut survey_now.machines);
+        target.retain(|machine| machine.node_id == req.target_node_id);
+        whole_layer_options_for_plan(&state, &target, &req.group, &RuntimeParams::default())
+            .await
+            .filter(|layer_options| layer_options.reason.is_none())
+            .map(|layer_options| layer_options.cuts.iter().map(|cut| cut.end_layer).collect())
+    } else {
+        None
     };
 
     Json(AddNodeOptions {
@@ -390,6 +406,7 @@ pub(super) async fn add_node_options_endpoint(
         cache_types,
         defaults,
         vision,
+        layer_cuts,
     })
     .into_response()
 }
@@ -501,25 +518,37 @@ pub(super) async fn add_node_endpoint(
     }
     // The new machine launches with its own parameters; the deployment's version keeps the base ones.
     let mut node_params = overrides.apply(&params);
+    let mut survey_now = survey(&state, &req.group, req.kind, None, None).await;
+    // A range of a whole model (`kind: whole` with less than every layer): the machine holds the whole file and serves
+    // the range from it, as a pipeline deploy does (a virtual slice on the target, nothing written or copied).
+    let whole_layers = survey_now
+        .machines
+        .iter()
+        .flat_map(|machine| machine.held.iter())
+        .filter(|held| held.kind == HeldKind::Whole && held.start_layer == 0 && !held.virtual_slice)
+        .map(|held| held.end_layer + 1)
+        .max();
+    let whole_range = req.kind == DeployKind::Whole
+        && whole_layers.is_some_and(|total| !(req.start_layer == 0 && req.end_layer + 1 == total));
     // a whole model added beside the machines that already serve it: the sessions on, as in a deployment of several
-    if req.kind == DeployKind::Whole {
+    if req.kind == DeployKind::Whole && !whole_range {
         node_params.inference_role = node_params.inference_role.shared();
     }
 
     // The machine's engine: an inference service of a plugin (its own `inference_service`), or llama.cpp when none.
     // The same rules as a deployment (`deploy_block`): the machine offers it and it is ready; a service that does not
     // run layer slices takes the whole model on this machine.
-    let mut survey_now = survey(&state, &req.group, req.kind, None, None).await;
     let architecture = survey_now
         .model_shape
         .as_ref()
         .and_then(|shape| shape.architecture.clone());
     if let Some(service) = node_params.inference_service.as_deref() {
-        let whole = req.kind == DeployKind::Whole;
+        let whole = req.kind == DeployKind::Whole && !whole_range;
         if let Some(reason) = crate::plugin_engine::deploy_block(
             &state,
             service,
             whole,
+            whole_range,
             std::slice::from_ref(&req.target_node_id),
             &[node_params.inference_role],
             architecture.as_deref(),
@@ -536,7 +565,13 @@ pub(super) async fn add_node_endpoint(
                         .into_iter()
                         .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference")
                 })
-                .is_some_and(|entry| crate::plugin_engine::runs_slices(&entry, architecture.as_deref()));
+                .is_some_and(|entry| {
+                    if whole_range {
+                        crate::plugin_engine::runs_ranges(&entry, architecture.as_deref())
+                    } else {
+                        crate::plugin_engine::runs_slices(&entry, architecture.as_deref())
+                    }
+                });
             if !stages {
                 return bad(json!({
                     "error": format!("the inference service {service} runs the whole model on one machine: add the whole model here"),
@@ -564,6 +599,19 @@ pub(super) async fn add_node_endpoint(
             if held_shard.is_none() {
                 held_shard = machine
                     .holds_kind(req.start_layer, req.end_layer, Some(requested_kind))
+                    .or_else(|| {
+                        // a range of the whole model is read from the machine's own whole file
+                        whole_range
+                            .then(|| {
+                                machine.held.iter().find(|held| {
+                                    held.kind == HeldKind::Whole
+                                        && held.start_layer == 0
+                                        && held.end_layer >= req.end_layer
+                                        && !held.virtual_slice
+                                })
+                            })
+                            .flatten()
+                    })
                     .cloned();
             }
         }
@@ -662,7 +710,7 @@ pub(super) async fn add_node_endpoint(
     // position in a list of targets that this path, existing to touch a single
     // machine, will never build.
     let pipeline_ranges = sliced_route_ranges(existing_record.as_ref(), &live, total_layers);
-    let (peer_index, peer_count) = if req.kind == DeployKind::Whole {
+    let (peer_index, peer_count) = if req.kind == DeployKind::Whole && !whole_range {
         (0, 1)
     } else {
         split_position(&pipeline_ranges, (req.start_layer, req.end_layer))
@@ -685,8 +733,9 @@ pub(super) async fn add_node_endpoint(
                 source_model_path,
                 start_layer: req.start_layer,
                 end_layer: req.end_layer,
-                skip_split: true,
-                part_sha256: shard_sha256.clone(),
+                // a range of the whole file: the target cuts (or points at) it itself
+                skip_split: !whole_range,
+                part_sha256: if whole_range { None } else { shard_sha256.clone() },
                 merge: None,
                 n_gpu_layers: req.n_gpu_layers,
                 offload_kqv: req.offload_kqv,

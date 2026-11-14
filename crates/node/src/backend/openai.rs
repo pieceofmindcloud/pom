@@ -673,7 +673,11 @@ async fn chat_completions(
         .map(ChatToolDef::into_tool_def)
         .collect();
     let signatures = ToolSignatures::of(&tools);
-    let preferred_head = req.inference_head.clone();
+    // A demonstration page reads node ids as aliases and sends one back.
+    let preferred_head = match req.inference_head.as_deref() {
+        Some(head) => Some(crate::user_session::unalias_node(&state, head).await),
+        None => None,
+    };
     let (mut prompt, images) = match render_prompt_with_images(&req.messages, &tools) {
         Ok(rendered) => rendered,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
@@ -783,7 +787,7 @@ async fn chat_completions(
         ));
     }
     let budget = output_limit.budget();
-    let thinking_enabled = req.thinking_enabled.unwrap_or(true);
+    let thinking_enabled = client_thinking(req.thinking_enabled, &request_details);
 
     info!(
         "🤖 /v1/chat/completions model={model} stream={} msgs={} tools={} prompt_len={}",
@@ -1747,8 +1751,34 @@ fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
         .into_response()
 }
 
+/// The thinking a chat client asked for: the POM's own `thinking_enabled`, else the
+/// `chat_template_kwargs.enable_thinking` OpenAI-compatible clients send, else `reasoning_effort: "none"`
+/// as off; on when none is given. Reading only the first left `enable_thinking: false` thinking anyway,
+/// while a plugin engine was told the client had chosen (`thinking_asked`).
+fn client_thinking(explicit: Option<bool>, details: &serde_json::Value) -> bool {
+    if let Some(value) = explicit {
+        return value;
+    }
+    if let Some(value) = details["chat_template_kwargs"]["enable_thinking"].as_bool() {
+        return value;
+    }
+    details["reasoning_effort"].as_str() != Some("none")
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_client_turns_thinking_off_through_its_template_kwargs() {
+        use serde_json::json;
+        let off = json!({"chat_template_kwargs": {"enable_thinking": false}});
+        assert!(!super::client_thinking(None, &off));
+        assert!(super::client_thinking(Some(true), &off));
+        assert!(!super::client_thinking(None, &json!({"reasoning_effort": "none"})));
+        assert!(super::client_thinking(None, &json!({"reasoning_effort": "low"})));
+        assert!(super::client_thinking(None, &json!({})));
+    }
+
 
     #[test]
     fn reasoning_uses_the_structured_chat_delta_instead_of_visible_content() {

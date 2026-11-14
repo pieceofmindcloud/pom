@@ -302,7 +302,7 @@ ssh <cuda-server> 'bash -lc "cd /data/ftk-cuda-src && \
 
 The `PATH` is needed because `build.rs` runs the `nvcc` program directly;
 `CUDACXX` must also be set for the sub-builds that follow the CMake
-convention. `CUDAARCHS=120` limits the MoE kernel to that server's GPU.
+convention. `CUDAARCHS=120` limits the CUDA build to that server's GPU.
 `NCCL_ROOT=/usr` points `FindNCCL` at the host install, and
 `GGML_CUDA_NCCL=ON` is needed to opt into the collective path. `build.rs` also
 reads the resolved library from `CMakeCache.txt` and emits the dynamic link for
@@ -730,6 +730,7 @@ flags on the command line.
 | `POM_HOME` | First step of `project_root()` resolution: config, `models/`, UI. Without it: a cwd that looks like the project, then walking up from the executable's directory, then the default home: `~/.pom` (created on the first database open), or on Windows the folder of `pom.exe`. Two nodes on the same machine need distinct homes (the `node_id` identity also lives in the project root). |
 | `POM_PORT`, `POM_BOOTSTRAP`, `POM_ADVERTISE_ADDR`, `POM_OLLAMA_URL`, `POM_GATEWAY_PORT`, `POM_PKARR_PEERS`, `POM_PUBLIC_ADDR`, `POM_RELAY_PEERS`, `POM_SERVE_RELAY`, `POM_NO_CLUSTER_RELAY`, `POM_NO_RELAY_TRANSFERS`, `POM_NO_DEFAULT_RELAYS`, `POM_NO_DISCOVERY`, `POM_NO_PKARR`, `POM_TRUST_CA_SYSTEM_WIDE` | One per command line option (`--port`, `--bootstrap`, ...; the `ARG_ENV` table in `main.rs`). The flag beats the variable, which beats the default; the booleans accept `1/0`, `true/false`, `yes/no`, `on/off`. The variable beats `pom.json`: `POM_PORT` and `POM_GATEWAY_PORT` replace the stored port, unlike `--port`/`--gateway-port`, which only apply while there is no `pom.json` (a desktop build moves a busy saved port by itself and saves the new one; a server fails naming the port); `POM_BOOTSTRAP` and `POM_RELAY_PEERS` add to the config lists, like the flags. |
 | `POM_RETURN_MODE` | `direct` or `ring` forces the gateway's reply return mode (planner and decision), to test a path the planner would not pick - for example direct delivery to a gateway behind NAT, which the ring would hide. Absent or `auto`, the planner picks. With `direct`, a missing return path becomes an inference failure. See `parallelism.md`. |
+| `POM_VIRTUAL_SLICES` | `1` makes a node serve its range of a whole model it holds through a header-only virtual slice (`plan::write_virtual_shard`, under `<project root>/virtual-slices/`) instead of cutting a real slice. A mixture-of-experts model split in several files keeps real slicing only under the `moe` or `auto` inference mode, whose external executor reads one source file; under `dense` it is served through a virtual slice too. Needs `pom-plugin-llama.cpp` at the pinned revision or later, which builds against the llama.cpp fork's `pom` branch (it has the external tensor data loader); with an older released engine the load fails. With it the node also announces `model/range-load-v1`, so a deploy charges it no disk for such a range. See `deployment.md` sections 1.1.1 and 8. |
 | `POM_SLICE_BENCH` | `0` turns off the slice speed test when the model loads (`infer_server/perf.rs`). |
 | `POM_CONFIG` | Path of `pom.json` (default `<project_root>/pom.json`). |
 | `POM_DB_DIR` | Directory of `pom.db` and its WAL/SHM files. If absent or empty, uses `<project_root>`; the directory is created at startup. |
@@ -745,10 +746,13 @@ flags on the command line.
 | `POM_SLOT_AUTO_TTL_SECS` | TTL of an unused automatic prefix snapshot, in seconds (default 7 days). Beats `slot_auto_ttl_secs` in `pom.json`. Read at gateway startup. |
 | `POM_HEADLESS` | Linux `desktop` build (the AppImage): `=1` (`true`/`yes`/`on`) never opens the window and runs the node as a server, as happens anyway when neither `DISPLAY` nor `WAYLAND_DISPLAY` is set. |
 | `POM_NO_TLS` | Boolean equivalent of `--no-tls`: allows HTTP for remote browser UI and client API behind an HTTPS reverse proxy; peer-only requests stay refused and mutual TLS between nodes is unchanged. Off by default in the binary, on by default in the published Docker image. Never publish the plain HTTP port directly to the internet. |
-| `DEMO_MODE` / `POM_DEMO_MODE` | `1` makes the node a public demonstration: a person signed in through a plugin's provider reads the dashboard with every address and node id redacted and cannot mint API keys. The operator session is unaffected. See `security-model.md`, "People signed in through a plugin". |
+| `DEMO_MODE_ACTIVE` / `POM_DEMO_MODE_ACTIVE` | `true` on the network's principal lets its members run as demonstrations: the principal sends `demo_mode_active` in the network settings its members fetch. Unset or false, a member with `DEMO_MODE` does not start as one. Read once per process. |
+| `DEMO_MODE` / `POM_DEMO_MODE` | `1` asks for the node to be a public demonstration, which starts only while the network's principal allows it (`DEMO_MODE_ACTIVE`): a person signed in through a plugin's provider reads the dashboard with every address and node id redacted and cannot mint API keys. The operator session is unaffected. See `security-model.md`, "People signed in through a plugin". |
 | `DEMO_MAX_SESSIONS` / `POM_DEMO_MAX_SESSIONS` | Demo mode only: how many signed-in people use the node at once (default 10); the rest wait in a queue. |
 | `DEMO_SESSION_TIME` / `POM_DEMO_SESSION_TIME` | Demo mode only: minutes each seat lasts (default 20). |
 | `DEMO_PLUGINS` / `POM_DEMO_PLUGINS` | Demo mode only: comma-separated plugin codes a signed-in person reaches besides the sign-in plugin; unset, every active plugin. `docker-compose.demo.yml` brings up such a node with visitors' folders on the host's `/tmp`. |
+| `DEMO_NO_AUTH` / `POM_DEMO_NO_AUTH` | Demo mode only (ignored without `DEMO_MODE`): `1` opens the page with no sign-in. The login screen sends the visitor to the guest route of a plugin that offers guests (`pom-plugin-logs`, `/auth/logs/guest/start`), which creates one person per visitor fingerprint (a hash of address, `User-Agent` and `Accept-Language`) with the plan in the plugin's `POM_GUEST_PLAN` (default `demo`). The visitor then takes a seat like any signed-in person. |
+| `DEMO_GUEST_COOLDOWN` / `POM_DEMO_GUEST_COOLDOWN` | `DEMO_NO_AUTH` only: minutes a guest whose time ran out waits before the same fingerprint gets a new session (default `DEMO_SESSION_TIME`). In memory: a restart clears it. |
 | `POM_OPERATOR_PATH` | Path where the node password opens an operator session once a plugin offers sign-in (for example `/_k7q-console`). Unset, a random path is made on first start, kept in `.pom-operator-path` under the project root and printed in the start-up log. |
 | `POM_OAUTH_REDIRECT_BASE` | Public origin used for the sign-in callbacks (`https://demo.example`); unset, the request's own origin. |
 | `POM_OAUTH_<n>_*` | Sign-in providers read by the logs plugin (`ID`, `PRESET`, `LABEL`, `ISSUER`, `CLIENT_ID`, `CLIENT_SECRET`, `SCOPES`, `AUTHORIZE_URL`, `TOKEN_URL`, `USERINFO_URL`, `ALLOWED_DOMAINS`, `DEFAULT_PLAN`, `ENABLED`), n = 1..32. The node only passes its environment to the plugin host. |
@@ -932,19 +936,13 @@ places:
 
 **The wide list does not go through `sccache`**, which fails on it with `Missing
 "cubin" file output`. The Linux build step clears both wrappers of `nvcc`:
-`CMAKE_CUDA_COMPILER_LAUNCHER` for llama.cpp and `CCACHE` for the MoE kernels. C, C++
+`CMAKE_CUDA_COMPILER_LAUNCHER` for llama.cpp and `CCACHE`. C, C++
 and Rust keep the cache.
 
-**An empty `CUDAARCHS` is not the wide list.** Two builds read the variable.
-llama.cpp's CMake takes empty as unset and picks its wide list, but POM's MoE
-kernels (`crates/llama-engine/build.rs`, in `pom-plugin-llama.cpp`) call `nvcc`
-directly and turn each entry into a `--generate-code`, so with no entries they get
-only `nvcc`'s default: `sm_52` plus its PTX under CUDA 12.9, `sm_75` plus its PTX
-under CUDA 13. The list a release writes is the one llama.cpp's `CMakeLists.txt`
-derives for that toolkit, so both builds cover the same cards. Checked on
-2026-10-31 by compiling `cuda_kernels.cu` (85 s for the CUDA 13 list, 94 s for the
-12.9 one, against about 20 s for the default) and by configuring llama.cpp under CMake
-3.28, which resolves the written list and the empty value to the same result.
+**An empty `CUDAARCHS` is not the wide list for a release.** llama.cpp's CMake
+takes empty as unset and picks its wide list; the list a release writes is the
+one llama.cpp's `CMakeLists.txt` derives for that toolkit, written out so a
+builder's environment cannot narrow it.
 
 | Toolkit | Release list |
 |---|---|
@@ -1148,13 +1146,11 @@ affecting the other two. `release-windows.yml` has two variants (input
   LunarG's Vulkan SDK (`VULKAN_VERSION`). It builds with Ninja inside the MSVC
   environment (`ilammy/msvc-dev-cmd`), because CUDA with the Visual Studio
   generator requires the MSBuild integration. Architectures: `ggml-cuda.dll` arrives
-  ready from the fork with llama.cpp's wide list, and `POM_WINDOWS_CUDAARCHS`, which
-  only reaches POM's MoE kernels, repeats that list (see "GPU architectures"). On Windows CUDA is linked **dynamically**
+  ready from the fork with llama.cpp's wide list, and `POM_WINDOWS_CUDAARCHS`
+  repeats that list (see "GPU architectures"). On Windows CUDA is linked **dynamically**
   (`llama-cpp-sys-2/build.rs`), so the package ships `cudart64_*.dll`,
   `cublas64_*.dll` and `cublasLt64_*.dll` from the fork release's cudart
-  package next to `pom.exe` (redistributable under NVIDIA's license); `vulkan-1.dll` comes with the video driver. The own
-  MoE kernels (`crates/llama-engine/build.rs`) come out as `pom_moe_cuda.lib`
-  through `lib.exe` with `/MD` on MSVC, and as `.a` through `ar` elsewhere.
+  package next to `pom.exe` (redistributable under NVIDIA's license); `vulkan-1.dll` comes with the video driver.
 - **`cpu`**: no features, package `pom-<v>-x86_64-pc-windows-msvc.zip`.
 
 The GitHub build no longer produces `pom.pdb`; to diagnose a crash on Windows,

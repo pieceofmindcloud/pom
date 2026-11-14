@@ -35,7 +35,7 @@ No passo do convite, cada computador procurando a rede aparece com nome, sistema
 Depois da configuração, a senha do painel é admin e a interface mostra um aviso fixo até você trocá-la em Preferências. Pastas, reservas de memória e limite térmico vêm de padrões da máquina e também podem ser ajustados depois.
 :::
 
-Com as duas máquinas na rede, o próximo passo é ter um modelo: traga um GGUF para a pasta de modelos ou use Encontrar Modelos HF, e siga o guia Do modelo ao cluster servindo.
+Com as duas máquinas na rede, o próximo passo é ter um modelo: traga um GGUF para a pasta de modelos ou use Procurar Modelos (o plugin do Hugging Face, instalado em Plugins), e siga o guia Do modelo ao cluster servindo.
 
 :::note Máquinas em redes diferentes
 Fora da mesma rede local, a descoberta automática não alcança o administrador. Inicie o nó com --bootstrap <administrador>:42777 e veja o guia Rede local e internet.
@@ -44,7 +44,7 @@ Fora da mesma rede local, a descoberta automática não alcança o administrador
 :::checklist Pronto para o próximo passo quando
 - As duas máquinas aparecem no Painel.
 - A senha padrão do painel foi trocada em Preferências.
-- Há um modelo GGUF na pasta de modelos, ou um download concluído em Transferências.
+- Há um modelo GGUF na pasta de modelos, ou um download concluído em Downloads.
 :::
 
 :::faq

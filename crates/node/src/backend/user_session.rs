@@ -85,8 +85,10 @@ fn truthy(value: &str) -> bool {
     )
 }
 
-/// `DEMO_MODE=1` (or the brand's `POM_DEMO_MODE`), read once per process.
-pub fn demo_mode() -> bool {
+/// `DEMO_MODE=1` (or the brand's `POM_DEMO_MODE`), read once per process:
+/// this node asks to run as a demonstration. It runs as one only while the
+/// network's principal allows it (`demo_mode`).
+pub fn demo_requested() -> bool {
     static DEMO: OnceLock<bool> = OnceLock::new();
     *DEMO.get_or_init(|| {
         let on = std::env::var("DEMO_MODE")
@@ -94,10 +96,112 @@ pub fn demo_mode() -> bool {
             .or_else(|| crate::brand::env("DEMO_MODE").ok())
             .is_some_and(|value| truthy(&value));
         if on {
-            tracing::info!("demo mode: signed-in users see a redacted, read-only surface");
+            tracing::info!("demo mode requested: it starts once the network's principal allows it (DEMO_MODE_ACTIVE)");
         }
         on
     })
+}
+
+/// Whether the network's principal allows a demonstration, as last heard
+/// from it (or, on the principal, its own `DEMO_MODE_ACTIVE`). False until
+/// then: a node never starts as a demonstration on its own say.
+static DEMO_AUTHORIZED: AtomicBool = AtomicBool::new(false);
+
+/// Records the principal's answer; the demonstration starts or stops with it.
+pub fn set_demo_authorized(allowed: bool) {
+    let before = DEMO_AUTHORIZED.swap(allowed, Ordering::AcqRel);
+    if before != allowed && demo_requested() {
+        if allowed {
+            tracing::info!("demo mode: the network's principal allows it; signed-in users see a redacted, read-only surface");
+        } else {
+            tracing::warn!("demo mode: the network's principal does not allow it (DEMO_MODE_ACTIVE); demonstration visits are refused");
+        }
+    }
+}
+
+/// `DEMO_MODE_ACTIVE=true` (or the brand's `POM_DEMO_MODE_ACTIVE`) on the
+/// network's principal: the members may run as demonstrations. Read once per
+/// process and sent in every answer of the principal's network settings.
+pub fn demo_mode_active_env() -> bool {
+    static ACTIVE: OnceLock<bool> = OnceLock::new();
+    *ACTIVE.get_or_init(|| {
+        std::env::var("DEMO_MODE_ACTIVE")
+            .ok()
+            .or_else(|| crate::brand::env("DEMO_MODE_ACTIVE").ok())
+            .is_some_and(|value| truthy(&value))
+    })
+}
+
+/// A demonstration is running: this node asked for one (`DEMO_MODE`) and the
+/// network's principal allows it (`DEMO_MODE_ACTIVE`).
+pub fn demo_mode() -> bool {
+    demo_requested() && DEMO_AUTHORIZED.load(Ordering::Acquire)
+}
+
+/// Asked to be a demonstration, but the principal has not allowed it (yet):
+/// a person's session is refused instead of falling back to the ordinary
+/// user surface.
+fn demo_waiting_for_principal() -> bool {
+    demo_requested() && !demo_mode()
+}
+
+/// `DEMO_NO_AUTH=1` (or the brand's `POM_DEMO_NO_AUTH`) on a demonstration
+/// node: whoever opens the page gets a guest session with no sign-in. The
+/// plugin that offers guests (`"guest": true` in its `auth.providers`
+/// answer) creates one person per visitor fingerprint with its guest plan.
+/// Without `DEMO_MODE` it does nothing.
+pub fn demo_no_auth() -> bool {
+    static NO_AUTH: OnceLock<bool> = OnceLock::new();
+    let set = *NO_AUTH.get_or_init(|| {
+        let set = std::env::var("DEMO_NO_AUTH")
+            .ok()
+            .or_else(|| crate::brand::env("DEMO_NO_AUTH").ok())
+            .is_some_and(|value| truthy(&value));
+        if set && !demo_requested() {
+            tracing::warn!("DEMO_NO_AUTH is ignored without DEMO_MODE");
+        } else if set {
+            tracing::info!("demo mode without sign-in: every visitor gets a guest session once the demonstration runs");
+        }
+        set
+    });
+    set && demo_mode()
+}
+
+/// Where a visitor starts a guest session, while some plugin offers guests
+/// and the node runs with `DEMO_NO_AUTH`.
+pub fn guest_start_url() -> Option<String> {
+    if !demo_no_auth() {
+        return None;
+    }
+    let cache = providers_cache().lock().ok()?;
+    cache
+        .guest_plugins
+        .iter()
+        .next()
+        .map(|code| format!("{AUTH_PREFIX}{code}/guest/start"))
+}
+
+/// A visitor's fingerprint for a guest session: the address and what the
+/// browser says about itself, hashed. The same browser on the same network
+/// comes back as the same guest, with the budget it already spent.
+fn guest_fingerprint(ip: Option<&str>, headers: &axum::http::HeaderMap) -> String {
+    let header = |name: header::HeaderName| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_owned()
+    };
+    let digest = Sha256::digest(
+        format!(
+            "{}|{}|{}",
+            ip.unwrap_or(""),
+            header(header::USER_AGENT),
+            header(header::ACCEPT_LANGUAGE)
+        )
+        .as_bytes(),
+    );
+    digest[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ── Providers offered by plugins ─────────────────────────────────────────────
@@ -111,6 +215,8 @@ struct ProvidersCache {
     providers: Vec<Value>,
     /// Plugins that offer sign-in: the only ones a user session reaches.
     plugins: BTreeSet<String>,
+    /// Plugins that create guest sessions (`DEMO_NO_AUTH`).
+    guest_plugins: BTreeSet<String>,
 }
 
 fn providers_cache() -> &'static Mutex<ProvidersCache> {
@@ -173,12 +279,22 @@ pub async fn auth_providers(state: &GatewayState) -> Vec<Value> {
         }
     }
     let answers = state.plugins.query_running("auth.providers").await;
-    let (providers, plugins) = collect_providers(&answers);
-    SIGN_IN_OFFERED.store(!providers.is_empty(), Ordering::Relaxed);
+    let (providers, mut plugins) = collect_providers(&answers);
+    let guest_plugins = if demo_no_auth() {
+        collect_guest_plugins(&answers)
+    } else {
+        BTreeSet::new()
+    };
+    plugins.extend(guest_plugins.iter().cloned());
+    SIGN_IN_OFFERED.store(
+        !providers.is_empty() || !guest_plugins.is_empty(),
+        Ordering::Relaxed,
+    );
     if let Ok(mut cache) = providers_cache().lock() {
         cache.at = Some(Instant::now());
         cache.providers = providers.clone();
         cache.plugins = plugins;
+        cache.guest_plugins = guest_plugins;
     }
     providers
 }
@@ -188,6 +304,17 @@ fn safe_segment(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// Plugins whose `auth.providers` answer carries `"guest": true`.
+fn collect_guest_plugins(answers: &[(String, Value)]) -> BTreeSet<String> {
+    answers
+        .iter()
+        .filter(|(code, answer)| {
+            answer.get("guest").and_then(Value::as_bool) == Some(true) && safe_segment(code)
+        })
+        .map(|(code, _)| code.clone())
+        .collect()
 }
 
 fn collect_providers(answers: &[(String, Value)]) -> (Vec<Value>, BTreeSet<String>) {
@@ -552,6 +679,8 @@ pub(crate) async fn auth_http(
                 "auth_base": format!("{base}{AUTH_PREFIX}{code}"),
                 "client_ip": peer_ip,
                 "demo_mode": demo_mode(),
+                "demo_no_auth": demo_no_auth(),
+                "guest_key": demo_no_auth().then(|| guest_fingerprint(peer_ip.as_deref(), &parts.headers)),
             }),
         )
         .await
@@ -585,6 +714,19 @@ async fn plugin_auth_response(
         }
         user.plugin = code.to_owned();
         user.label = user.label.chars().take(120).collect();
+        // A guest whose time just ran out waits before coming back.
+        if demo_no_auth() && user.provider == "guest" {
+            if let Some(wait) = crate::demo_slots::cooldown_left(&user.user_id) {
+                return (
+                    StatusCode::SEE_OTHER,
+                    [
+                        (header::LOCATION, format!("/admin-ui/?demo_cooldown={wait}")),
+                        (header::CACHE_CONTROL, "no-store".into()),
+                    ],
+                )
+                    .into_response();
+            }
+        }
         tracing::info!(user = %user.user_id, provider = %user.provider, plugin = %code, "user signed in");
         let session_id = state.admin_sessions.lock().await.issue_user(user);
         let target = safe_redirect(reply.get("redirect").and_then(Value::as_str));
@@ -722,6 +864,14 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
     if post && matches!(path, "/api/ui/chat-key" | "/api/ui/logout") {
         return true;
     }
+    // The Chat's image generation: running a workflow listed in the
+    // capabilities, and reading back the images it stored on this node.
+    if post && path == "/api/ui/chat/image" {
+        return true;
+    }
+    if get && path.strip_prefix("/api/ui/chat/image/").is_some_and(|hash| !hash.is_empty() && !hash.contains('/')) {
+        return true;
+    }
     // A demonstration node shows, read-only, what the operator has: the
     // installed plugins and the catalog, the models and slices, the
     // network it is in, and the person's own budget.
@@ -734,10 +884,28 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
             "/api/ui/network/info",
             "/api/ui/quota",
             "/api/ui/demo/session",
+            // The Networks screen, read-only: the networks this node knows and
+            // the relay choices its quick setup walks through.
+            "/api/ui/networks/known",
+            "/api/ui/networks/pinned",
+            "/api/ui/network/relay",
+            // The network Chat; sending goes through `demo_network_chat_post`.
+            "/api/ui/network-chat",
+            // The Deploy screen's catalog, played with but never deployed.
+            "/api/ui/cache-types",
+            "/api/ui/model-sidecar-links",
+            // The image models the network serves, on the Dashboard.
+            "/api/ui/image-deployments",
         ];
         if demo_get.contains(&path) || path.starts_with("/api/ui/plugin-catalog/") {
             return true;
         }
+    }
+    // The Deploy screen surveys a model's plan (a read); `/api/ui/deploy`
+    // itself stays refused. The network Chat takes a text message, rewritten
+    // by `demo_network_chat_post` before it reaches the Chat.
+    if demo && post && matches!(path, "/api/ui/deploy/plan" | "/api/ui/network-chat") {
+        return true;
     }
     // Previewing a slicing plan only reads GGUF headers: the Slice screen
     // shows it, while starting the job stays refused.
@@ -778,6 +946,20 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
 /// telemetry name the machines.
 fn redacted_path(path: &str, demo: bool) -> bool {
     if demo && (path.starts_with("/api/ui/requests") || path.contains("/rpc/")) {
+        return true;
+    }
+    if demo
+        && matches!(
+            path,
+            "/api/ui/networks/known"
+                | "/api/ui/networks/pinned"
+                | "/api/ui/network/relay"
+                | "/api/ui/network-chat"
+                | "/api/ui/deploy/plan"
+                | "/api/ui/model-sidecar-links"
+                | "/api/ui/image-deployments"
+        )
+    {
         return true;
     }
     matches!(
@@ -827,6 +1009,22 @@ fn address_key(key: &str) -> bool {
         || key == "lon"
 }
 
+fn machine_name_key(key: &str) -> bool {
+    matches!(key, "hostname" | "hostnames" | "host_name")
+}
+
+/// The real node id behind an alias a demonstration page sent back (the
+/// Chat's `inference_head`), among this node and the live peers; anything
+/// else comes back as it was.
+pub async fn unalias_node(state: &GatewayState, id: &str) -> String {
+    if !demo_mode() || !id.starts_with("node-") {
+        return id.to_owned();
+    }
+    let mut ids = vec![state.network.node_id.clone()];
+    ids.extend(state.network.alive_peers().await.into_iter().map(|peer| peer.node_id));
+    ids.into_iter().find(|node_id| alias(node_id) == id).unwrap_or_else(|| id.to_owned())
+}
+
 fn looks_like_address(value: &str) -> bool {
     let value = value.trim();
     value.parse::<IpAddr>().is_ok()
@@ -869,7 +1067,10 @@ pub fn redact(value: &mut Value, demo: bool) {
                 // An address keeps its key and its type, so the interface
                 // (which reads `hostname.trim()`, `addrs.length`, ...) still
                 // draws: text becomes "hidden", a list empty, anything else null.
-                if demo && address_key(&lower) {
+                // A machine's name is how a person tells the machines apart
+                // (the Chat's head choice, the maps): it stays, unless the
+                // value itself is an address (`redact` of the string below).
+                if demo && address_key(&lower) && !machine_name_key(&lower) {
                     if let Some(slot) = map.get_mut(&key) {
                         *slot = match slot {
                             Value::String(_) => Value::String("hidden".into()),
@@ -952,6 +1153,13 @@ async fn redact_response(response: Response, path: &str, demo: bool) -> Response
     let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    if path == "/api/ui/network-chat" {
+        // The lobby is the node admin's: a visit sees the members' room only.
+        if let Some(map) = value.as_object_mut() {
+            map.insert("lobbyEnabled".into(), Value::Bool(false));
+            map.insert("lobbyGuests".into(), Value::Array(Vec::new()));
+        }
+    }
     if path == "/api/ui/plugins/ui" {
         keep_user_plugins(&mut value, demo);
         // Manifests name no machine, and their screenshots are https URLs.
@@ -1024,6 +1232,7 @@ async fn seat_of(
         for (session, user_id) in &expired {
             sessions.revoke(session);
             forget_chat_tokens(user_id);
+            crate::demo_slots::note_expired(user_id);
             tracing::info!(user = %user_id, "demo seat expired");
         }
     }
@@ -1093,6 +1302,15 @@ pub(crate) async fn after_gate(
         request.extensions_mut().insert(principal);
         return next.run(request).await;
     };
+    // A demonstration node the principal has not allowed serves no person:
+    // never the ordinary user surface in its place.
+    if demo_waiting_for_principal() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "demo_not_authorized" })),
+        )
+            .into_response();
+    }
     let demo = demo_mode();
     // A demonstration node opens to a few people at a time: past the seats,
     // a person waits in the queue and reaches only who they are and the
@@ -1100,6 +1318,27 @@ pub(crate) async fn after_gate(
     let mut seat_json = None;
     if demo {
         let secure = is_secure(&request);
+        // A guest whose time ran out is signed off, and every session of the
+        // same visitor ends until the cool-down passes.
+        if demo_no_auth()
+            && user.provider == "guest"
+            && crate::demo_slots::cooldown_left(&user.user_id).is_some()
+        {
+            if let Some(session) =
+                crate::auth::session_id_from_cookie(request.headers(), secure).map(str::to_owned)
+            {
+                state.admin_sessions.lock().await.revoke(&session);
+                crate::demo_slots::release(&session);
+            }
+            forget_chat_tokens(&user.user_id);
+            let response = (
+                StatusCode::UNAUTHORIZED,
+                [("x-pom-admin-error", "demo_session_expired")],
+                Json(json!({ "error": "demo_session_expired" })),
+            )
+                .into_response();
+            return clear_session_cookies(response, request.headers(), secure);
+        }
         let seat = seat_of(state, user, request.headers(), secure).await;
         let now = Instant::now();
         let body = seat.to_json(now);
@@ -1149,6 +1388,12 @@ pub(crate) async fn after_gate(
     if path.starts_with("/api/ui/my-keys") {
         return crate::user_keys::handle(state, user, request).await;
     }
+    if demo && path == "/api/ui/network-chat" && method == Method::POST {
+        return demo_network_chat_post(state, request).await;
+    }
+    if demo && path == "/api/ui/network-chat" && demo_chat_reads_lobby(request.uri().query()) {
+        return not_found();
+    }
     let user = user.clone();
     request.extensions_mut().insert(principal.clone());
     request.extensions_mut().insert(user);
@@ -1157,6 +1402,92 @@ pub(crate) async fn after_gate(
         return redact_response(response, &path, demo).await;
     }
     response
+}
+
+/// A demonstration node is a worker, and a worker refuses the deploy routes:
+/// this lets its Deploy screen survey a model's plan, a read that loads and
+/// copies nothing. Deploying (`/api/ui/deploy`) stays refused on a worker, and
+/// the session gate keeps the survey to the people of the demonstration.
+pub(crate) fn demo_previews_deploy(
+    profile: crate::profile::NodeProfile,
+    method: &Method,
+    path: &str,
+) -> bool {
+    profile == crate::profile::NodeProfile::Worker
+        && ((method == Method::POST && path == "/api/ui/deploy/plan")
+            || (method == Method::GET && path == "/api/ui/image-deployments"))
+        && demo_mode()
+}
+
+/// Longest text a demonstration visitor may post to the network Chat.
+const DEMO_CHAT_TEXT_LIMIT: usize = 2000;
+
+/// A demonstration visitor's message to the network Chat. The visitor holds
+/// no API key of this node and reads node ids only as aliases, so the browser's
+/// frame cannot pass `network_chat_action`: this takes only the text of a text
+/// message, marks it as a demo visitor's, and posts it as this node to the
+/// network room. Files, typing, notices and direct messages are refused.
+async fn demo_network_chat_post(state: &GatewayState, request: Request) -> Response {
+    let Ok(bytes) = axum::body::to_bytes(request.into_body(), 64 * 1024).await else {
+        return demo_chat_refused("the message is too large");
+    };
+    let Ok(body) = serde_json::from_slice::<Value>(&bytes) else {
+        return demo_chat_refused("the message is not JSON");
+    };
+    let Some(text) = demo_chat_text(&body) else {
+        return demo_chat_refused("a demonstration visit sends text messages only");
+    };
+    let action = crate::network_chat::ChatAction::Text {
+        message_id: uuid::Uuid::new_v4().to_string(),
+        room_id: crate::network_chat::NETWORK_CHAT_ROOM.to_owned(),
+        sender_node_id: state.network.node_id.clone(),
+        recipient_node_id: None,
+        text: format!("[demo] {text}"),
+        sent_at: chrono::Utc::now(),
+    };
+    let chat = crate::network_chat::ChatRequest { action, api_key: String::new(), relayed: false };
+    match state.network_chat.submit(chat).await {
+        Ok(response) if response.accepted => Json(response).into_response(),
+        Ok(response) => (StatusCode::FORBIDDEN, Json(response)).into_response(),
+        Err(error) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// The text of a demonstration visitor's frame, when it is a text message to
+/// the whole network room within the limit.
+fn demo_chat_text(body: &Value) -> Option<String> {
+    let action = body.get("action")?;
+    if action.get("kind")?.as_str()? != "text" {
+        return None;
+    }
+    let room = action.get("room_id").and_then(Value::as_str).unwrap_or(crate::network_chat::NETWORK_CHAT_ROOM);
+    if room != crate::network_chat::NETWORK_CHAT_ROOM {
+        return None;
+    }
+    if action.get("recipient_node_id").is_some_and(|value| !value.is_null()) {
+        return None;
+    }
+    let text = action.get("text")?.as_str()?.trim();
+    if text.is_empty() || text.chars().count() > DEMO_CHAT_TEXT_LIMIT {
+        return None;
+    }
+    Some(text.to_owned())
+}
+
+/// Whether a network Chat read asks for a room other than the members' one.
+fn demo_chat_reads_lobby(query: Option<&str>) -> bool {
+    query.unwrap_or_default().split('&').any(|pair| {
+        pair.split_once('=')
+            .is_some_and(|(key, value)| key == "room" && value != crate::network_chat::NETWORK_CHAT_ROOM)
+    })
+}
+
+fn demo_chat_refused(reason: &str) -> Response {
+    (StatusCode::FORBIDDEN, Json(json!({ "accepted": false, "error": reason }))).into_response()
 }
 
 /// The caller of a plugin RPC or a request-log query, for the plugin: a
@@ -1180,6 +1511,9 @@ mod tests {
         assert!(user_may_call(&Method::POST, "/api/ui/chat-key", true));
         assert!(!user_may_call(&Method::GET, "/api/ui/connection", false));
         assert!(!user_may_call(&Method::POST, "/api/ui/leave", true));
+        assert!(user_may_call(&Method::POST, "/api/ui/chat/image", true));
+        assert!(user_may_call(&Method::GET, "/api/ui/chat/image/abc123", false));
+        assert!(!user_may_call(&Method::GET, "/api/ui/chat/image/a/b", true));
         assert!(!user_may_call(&Method::GET, "/admin/api-keys", false));
         assert!(!user_may_call(&Method::POST, "/api/ui/deploy", false));
         assert!(!user_may_call(&Method::POST, "/api/ui/cluster", false));
@@ -1206,10 +1540,50 @@ mod tests {
         assert!(!user_may_call(&Method::POST, "/api/ui/slice", true));
         assert!(!user_may_call(&Method::POST, "/api/transfer/send", true));
         assert!(!user_may_call(&Method::POST, "/api/ui/network/settings", true));
-        assert!(!user_may_call(&Method::GET, "/api/ui/network-chat", true));
+        assert!(!user_may_call(&Method::GET, "/api/ui/network-chat", false));
         assert!(!user_may_call(&Method::GET, "/api/ui/cluster-logs", true));
         assert!(user_may_call(&Method::GET, "/api/ui/demo/session", true));
         assert!(!user_may_call(&Method::GET, "/api/ui/demo/session", false));
+    }
+
+    #[test]
+    fn demo_plays_with_networks_chat_and_deploy_but_changes_nothing() {
+        for path in ["/api/ui/networks/known", "/api/ui/networks/pinned", "/api/ui/network/relay", "/api/ui/network-chat"] {
+            assert!(user_may_call(&Method::GET, path, true), "{path}");
+            assert!(!user_may_call(&Method::GET, path, false), "{path}");
+        }
+        assert!(user_may_call(&Method::POST, "/api/ui/deploy/plan", true));
+        assert!(user_may_call(&Method::POST, "/api/ui/network-chat", true));
+        assert!(!user_may_call(&Method::POST, "/api/ui/deploy/plan", false));
+        for (method, path) in [
+            (Method::POST, "/api/ui/deploy"),
+            (Method::GET, "/api/ui/deployments/x/versions"),
+            (Method::POST, "/api/ui/network/settings"),
+            (Method::POST, "/api/ui/network/relay"),
+            (Method::POST, "/api/ui/networks/custom"),
+            (Method::POST, "/api/ui/network/join"),
+            (Method::POST, "/api/ui/network-chat/lobby"),
+            (Method::GET, "/api/ui/network/trust-anchor"),
+        ] {
+            assert!(!user_may_call(&method, path, true), "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn a_demo_visitor_posts_text_to_the_network_room_only() {
+        let frame = |kind: &str, room: &str, recipient: Value, text: &str| {
+            json!({"action": {"kind": kind, "room_id": room, "recipient_node_id": recipient, "text": text}})
+        };
+        assert_eq!(demo_chat_text(&frame("text", "network", Value::Null, "  hi  ")).as_deref(), Some("hi"));
+        assert!(demo_chat_text(&frame("file", "network", Value::Null, "hi")).is_none());
+        assert!(demo_chat_text(&frame("typing", "network", Value::Null, "hi")).is_none());
+        assert!(demo_chat_text(&frame("text", "lobby", Value::Null, "hi")).is_none());
+        assert!(demo_chat_text(&frame("text", "network", json!("abc"), "hi")).is_none());
+        assert!(demo_chat_text(&frame("text", "network", Value::Null, "   ")).is_none());
+        assert!(demo_chat_text(&frame("text", "network", Value::Null, &"x".repeat(2001))).is_none());
+        assert!(demo_chat_reads_lobby(Some("room=lobby")));
+        assert!(!demo_chat_reads_lobby(Some("room=network")));
+        assert!(!demo_chat_reads_lobby(None));
     }
 
     #[test]
@@ -1262,7 +1636,11 @@ mod tests {
         assert_eq!(demo["peers"][0]["advertise_addr"], "hidden");
         let mut node = json!({"hostname": "box", "listen_addrs": ["10.0.0.1:1"], "lat": 1.5});
         redact(&mut node, true);
-        assert_eq!(node, json!({"hostname": "hidden", "listen_addrs": [], "lat": null}));
+        // The machine's name stays: it is how a person tells the machines apart.
+        assert_eq!(node, json!({"hostname": "box", "listen_addrs": [], "lat": null}));
+        let mut address_name = json!({"hostname": "10.0.0.9"});
+        redact(&mut address_name, true);
+        assert_eq!(address_name["hostname"], "hidden");
     }
 
     #[test]
@@ -1278,6 +1656,32 @@ mod tests {
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0]["start_url"], "/auth/logs/oauth/google/start");
         assert!(plugins.contains("logs"));
+    }
+
+    #[test]
+    fn guest_plugins_are_the_ones_that_say_so() {
+        let answers = vec![
+            ("logs".to_owned(), json!({"providers": [], "guest": true})),
+            ("other".to_owned(), json!({"providers": []})),
+            ("../x".to_owned(), json!({"guest": true})),
+        ];
+        let guests = collect_guest_plugins(&answers);
+        assert_eq!(
+            guests.into_iter().collect::<Vec<_>>(),
+            vec!["logs".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_guest_fingerprint_follows_the_address_and_the_browser() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("Firefox"));
+        let a = guest_fingerprint(Some("203.0.113.1"), &headers);
+        assert_eq!(a, guest_fingerprint(Some("203.0.113.1"), &headers));
+        assert_ne!(a, guest_fingerprint(Some("203.0.113.2"), &headers));
+        headers.insert(header::USER_AGENT, HeaderValue::from_static("Chrome"));
+        assert_ne!(a, guest_fingerprint(Some("203.0.113.1"), &headers));
+        assert_eq!(a.len(), 32);
     }
 
     #[test]

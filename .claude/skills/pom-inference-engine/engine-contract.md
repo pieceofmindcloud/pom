@@ -27,7 +27,7 @@ POM settings that apply to this engine's deployments.
 
 | Operation | Request | Answer |
 |---|---|---|
-| `engine.load` | `params`: `model_path` (abs), `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus` (NVIDIA indices), `gpu_devices` (`{index, vendor, ordinal, name, vram_total_mb}`), `settings`, optional `link`, `mmproj_path`, `session_dir`, `role`, `prefill_min_tokens` | `{"status": "accepted"}` at once; the load runs on the plugin's thread. A refusal is an `Err` with the reason. |
+| `engine.load` | `params`: `model_path` (abs), `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus` (NVIDIA indices), `gpu_devices` (`{index, vendor, ordinal, name, vram_total_mb}`), `settings`, optional `link`, `mmproj_path`, `session_dir`, `role`, `prefill_min_tokens`, `range` (`{start_layer, end_layer}`: a stage cut from the whole model, see below) | `{"status": "accepted"}` at once; the load runs on the plugin's thread. A refusal is an `Err` with the reason. |
 | `engine.status` | - | `{state: idle|loading|ready|stopping|error, detail, n_ctx, ...}`. Read every 2 s. `ready` makes `/health` say `model_loaded`; `error`, or `idle` after serving, ends the generation and the supervisor restarts it within its budget. |
 | `engine.upstream` | - | `{"status": "ready", "port", "token"}` only while ready; `starting`; or `{"status": "error", "error"}` (an earlier stage answers error). |
 | `engine.link` | - | Stages only: `{"status": "ready", "port", "token"}` of an earlier stage's loopback link; the node hands it only to the next stage's machine. |
@@ -112,6 +112,13 @@ fetches and restores the session, and reads only the rest. Requires sessions.
 - Only the last stage takes requests. Up to `max_inflight` frames may be in
   flight; answers come back in order.
 - Reference protocol: Strata `src/program/stage_link.hpp`.
+- Optional, a stage from the whole model: a service that lists an architecture
+  in `stage_ranges` gets `model_path` = the whole model (its first file) and
+  `range: {start_layer, end_layer}` in `engine.load`, with the same `link`
+  rules (first stage when `start_layer` is 0, last when `end_layer` is the
+  last layer). It loads only those layers, the embedding on the first stage
+  and the head on the last; nothing is written to disk. Reference: Strata
+  `--stage-layers`, `pom-plugin-strata` `apply_range`.
 
 ## Health and placement the node derives
 

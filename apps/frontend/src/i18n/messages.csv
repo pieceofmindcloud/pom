@@ -1,8 +1,129 @@
 key,en,pt-BR
+"about.pomBlockedContainer","This node runs in a container: update it by rebuilding its image.","Este nó roda em um container: atualize-o reconstruindo a imagem."
+"about.pomBlockedInvitation","The site lists this release, but its download still needs an invitation, so this node cannot fetch it.","O site lista esta release, mas o download ainda exige convite, então este nó não consegue baixá-la."
+"about.pomCheckUnreachable","No release source answered:","Nenhuma fonte de releases respondeu:"
+"about.pomCurrentVersion","Running version","Versão em execução"
+"about.pomRestarting","Update downloaded. POM is restarting with the new release; this page reconnects when it is back.","Atualização baixada. O POM está reiniciando com a nova release; esta página reconecta quando ele voltar."
+"about.pomSourceGithub","GitHub releases","releases do GitHub"
+"about.pomSourceSite","POM site","site do POM"
+"about.pomUpToDate","POM is up to date.","O POM está atualizado."
+"about.pomUpdateApplyFailed","Could not apply the POM update.","Não foi possível aplicar a atualização do POM."
+"about.pomUpdateSubtitle","Checks POM's GitHub releases, then the site, and installs a newer release once you confirm: the plugin host swaps the files and restarts POM.","Verifica as releases do POM no GitHub e depois no site, e instala uma release mais nova quando você confirma: o plugin host troca os arquivos e reinicia o POM."
+"budget.blocked","Blocked","Bloqueado"
+"budget.credits","{count, plural, =0 {No reset credits} one {# reset credit} other {# reset credits}} · {used} used","{count, plural, =0 {Nenhum crédito de reset} one {# crédito de reset} other {# créditos de reset}} · {used} usados"
+"budget.grantUntil","for {time} more","por mais {time}"
+"budget.grantsTitle","Exceptional increases in force","Aumentos excepcionais em vigor"
+"budget.includesGrant","includes +{amount} granted by an admin","inclui +{amount} concedidos por um admin"
+"budget.input","Input","Entrada"
+"budget.loadFailed","Could not read the budget","Não foi possível ler o budget"
+"budget.manage","Reset the session or ask for more","Resetar a sessão ou pedir mais"
+"budget.none","No budget limits this machine","Nenhum budget limita esta máquina"
+"budget.noneHint","The admins have not assigned a plan to this machine, its team or everyone.","Os admins não atribuíram um plano a esta máquina, à equipe dela nem a todos."
+"budget.output","Output","Saída"
+"budget.pending","Request waiting since {date}","Pedido aguardando desde {date}"
+"budget.period.daily","Daily","Diário"
+"budget.period.monthly","Monthly","Mensal"
+"budget.period.session","{hours} h session","Sessão de {hours} h"
+"budget.period.weekly","Weekly","Semanal"
+"budget.requestAction","Send request","Enviar pedido"
+"budget.requestFailed","Could not send the request","Não foi possível enviar o pedido"
+"budget.requestHint","The admins see the request in the Exceptions tab of the Quota screen and may grant more tokens or reset credits.","Os admins veem o pedido na aba Exceções da tela Quota e podem conceder mais tokens ou créditos de reset."
+"budget.requestPlaceholder","Why you need it (optional)","Por que você precisa (opcional)"
+"budget.requestSent","Request sent to the admins","Pedido enviado aos admins"
+"budget.requestTitle","Ask for more budget","Pedir mais budget"
+"budget.requestUpdate","Update request","Atualizar pedido"
+"budget.resetAction","Reset session","Resetar sessão"
+"budget.resetDone","Session reset","Sessão resetada"
+"budget.resetFailed","Could not reset the session","Não foi possível resetar a sessão"
+"budget.resetHint","Spends one credit to end this machine's running session windows; the next request starts fresh ones. Shared pools are not reset.","Gasta um crédito para encerrar as janelas de sessão em andamento desta máquina; a próxima requisição começa novas. Pools compartilhados não são zerados."
+"budget.resetTitle","Reset my session","Resetar minha sessão"
+"budget.resetsIn","Turns over in {time} · {date}","Renova em {time} · {date}"
+"budget.scope.default","network default plan, for this machine","plano padrão da rede, para esta máquina"
+"budget.scope.everyone","shared by the whole network","compartilhado pela rede inteira"
+"budget.scope.everyoneMember","each machine of the network","cada máquina da rede"
+"budget.scope.node","this machine","esta máquina"
+"budget.scope.team","shared by team {team}","compartilhado pela equipe {team}"
+"budget.scope.teamMember","each member of team {team}","cada membro da equipe {team}"
+"budget.sessionIdle","No session running: the next request starts one","Sem sessão em andamento: a próxima requisição inicia uma"
+"budget.subtitle","The token budgets the network's admins set for this machine, checked before each request enters the pipeline.","Os budgets de tokens que os admins da rede definiram para esta máquina, verificados antes de cada requisição entrar na pipeline."
+"budget.title","Usage","Uso"
+"budget.unavailable","No admin answered","Nenhum admin respondeu"
+"budget.unavailableHint","Budgets live in the Request Logs plugin of an admin. While none answers, this machine's requests are not limited.","Os budgets ficam no plugin de Logs de Requisições de um admin. Enquanto nenhum responde, as requisições desta máquina não são limitadas."
+"budget.unlimited","no limit","sem limite"
+"budget.within","Within budget","Dentro do budget"
 "canvas.relayBypassed","The direct return {from} → {to} would go through the relay. POM is working around it: the answer comes back by the ring, over the same connections as the forward path.","A volta direta {from} → {to} passaria pelo relé. O POM está contornando: a resposta volta pelo anel, pelas mesmas conexões da ida."
 "canvas.relayEdgeHint","This link goes through a relay peer: every frame crosses an intermediate server, which adds latency. Review the route.","Esta ligação passa por um peer de relé: cada frame atravessa um servidor intermediário, o que aumenta a latência. Reveja a rota."
 "canvas.relayNotBypassed","POM cannot work around these legs: they are part of the forward path. When the first leg leaves this node, only requests that enter through here pay for it.","O POM não consegue contornar essas pernas: elas fazem parte da ida da pipeline. Quando a primeira perna sai deste nó, só as requisições que entram por aqui pagam por ela."
 "canvas.relayRouteHint","The fastest route crosses a relay peer because the machines could not connect directly (NAT, firewall or a failed hole punch). Every token pays the detour to the relay. To improve it, give the machines a direct path: publish the node ports, advertise a reachable address (a VPN such as Tailscale with POM_ADVERTISE_ADDR) or open the firewall so the hole punch succeeds.","A rota mais rápida atravessa um peer de relé porque as máquinas não conseguiram se conectar diretamente (NAT, firewall ou hole punch que falhou). Cada token paga o desvio até o relé. Para melhorar, dê às máquinas um caminho direto: publique as portas do nó, anuncie um endereço alcançável (uma VPN como Tailscale com POM_ADVERTISE_ADDR) ou libere o firewall para o hole punch fechar."
+"deploymentLogs.collectionOff","Collection of the cluster process logs is off, so no new line arrives: what is shown is the last batch received.","A coleta dos logs de processo do cluster está desligada, então nenhuma linha nova chega: o que aparece é o último lote recebido."
+"deploymentLogs.collectionOffLink","Turn it on in Administrative preferences","Ligue nas Preferências administrativas"
+"deploymentLogs.collectionOffPrincipal","Collection of the cluster process logs is off on this network, so no new line arrives. An admin turns it on in Administrative preferences.","A coleta dos logs de processo do cluster está desligada nesta rede, então nenhuma linha nova chega. Um admin liga nas Preferências administrativas."
+"deploymentLogs.paused","Collection off","Coleta desligada"
+"enterprise.showcase.quota.title","Quota","Quota"
+"enterprise.store.badgePaddle","Secure payment with Paddle","Pagamento seguro com Paddle"
+"enterprise.store.contactBody","Every company needs something different: tell us how many computers and what support you need, and we send you an offer with the price and a link to subscribe.","Cada empresa tem uma necessidade: conte quantos computadores e que suporte você precisa, e enviamos uma proposta com o preço e um link para assinar."
+"enterprise.store.contactSales","Talk to sales","Falar com vendas"
+"enterprise.store.contactStep1.body","Tell us how many computers and what support you need. We send you an offer with the price and a link to subscribe with Paddle; card details never pass through your node.","Conte quantos computadores e que suporte você precisa. Enviamos uma proposta com o preço e um link para assinar com o Paddle; os dados do cartão nunca passam pelo seu nó."
+"enterprise.store.contactStep1.title","Talk to our team","Fale com a nossa equipe"
+"enterprise.store.ctaBody","One purchase brings Request Logs, Deployment Logs, Statistics and Quota. The price is shown at checkout. Cancel anytime.","Uma compra traz Logs de Requisições, Logs de Implantação, Estatísticas e Quota. O preço aparece no checkout. Cancele quando quiser."
+"enterprise.store.ctaContact","Business Pack (logs, statistics and quota) for your company, priced to what it needs. Talk to our team.","Business Pack (logs, estatísticas e quota) para a sua empresa, com preço sob medida. Fale com a nossa equipe."
+"enterprise.store.ctaPrice","Business Pack (logs, statistics and quota) for {price}. Cancel anytime.","Business Pack (logs, estatísticas e quota) por {price}. Cancele quando quiser."
+"enterprise.store.eyebrow","POM plugin · Business Pack: logs, statistics and quota","Plugin do POM · Business Pack: logs, estatísticas e quota"
+"enterprise.store.featuresTitle","Three screens, one purchase","Três telas, uma compra"
+"enterprise.store.forAdmins","Made for the network's admins: they see every node's requests, usage and budgets.","Feito para os admins da rede: eles veem as requisições, o uso e as quotas de todos os nós."
+"enterprise.store.included1","Request Logs, Deployment Logs, Statistics and Quota screens","Telas de Logs de Requisições, Logs de Implantação, Estatísticas e Quota"
+"enterprise.store.included5","Token budgets per machine, team or project, with a default plan for the network","Quotas de tokens por máquina, equipe ou projeto, com um plano padrão para a rede"
+"enterprise.store.name","Business Pack","Business Pack"
+"enterprise.store.opensContact","Opens the contact form in your browser.","Abre o formulário de contato no navegador."
+"enterprise.store.opensInBrowser","Opens the purchase in your browser; POM keeps running here.","Abre a compra no seu navegador; o POM continua rodando aqui."
+"enterprise.store.quota.feature1","Plans of input and output tokens per day, week, month or a rolling session","Planos de tokens de entrada e saída por dia, semana, mês ou sessão contínua"
+"enterprise.store.quota.feature2","Assign them to a machine, a team, a project or the whole network","Atribua a uma máquina, a uma equipe, a um projeto ou à rede inteira"
+"enterprise.store.quota.feature3","A default plan for every machine that joins without one","Um plano padrão para toda máquina que entrar sem plano"
+"enterprise.store.quota.feature4","Grants, session resets and requests for more, in an exceptions inbox","Concessões, resets de sessão e pedidos de mais quota, numa caixa de exceções"
+"enterprise.store.quota.feature5","Each machine sees its own usage on its Usage screen","Cada máquina vê o próprio consumo na tela Uso"
+"enterprise.store.quota.summary","Keep the network's tokens fair, without a spreadsheet.","Mantenha os tokens da rede justos, sem planilha."
+"enterprise.store.step1.body","The button opens the purchase in your browser, with Paddle and the official price published by POM. Card data never touches your node.","O botão abre a compra no seu navegador, com o Paddle e o preço oficial publicado pelo POM. Os dados do cartão nunca passam pelo seu nó."
+"enterprise.store.step1.title","Buy with Paddle","Compre com Paddle"
+"enterprise.store.step3.body","Paste the key in the Plugins menu on an admin machine. The plugin installs itself and its screens replace this page.","Cole a chave no menu Plugins de uma máquina admin. O plugin se instala sozinho e as telas dele substituem esta página."
+"lobby.detail","You are talking to this network's admins before joining it. Only they read what you write here and see the hardware card beside it, and the conversation is erased once you are admitted.","Você está conversando com os administradores desta rede antes de entrar. Só eles leem o que você escreve aqui e veem o cartão de hardware ao lado, e a conversa é apagada quando você for admitido."
+"lobby.emptyMember","Machines that have not joined yet write here before asking to be admitted, each in its own conversation with the admins.","Máquinas que ainda não entraram escrevem aqui antes de pedir admissão, cada uma numa conversa própria com os administradores."
+"lobby.hintMember","Enter sends. Only this candidate and the network's admins read this conversation. It is erased when the candidate is approved, or after a day without messages.","Enter envia. Só este candidato e os administradores da rede leem esta conversa. Ela é apagada quando o candidato é aprovado, ou após um dia sem mensagens."
+"nav.budget","Usage","Uso"
+"nav.businessPack","Business Pack","Business Pack"
+"network.chatVisitorsHint","Off, the Chat is for admins and workers only. On, visitors join it and see who else talks there, other visitors included.","Desligado, o Chat é só de administradores e trabalhadores. Ligado, visitantes entram nele e veem quem mais fala ali, inclusive outros visitantes."
+"network.logsNotAuthority","Only an admin decides this, and the decision applies to the whole cluster.","Só um admin decide isso, e a decisão vale para o cluster inteiro."
+"network.logsPropagates","No restart needed. Any admin can change it: a secondary admin's change goes to the main node, and the other nodes confirm the policy with it before adopting.","Não precisa reiniciar. Qualquer admin pode mudar: a mudança de um admin secundário vai para o principal, e os demais nós confirmam a política com ele antes de adotar."
+network.relayPolicy.all,All relays,Todos os relays
+network.relayPolicy.allDetail,"n0's public relays, this network's dedicated relays and member relays. Machines behind NAT connect without an open port.","Relays públicos da n0, relays dedicados desta rede e relays de membros. Máquinas atrás de NAT conectam sem porta aberta."
+network.relayPolicy.members,Only this network's relays,Só relays desta rede
+network.relayPolicy.membersDetail,Dedicated relays (relay_peers) and machines of this network that relay. No public relay run by third parties.,Relays dedicados (relay_peers) e máquinas desta rede que fazem relay. Nenhum relay público de terceiros.
+network.relayPolicy.none,No relay,Nenhum relay
+network.relayPolicy.noneDetail,"Direct connections only: local network, public address or an open port. Nothing passes through a relay.","Só conexões diretas: rede local, endereço público ou porta aberta. Nada passa por relay."
+network.relayPolicyFailed,Could not change the relay policy,Não foi possível alterar a regra de relays
+network.relayPolicyHowItWorks,"Traffic through a relay is already end-to-end encrypted: the relay cannot read it, but it sees which machines talk, when and how much. Each machine removes the relays this policy does not allow from its own list, so it never connects to them, and a machine that ignores the policy still cannot reach a compliant one through them. Before joining, the lobby and the public directory still use n0's relays.","O tráfego por um relay já é criptografado de ponta a ponta: o relay não consegue lê-lo, mas vê quais máquinas conversam, quando e quanto. Cada máquina tira da própria lista os relays que esta regra não permite, então nunca se conecta a eles, e uma máquina que ignore a regra ainda assim não alcança uma que a cumpre por eles. Antes de entrar na rede, o lobby e o diretório público continuam usando os relays da n0."
+network.relayPolicyNoneWarning,"Without a relay, a machine behind NAT (CGNAT, home or office router) without an open port cannot reach the others, and the anonymous relay of visitors stops. Make sure the machines see each other directly (same network, VPN or forwarded port) before choosing this.","Sem relay, uma máquina atrás de NAT (CGNAT, roteador de casa ou escritório) sem porta aberta não alcança as outras, e o relay anônimo dos visitantes para. Garanta que as máquinas se enxerguem direto (mesma rede, VPN ou porta liberada) antes de escolher isto."
+network.relayPolicyNotAuthority,Only the network's principal admin changes this.,Só o administrador principal da rede altera isto.
+network.relayPolicyPropagates,Every machine of the network applies it within a few seconds.,Todas as máquinas da rede aplicam em alguns segundos.
+network.relayPolicySubtitle,Which relays the machines of this network may use to reach each other,Quais relays as máquinas desta rede podem usar para se alcançar
+network.relayPolicyTitle,Relays,Relays
+"plugins.contactSales","Talk to sales","Falar com vendas"
+"plugins.githubInstallConfirmTitle","Install {name}?","Instalar {name}?"
+"plugins.githubInstallLatestDescription","The latest release published for this machine ({version}) will be installed on this node.","A última release publicada para esta máquina ({version}) será instalada neste nó."
+"plugins.githubReleaseSelect","Update to install","Atualização para instalar"
+"plugins.githubUpdateConfirmTitle","Update {name}?","Atualizar {name}?"
+"plugins.priceOnRequest","Pricing on request","Preço sob consulta"
+"plugins.promotion.badge","Sale -{percent}%","Promoção -{percent}%"
+"plugins.promotion.note","Limited time, until {date}: {percent}% off {appliesTo, select, first {the first payment} payments {the first {payments} payments} other {every payment while you stay subscribed}}.","Por tempo limitado, até {date}: {percent}% de desconto {appliesTo, select, first {no primeiro pagamento} payments {nos {payments} primeiros pagamentos} other {em todos os pagamentos, enquanto a assinatura durar}}."
+"plugins.updatesCheck","Check for updates","Verificar atualizações"
+"plugins.updatesCheckFailed","Some sources did not answer:","Algumas fontes não responderam:"
+"plugins.updatesFailed","Could not install this update.","Não foi possível instalar esta atualização."
+"plugins.updatesInstall","Install","Instalar"
+"plugins.updatesInstallAll","{count, plural, one {Install # update} other {Install all # updates}}","{count, plural, one {Instalar # atualização} other {Instalar todas as # atualizações}}"
+"plugins.updatesInstalled","Installed","Instalada"
+"plugins.updatesNone","POM and every installed plugin are up to date.","O POM e todos os plugins instalados estão atualizados."
+"plugins.updatesRestarting","Restarting","Reiniciando"
+"plugins.updatesRestarts","Restarts POM","Reinicia o POM"
+"plugins.updatesTitle","Available updates","Atualizações disponíveis"
 about.contactLink,Contact POM,Contato do POM
 about.dataCities,"the countries, states and cities built into the node, unmodified, under the Open Database License 1.0.","os países, estados e cidades embutidos no nó, sem modificação, sob a Open Database License 1.0."
 about.dataMap,"the map images of the network location dialog, loaded from its servers only while that dialog is open.","as imagens do mapa do diálogo de localização da rede, carregadas dos servidores dele somente enquanto o diálogo está aberto."
@@ -25,18 +146,8 @@ about.placeholderLicenseValue,MIT,MIT
 about.placeholderTitle,POM software license,Licença do software POM
 about.pluginBaseDescription,"POM plugins are built from the Plugin Base template and SDK. Follow its README to create a repository, implement the plugin manifest and UI, then build and publish releases for POM to install.","Plugins POM podem ser criados a partir do template e SDK do Plugin Base. Siga o README para criar um repositório, implementar o manifesto e a interface do plugin, e então compilar e publicar releases para instalação no POM."
 about.pluginBaseLink,POM Plugin Base,POM Plugin Base
-"about.pomBlockedContainer","This node runs in a container: update it by rebuilding its image.","Este nó roda em um container: atualize-o reconstruindo a imagem."
-"about.pomBlockedInvitation","The site lists this release, but its download still needs an invitation, so this node cannot fetch it.","O site lista esta release, mas o download ainda exige convite, então este nó não consegue baixá-la."
-"about.pomCheckUnreachable","No release source answered:","Nenhuma fonte de releases respondeu:"
-"about.pomCurrentVersion","Running version","Versão em execução"
-"about.pomRestarting","Update downloaded. POM is restarting with the new release; this page reconnects when it is back.","Atualização baixada. O POM está reiniciando com a nova release; esta página reconecta quando ele voltar."
-"about.pomSourceGithub","GitHub releases","releases do GitHub"
-"about.pomSourceSite","POM site","site do POM"
-"about.pomUpToDate","POM is up to date.","O POM está atualizado."
 about.pomUpdateApply,Install and restart,Instalar e reiniciar
-"about.pomUpdateApplyFailed","Could not apply the POM update.","Não foi possível aplicar a atualização do POM."
 about.pomUpdateAvailable,POM update available: {version},Atualização do POM disponível: {version}
-"about.pomUpdateSubtitle","Checks POM's GitHub releases, then the site, and installs a newer release once you confirm: the plugin host swaps the files and restarts POM.","Verifica as releases do POM no GitHub e depois no site, e instala uma release mais nova quando você confirma: o plugin host troca os arquivos e reinicia o POM."
 about.pomUpdateTitle,POM update,Atualização do POM
 about.repository,Repository,Repositório
 about.repositoryLicenseLink,Repository LICENSE file,Arquivo LICENSE do repositório
@@ -51,23 +162,23 @@ about.subtitle,The software and libraries that make POM possible.,Os softwares e
 about.title,About,Sobre
 about.version,Version,Versão
 about.websiteLink,POM website,Site do POM
+accessGate.demoNotice,Demonstration: you can watch the network and run inference within your quota.,Demonstração: você pode acompanhar a rede e fazer inferência dentro da sua cota.
 accessGate.eyebrow,Administrative surface,Superfície administrativa
 accessGate.invalid,That token was not accepted.,Esse token não foi aceito.
 accessGate.label,Administrative access token,Token de acesso administrativo
+accessGate.operatorSubtitle,Operator access to this node. Sessions end after 30 minutes without use.,Acesso do operador a este nó. A sessão termina após 30 minutos sem uso.
 accessGate.passwordInvalid,That password was not accepted.,Essa senha não foi aceita.
 accessGate.passwordLabel,Administrative access password,Senha de acesso administrativo
 accessGate.passwordPlaceholder,Password,Senha
+accessGate.providersSubtitle,Sign in to use this network.,Entre para usar esta rede.
+accessGate.signInWith,Sign in with {provider},Entrar com {provider}
 accessGate.submit,Sign in,Entrar
 accessGate.subtitle,This interface is exposed to the network. Enter the administrative access token to continue.,Esta interface está exposta à rede. Informe o token de acesso administrativo para continuar.
 accessGate.title,Access token required,Token de acesso necessário
+accessGate.tooManyAttempts,Too many attempts. Try again in {seconds} s.,Muitas tentativas. Tente de novo em {seconds} s.
 accessGate.unavailable,The node did not publish its administrative access policy. The interface stays locked until it can verify that policy.,O nó não publicou a política de acesso administrativo. A interface permanece fechada até conseguir verificá-la.
 accessGate.unavailableTitle,Interface unavailable,Interface indisponível
 accessGate.username,Account,Conta
-accessGate.operatorSubtitle,Operator access to this node. Sessions end after 30 minutes without use.,Acesso do operador a este nó. A sessão termina após 30 minutos sem uso.
-accessGate.providersSubtitle,Sign in to use this network.,Entre para usar esta rede.
-accessGate.signInWith,Sign in with {provider},Entrar com {provider}
-accessGate.tooManyAttempts,Too many attempts. Try again in {seconds} s.,Muitas tentativas. Tente de novo em {seconds} s.
-accessGate.demoNotice,Demonstration: you can watch the network and run inference within your quota.,Demonstração: você pode acompanhar a rede e fazer inferência dentro da sua cota.
 adminAuthority.actionFailed,The authority action was refused.,A ação de autoridade foi recusada.
 adminAuthority.actionsSubtitle,Only the principal can change the administrator chain.,Somente o principal pode alterar a cadeia de administradores.
 adminAuthority.actionsTitle,Administrator actions,Ações de administrador
@@ -124,48 +235,6 @@ adminAuthority.successorLabel,Successor,Sucessor
 adminAuthority.successorRule,This is the last node promoted by the principal. You cannot choose another one.,Este é o último nó promovido pelo principal. Não é possível escolher outro.
 adminAuthority.title,Network administration,Administração da rede
 app.topbarFailed,The top bar failed. The rest of the interface is still available.,A barra superior falhou. O resto da interface continua.
-"budget.blocked","Blocked","Bloqueado"
-"budget.credits","{count, plural, =0 {No reset credits} one {# reset credit} other {# reset credits}} · {used} used","{count, plural, =0 {Nenhum crédito de reset} one {# crédito de reset} other {# créditos de reset}} · {used} usados"
-"budget.grantUntil","for {time} more","por mais {time}"
-"budget.grantsTitle","Exceptional increases in force","Aumentos excepcionais em vigor"
-"budget.includesGrant","includes +{amount} granted by an admin","inclui +{amount} concedidos por um admin"
-"budget.input","Input","Entrada"
-"budget.loadFailed","Could not read the budget","Não foi possível ler o budget"
-"budget.manage","Reset the session or ask for more","Resetar a sessão ou pedir mais"
-"budget.none","No budget limits this machine","Nenhum budget limita esta máquina"
-"budget.noneHint","The admins have not assigned a plan to this machine, its team or everyone.","Os admins não atribuíram um plano a esta máquina, à equipe dela nem a todos."
-"budget.output","Output","Saída"
-"budget.pending","Request waiting since {date}","Pedido aguardando desde {date}"
-"budget.period.daily","Daily","Diário"
-"budget.period.monthly","Monthly","Mensal"
-"budget.period.session","{hours} h session","Sessão de {hours} h"
-"budget.period.weekly","Weekly","Semanal"
-"budget.requestAction","Send request","Enviar pedido"
-"budget.requestFailed","Could not send the request","Não foi possível enviar o pedido"
-"budget.requestHint","The admins see the request in the Exceptions tab of the Quota screen and may grant more tokens or reset credits.","Os admins veem o pedido na aba Exceções da tela Quota e podem conceder mais tokens ou créditos de reset."
-"budget.requestPlaceholder","Why you need it (optional)","Por que você precisa (opcional)"
-"budget.requestSent","Request sent to the admins","Pedido enviado aos admins"
-"budget.requestTitle","Ask for more budget","Pedir mais budget"
-"budget.requestUpdate","Update request","Atualizar pedido"
-"budget.resetAction","Reset session","Resetar sessão"
-"budget.resetDone","Session reset","Sessão resetada"
-"budget.resetFailed","Could not reset the session","Não foi possível resetar a sessão"
-"budget.resetHint","Spends one credit to end this machine's running session windows; the next request starts fresh ones. Shared pools are not reset.","Gasta um crédito para encerrar as janelas de sessão em andamento desta máquina; a próxima requisição começa novas. Pools compartilhados não são zerados."
-"budget.resetTitle","Reset my session","Resetar minha sessão"
-"budget.resetsIn","Turns over in {time} · {date}","Renova em {time} · {date}"
-"budget.scope.everyone","shared by the whole network","compartilhado pela rede inteira"
-"budget.scope.everyoneMember","each machine of the network","cada máquina da rede"
-"budget.scope.default","network default plan, for this machine","plano padrão da rede, para esta máquina"
-"budget.scope.node","this machine","esta máquina"
-"budget.scope.team","shared by team {team}","compartilhado pela equipe {team}"
-"budget.scope.teamMember","each member of team {team}","cada membro da equipe {team}"
-"budget.sessionIdle","No session running: the next request starts one","Sem sessão em andamento: a próxima requisição inicia uma"
-"budget.subtitle","The token budgets the network's admins set for this machine, checked before each request enters the pipeline.","Os budgets de tokens que os admins da rede definiram para esta máquina, verificados antes de cada requisição entrar na pipeline."
-"budget.title","Usage","Uso"
-"budget.unavailable","No admin answered","Nenhum admin respondeu"
-"budget.unavailableHint","Budgets live in the Request Logs plugin of an admin. While none answers, this machine's requests are not limited.","Os budgets ficam no plugin de Logs de Requisições de um admin. Enquanto nenhum responde, as requisições desta máquina não são limitadas."
-"budget.unlimited","no limit","sem limite"
-"budget.within","Within budget","Dentro do budget"
 canvas.autoLayout,Arrange by layer order (keeps what you dragged),Organizar pela ordem das camadas (mantém o que você arrastou)
 canvas.cardExpand,Expand card,Expandir card
 canvas.cardMinimize,Minimize card,Minimizar card
@@ -191,8 +260,8 @@ canvas.inFlight,{count} in flight,{count} em voo
 canvas.layers,layers,camadas
 canvas.layersAllGpu,{count} on GPU,{count} na GPU
 canvas.layersOnCpu,"{cpu} layer{cpu, plural, =1 {} other {s}} did not fit on the GPU","{cpu} camada{cpu, plural, =1 {} other {s}} não coube{cpu, plural, =1 {} other {ram}} na GPU"
-canvas.layersSplit,{gpu} GPU · {cpu} CPU,{gpu} GPU · {cpu} CPU
 canvas.layersOnCpuWarning,"{cpu} of {served} layers on this machine run on the CPU: its VRAM did not fit the whole slice, so inference here is much slower. Free VRAM, lower the context or the sessions, or give this machine fewer layers.","{cpu} de {served} camadas desta máquina rodam na CPU: a VRAM dela não coube a fatia inteira, então a inferência aqui fica bem mais lenta. Libere VRAM, reduza o contexto ou as sessões, ou dê menos camadas a esta máquina."
+canvas.layersSplit,{gpu} GPU · {cpu} CPU,{gpu} GPU · {cpu} CPU
 canvas.legendInactive,Possible traffic,Tráfego possível
 canvas.legendParallel,Parallel route,Rota paralela
 canvas.legendPrimary,Live route,Rota em uso
@@ -223,8 +292,8 @@ canvas.returnDirect,direct return,resposta direta
 canvas.returnDirectHint,Direct return: the last machine answers the gateway itself; each leg costs half a round trip.,Resposta direta: a última máquina responde ao próprio gateway; cada perna custa meio RTT.
 canvas.returnRing,ring,anel
 canvas.returnRingHint,"Ring: the answer comes back over the forward connections, so the tail''s return is not paid.","Anel: a resposta volta pelas conexões da ida, então a volta da cauda não é paga."
-canvas.roleShared,Prefill/Decode,Prefill/Decode
 canvas.rolePrefill,Prefill first,Prefill primeiro
+canvas.roleShared,Prefill/Decode,Prefill/Decode
 canvas.speedDecode,decode,decode
 canvas.speedPrefill,prefill,prefill
 canvas.speedRelative,"{kind}: {value} tok/s, {percent}% of the fastest slice of this model. Green from 75%, amber from 40%, red below.","{kind}: {value} tok/s, {percent}% da fatia mais rápida deste modelo. Verde a partir de 75%, âmbar a partir de 40%, vermelho abaixo."
@@ -396,36 +465,36 @@ chat.wait.wake.4,Warming up the GPUs. Coffee is brewing...,Aquecendo as GPUs. O 
 chat.wait.wake.5,"Putting the mind back together, piece by piece...","Remontando a mente, peça por peça..."
 chat.wait.wake.6,Almost awake. Your request is first in line...,Quase acordados. Seu pedido é o primeiro da fila...
 chatImage.alt,"Generated image, {width} by {height}","Imagem gerada, {width} por {height}"
+chatImage.answer,Answer with,Responder com
+chatImage.attachedForTool,"[The user attached an image you cannot see. If they want an image made from it, call generate_image with use_attached_image set to true.]","[O usuário anexou uma imagem que você não consegue ver. Se ele quiser uma imagem feita a partir dela, chame generate_image com use_attached_image verdadeiro.]"
+chatImage.baseHint,"Attach an image to the message to use it as the base: the new image starts from it.","Anexe uma imagem à mensagem para usá-la como base: a nova imagem parte dela."
+chatImage.baseTooLarge,"The base image must be a PNG or JPEG of at most 16 MB.","A imagem de base precisa ser PNG ou JPEG de até 16 MB."
 chatImage.download,Download,Baixar
+chatImage.formImageRefused,"Choose a PNG or JPEG image up to 16 MiB.","Escolha uma imagem PNG ou JPEG de até 16 MiB."
+chatImage.formRun,Run,Executar
+chatImage.functions,Functions,Funções
+chatImage.functionsHint,"Published ComfyUI workflows: the model calls them in Automatic mode, or run one here with its form.","Workflows do ComfyUI publicados: o modelo os chama no modo Automático, ou execute um aqui pelo formulário."
 chatImage.generating,Generating the image…,Gerando a imagem…
 chatImage.missing,This image is no longer on this node,Esta imagem não está mais neste nó
-chatImage.off,Text answer,Resposta em texto
-chatImage.progress,"Generating the image: step {step} of {of}","Gerando a imagem: passo {step} de {of}"
-chatImage.title,Generated image,Imagem gerada
-chatImage.toggle,Generate image,Gerar imagem
-chatImage.answer,Answer with,Responder com
-chatImage.baseHint,"Attach an image to the message to use it as the base: the new image starts from it.","Anexe uma imagem à mensagem para usá-la como base: a nova imagem parte dela."
-chatImage.formRun,Run,Executar
-chatImage.formImageRefused,"Choose a PNG or JPEG image up to 16 MiB.","Escolha uma imagem PNG ou JPEG de até 16 MiB."
-chatImage.functions,Functions,Funções
-chatImage.runWorkflow,"Run {workflow}…","Executar {workflow}…"
-chatImage.functionsHint,"Published ComfyUI workflows: the model calls them in Automatic mode, or run one here with its form.","Workflows do ComfyUI publicados: o modelo os chama no modo Automático, ou execute um aqui pelo formulário."
-chatImage.noBase,"This workflow takes no base image. Choose the built-in workflow of an up-to-date ComfyUI plugin (it lists the image input) or send the message without the image.","Este fluxo não aceita imagem de base. Escolha o fluxo pronto de um plugin do ComfyUI atualizado (ele anuncia a entrada de imagem) ou envie a mensagem sem a imagem."
-chatImage.on,"Generate image: {workflow}, {size}","Gerar imagem: {workflow}, {size}"
-chatImage.size,Image size,Tamanho da imagem
-chatImage.sizeDefault,Workflow default,Padrão do fluxo
-chatImage.toggleHint,"Generate an image instead of a text answer","Gerar uma imagem em vez de uma resposta em texto"
-chatImage.baseTooLarge,"The base image must be a PNG or JPEG of at most 16 MB.","A imagem de base precisa ser PNG ou JPEG de até 16 MB."
-chatImage.open,Click to open the full image,Clique para abrir a imagem inteira
-chatImage.attachedForTool,"[The user attached an image you cannot see. If they want an image made from it, call generate_image with use_attached_image set to true.]","[O usuário anexou uma imagem que você não consegue ver. Se ele quiser uma imagem feita a partir dela, chame generate_image com use_attached_image verdadeiro.]"
 chatImage.mode.always,Always image,Sempre imagem
 chatImage.mode.alwaysHint,Every message goes straight to the workflow,Toda mensagem vai direto para o fluxo
 chatImage.mode.auto,Automatic,Automático
 chatImage.mode.autoHint,The model makes an image when you ask for one,O modelo faz uma imagem quando você pede
 chatImage.mode.text,Text only,Só texto
 chatImage.mode.textHint,Never makes images,Nunca faz imagens
+chatImage.noBase,"This workflow takes no base image. Choose the built-in workflow of an up-to-date ComfyUI plugin (it lists the image input) or send the message without the image.","Este fluxo não aceita imagem de base. Escolha o fluxo pronto de um plugin do ComfyUI atualizado (ele anuncia a entrada de imagem) ou envie a mensagem sem a imagem."
+chatImage.off,Text answer,Resposta em texto
+chatImage.on,"Generate image: {workflow}, {size}","Gerar imagem: {workflow}, {size}"
 chatImage.onAuto,"Images on request: {workflow}, {size}","Imagens quando pedidas: {workflow}, {size}"
+chatImage.open,Click to open the full image,Clique para abrir a imagem inteira
+chatImage.progress,"Generating the image: step {step} of {of}","Gerando a imagem: passo {step} de {of}"
 chatImage.prompt,Prompt,Prompt
+chatImage.runWorkflow,"Run {workflow}…","Executar {workflow}…"
+chatImage.size,Image size,Tamanho da imagem
+chatImage.sizeDefault,Workflow default,Padrão do fluxo
+chatImage.title,Generated image,Imagem gerada
+chatImage.toggle,Generate image,Gerar imagem
+chatImage.toggleHint,"Generate an image instead of a text answer","Gerar uma imagem em vez de uma resposta em texto"
 chatImage.workflow,Workflow,Fluxo
 cluster.peerCount,"{count, plural, one {{count} node} other {{count} nodes}}","{count, plural, one {{count} nó} other {{count} nós}}"
 common.cancel,Cancel,Cancelar
@@ -484,10 +553,6 @@ dashboard.flow,Flow,Fluxo
 dashboard.free,free,livres
 dashboard.gpuPower,Power,Potência
 dashboard.gpuProcesses,GPU processes,Processos na GPU
-dashboard.otherGpuProcesses,Other processes,Outros processos
-dashboard.modelStorage,Model storage,Armazenamento de modelos
-dashboard.sharedDisksNote,"Other machines see only one Model storage total: the free space of the volumes that can receive model slices, without their names.","As outras máquinas veem só um total de Armazenamento de modelos: o espaço livre dos volumes que podem receber fatias de modelo, sem os nomes deles."
-dashboard.sharedProcessesNote,"Other machines see only POM's processes, by name; every other process is shown to them as one Other processes total.","As outras máquinas veem só os processos do POM, pelo nome; todos os outros aparecem para elas como um único total de Outros processos."
 dashboard.gpuTemperature,"GPU temperature{__truthy_label, select, false {} other { · {label}}}","Temperatura da GPU{__truthy_label, select, false {} other { · {label}}}"
 dashboard.gpuUsage,Usage,Uso
 dashboard.gpus,GPUs,GPUs
@@ -537,10 +602,13 @@ dashboard.localServing,serving this model,servindo este modelo
 dashboard.localSlice,This node's slice,Fatia deste nó
 dashboard.localSliceUnavailable,The slice served by this node is unavailable,A fatia servida por este nó está indisponível
 dashboard.machineDetails,Details for {hostname},Detalhes de {hostname}
+dashboard.machineProperties,Machine: {host},Máquina: {host}
 dashboard.machines,Machines,Máquinas
 dashboard.middle,intermediate layer,camada intermediária
 dashboard.missingLayers,"{count} layers are missing before the pipeline is complete. While there is a coverage gap, no request is served jointly and the response returns source: none.","Faltam {count} camadas para o pipeline fechar. Enquanto houver buraco na cobertura, nenhuma requisição é atendida em conjunto e a resposta volta com source: none."
+dashboard.mixedEngines,"The model {models} runs on more than one engine. Each pipeline uses a single engine: machines of another engine do not link to these and are not routed as hops.","O modelo {models} roda em mais de um motor. Cada pipeline usa um único motor: máquinas de outro motor não se ligam a estas e não entram no roteamento como saltos."
 dashboard.model,Model,Modelo
+dashboard.modelStorage,Model storage,Armazenamento de modelos
 dashboard.mtpReady,MTP active,MTP ativo
 dashboard.mtpReadyRam,MTP active in RAM,MTP ativo na RAM
 dashboard.mtpReadyUnknown,MTP active (location unknown),MTP ativo (local não informado)
@@ -551,7 +619,6 @@ dashboard.mtpUnavailable,MTP unavailable,MTP indisponível
 dashboard.mtpUnavailableDetail,"This deployment requested MTP, but the runtime could not keep its nextn context active.","Esta implantação pediu MTP, mas o runtime não conseguiu manter o contexto nextn ativo."
 dashboard.noGpu,GPU,GPU
 dashboard.noMachines,No machines on the network,Nenhuma máquina na rede
-dashboard.mixedEngines,"The model {models} runs on more than one engine. Each pipeline uses a single engine: machines of another engine do not link to these and are not routed as hops.","O modelo {models} roda em mais de um motor. Cada pipeline usa um único motor: máquinas de outro motor não se ligam a estas e não entram no roteamento como saltos."
 dashboard.noMachinesDetail,"As soon as a peer is found, its memory, disk, and model appear here.","Assim que um peer for encontrado, a memória, o disco e o modelo dele aparecem aqui."
 dashboard.noModelAssigned,no model assigned,nenhum modelo atribuído
 dashboard.noSlice,no slice,sem fatia
@@ -560,6 +627,7 @@ dashboard.nodeNoResponse,The node did not respond,O nó não respondeu
 dashboard.noneLoaded,none loaded,nenhum carregado
 dashboard.notAdvertised,not advertised,não anunciada
 dashboard.notServing,not serving a model,não está servindo um modelo
+dashboard.otherGpuProcesses,Other processes,Outros processos
 dashboard.paramBatch,n_batch / n_ubatch,n_batch / n_ubatch
 dashboard.paramCacheType,KV cache type (K / V),Tipo do cache KV (K / V)
 dashboard.paramCtx,n_ctx / per sequence,n_ctx / por sequência
@@ -599,6 +667,8 @@ dashboard.services,Services,Serviços
 dashboard.servicesTip,What the plugins of this machine serve to the whole network.,O que os plugins desta máquina servem para a rede inteira.
 dashboard.serving,serving,servindo
 dashboard.session,"{count, plural, =1 {session} other {sessions}}","{count, plural, =1 {sessão} other {sessões}}"
+dashboard.sharedDisksNote,"Other machines see only one Model storage total: the free space of the volumes that can receive model slices, without their names.","As outras máquinas veem só um total de Armazenamento de modelos: o espaço livre dos volumes que podem receber fatias de modelo, sem os nomes deles."
+dashboard.sharedProcessesNote,"Other machines see only POM's processes, by name; every other process is shown to them as one Other processes total.","As outras máquinas veem só os processos do POM, pelo nome; todos os outros aparecem para elas como um único total de Outros processos."
 dashboard.single,serves the full model,serve o modelo inteiro
 dashboard.subtitle,Network machines and the path a request travels between them.,Máquinas da rede e o caminho que uma requisição percorre entre elas.
 dashboard.temperatureAttention,attention,atenção
@@ -621,12 +691,17 @@ dashboard.updateTitle,Update this machine?,Atualizar esta máquina?
 dashboard.updateWarning,It stops if there are uncommitted changes or the repository is on another branch. An open cargo build is serialized with this one and the binary is replaced.,"Para se houver alterações não commitadas ou se o repositório estiver em outro branch. Um cargo build aberto é serializado com este, e o binário é substituído."
 dashboard.usedOf,{used} of {total},{used} de {total}
 dashboard.versionProperties,Deployment version properties,Propriedades da versão da implantação
-dashboard.machineProperties,Machine: {host},Máquina: {host}
 dashboard.vram,VRAM · {name},VRAM · {name}
 dashboard.wiredMemory,Wired memory (Metal buffers),Memória wired (buffers do Metal)
+demo.cannotDeploy,A demonstration visit can build a deployment but not deploy it.,"Uma visita de demonstração pode montar uma implantação, mas não implantá-la."
+demo.cannotSave,A demonstration visit can walk through every step but cannot save.,"Uma visita de demonstração pode passar por todas as etapas, mas não pode salvar."
 demo.clockLabel,Demonstration time left: {time},Tempo restante da demonstração: {time}
 demo.clockTitle,Time left in this demonstration,Tempo restante nesta demonstração
 demo.expired,Your demonstration time is over. Sign in again to join the queue.,Seu tempo de demonstração acabou. Entre de novo para voltar à fila.
+demo.guestCooldown,Your demonstration time is over. You can start a new visit in {minutes} min.,Seu tempo de demonstração acabou. Você pode começar uma nova visita em {minutes} min.
+demo.guestExpired,Your demonstration time is over. Thanks for visiting!,Seu tempo de demonstração acabou. Obrigado pela visita!
+demo.guestRetry,Try again,Tentar de novo
+demo.guestStuck,"The demonstration may be full right now: it opens to a few users at a time, for a limited time each. This page tries again every 5 minutes.","A demonstração pode estar cheia agora: ela atende poucos usuários por vez, por tempo limitado cada. Esta página tenta de novo a cada 5 minutos."
 demo.leaveQueue,Leave the queue,Sair da fila
 demo.networkEyebrow,Current network,Rede atual
 demo.networkLocation,Location,Localização
@@ -635,33 +710,42 @@ demo.networkModel,Model in service,Modelo em serviço
 demo.networkNoSlice,no slice,sem fatia
 demo.networkOrganization,Organization,Organização
 demo.networkVisibility,Visibility,Visibilidade
-demo.queueDetail,"This server runs on a few machines, so it opens to {seats} people at a time, for {minutes} minutes each. Your turn comes up automatically.","Este servidor roda em poucas máquinas, então atende {seats} pessoas por vez, por {minutes} minutos cada. A sua vez chega automaticamente."
+demo.queueDetail,"Our demonstration environment is limited to {seats} simultaneous users, and each one has {minutes} minutes to come in and try the tool. You are in a queue waiting for your turn.","Nosso ambiente de demonstração está limitado a {seats} usuários simultâneos e cada um tem {minutes} minutos para entrar e testar a ferramenta. Você está numa fila aguardando a sua vez."
 demo.queueEta,Estimated wait: about {minutes} min,Espera estimada: cerca de {minutes} min
 demo.queueKeepOpen,Keep this page open to hold your place.,Mantenha esta página aberta para não perder o lugar.
 demo.queuePosition,You are number {position} of {waiting} waiting,Você é o número {position} de {waiting} aguardando
-demo.queueTitle,The demonstration is full right now,A demonstração está cheia no momento
+demo.queueTitle,"You are in the queue for the demonstration","Você está na fila da demonstração"
 demo.readOnly,Read-only on this demonstration server,Somente visualização neste servidor de demonstração
 demo.welcomeDisabled,"Several features are disabled here: installing plugins, slicing and transferring models, and changing the network or its settings. Screens show what exists, read-only.","Diversas funcionalidades estão desabilitadas aqui: instalar plugins, fatiar e transferir modelos e alterar a rede ou suas configurações. As telas mostram o que existe, somente para visualização."
+demo.welcomeDiscord,Join the community on Discord:,Entre na comunidade no Discord:
 demo.welcomeIntro,This is a demonstration server: you can chat with the model the network serves and look around the panel.,Este é um servidor de demonstração: você pode conversar com o modelo que a rede serve e conhecer o painel.
-demo.welcomeStart,Start,Começar
-demo.welcomeTime,Your visit lasts {minutes} minutes. The clock in the top bar shows how much time you have left.,Sua visita dura {minutes} minutos. O relógio na barra de topo mostra quanto tempo ainda resta.
 demo.welcomeStar,Did you like Piece of Mind? Please leave a star on GitHub:,Gostou do Piece of Mind? Deixe uma estrela no GitHub:
 demo.welcomeStarLink,github.com/pieceofmindcloud/pom,github.com/pieceofmindcloud/pom
+demo.welcomeStart,Start,Começar
+demo.welcomeTime,Your visit lasts {minutes} minutes. The clock in the top bar shows how much time you have left.,Sua visita dura {minutes} minutos. O relógio na barra de topo mostra quanto tempo ainda resta.
 demo.welcomeTitle,Welcome to the POM demonstration,Bem-vindo à demonstração do POM
+demo.queueAutoRefresh,"This page refreshes by itself every {minutes} minutes and tries to let you in again.","Esta página se atualiza sozinha a cada {minutes} minutos e tenta deixar você entrar de novo."
+demo.onlineTitle,"People using the demonstration now","Pessoas usando a demonstração agora"
+demo.onlineLabel,"{count} of {max} people using the demonstration now","{count} de {max} pessoas usando a demonstração agora"
+demo.newVisit,Start a new visit,Começar uma nova visita
+demo.signedOut,You left the demonstration.,Você saiu da demonstração.
+demo.infoTitle,About this demonstration,Sobre esta demonstração
+demo.welcomeSite,Learn more about the project:,Conheça mais sobre o projeto:
 deploy.adaptivePrefillChunksHint,"The gateway picks each prompt's chunk size, between 32 tokens and the prefill chunk above, from what it measured on the route (64 at least while the MoE expert cache is on). Off, every prompt goes in chunks of exactly the prefill chunk.","O gateway escolhe o tamanho do pedaço de cada prompt, entre 32 tokens e o pedaço de prefill acima, pelo que mediu na rota (no mínimo 64 com o cache de experts do MoE ligado). Desligado, todo prompt vai em pedaços de exatamente o pedaço de prefill."
 deploy.addNode,Add,Adicionar
 deploy.addNodeCacheK,KV cache K,Cache KV K
 deploy.addNodeCacheV,KV cache V,Cache KV V
-deploy.addNodeKvPlacement,KV cache location,Local do cache KV
-deploy.addNodeLoading,Loading this machine catalog…,Carregando o catálogo desta máquina…
 deploy.addNodeCtx,Context (empty = the deployment's),Contexto (vazio = o da implantação)
-deploy.addNodeSessions,Sessions (empty = the deployment's),Sessões (vazio = o da implantação)
+deploy.addNodeKvPlacement,KV cache location,Local do cache KV
+deploy.addNodeLayers,Layers this machine serves,Camadas que esta máquina serve
+deploy.addNodeLoading,Loading this machine catalog…,Carregando o catálogo desta máquina…
 deploy.addNodeMachine,Machine,Máquina
 deploy.addNodeMachineOptions,Machine options,Opções da máquina
+deploy.addNodeSessions,Sessions (empty = the deployment's),Sessões (vazio = o da implantação)
 deploy.addNodeSlice,Slice,Fatia
 deploy.addNodeTitle,Add a machine to this model,Somar uma máquina a este modelo
-deploy.addNodeWhole,Whole model,Modelo inteiro
 deploy.addNodeVisionMissing,"This machine has no vision projector for this model: copy one there to read images.","Esta máquina não tem projetor de visão para este modelo: copie um para lá para ler imagens."
+deploy.addNodeWhole,Whole model,Modelo inteiro
 deploy.adminOnlyAdd,Only the administrator can add a machine to a deployment.,Somente o administrador pode adicionar uma máquina à implantação.
 deploy.advancedDetail,"Each request accepts up to {prompt} prompt tokens, in chunks of {chunk}. More is rejected before reaching llama.cpp.","Cada requisição aceita até {prompt} tokens de prompt, em pedaços de {chunk}. Passar disso é recusado antes de chegar ao llama.cpp."
 deploy.allRanges,"All ranges available in the cluster, including ones from different slicing runs. Select the ones to launch and choose each destination.","Todas as faixas que existem no cluster, inclusive as de fatiamentos diferentes. Marque as que devem subir e escolha o destino de cada uma."
@@ -679,18 +763,8 @@ deploy.capacityWarnDetail,"The projected use is over capacity on {machines}. lla
 deploy.capacityWarnTitle,Projection exceeds a machine''s VRAM,A projeção passa da VRAM de uma máquina
 deploy.checking,checking…,conferindo…
 deploy.chooseMachine,— choose machine —,— escolher máquina —
-deploy.copiesAuthorize,Authorize and deploy,Autorizar e implantar
-deploy.copiesDetail,"{count, plural, one {This deploy copies # file ({size}) to a machine that does not have it yet.} other {This deploy copies # files ({size}) to machines that do not have them yet.}} Nothing is copied without your authorization.","{count, plural, one {Esta implantação copia # arquivo ({size}) para uma máquina que ainda não o tem.} other {Esta implantação copia # arquivos ({size}) para máquinas que ainda não os têm.}} Nada é copiado sem a sua autorização."
-deploy.copiesTitle,Authorize the copies,Autorizar as cópias
-deploy.copy, · copy, · copiar
-deploy.copyAndMerge,copy from {host} and merge into {range},copiar de {host} e fundir em {range}
-deploy.copyCount,"{count}{count, plural, =1 { copy} other { copies}}","{count}{count, plural, =1 { cópia} other { cópias}}"
-deploy.copyFrom,copy from {host},copiar de {host}
-deploy.copyMmproj,Vision projector {name},Projetor de visão {name}
-deploy.copyMtp,MTP draft {name},Rascunho MTP {name}
-deploy.copyRoute,from {from} to {to},de {from} para {to}
-deploy.copySummary,"{count}{count, plural, =1 { copy} other { copies}} · {size} over the network","{count}{count, plural, =1 { cópia} other { cópias}} · {size} pela rede"
 deploy.coverage,Layers covered by this selection,Camadas cobertas pela escolha
+deploy.cpuSplitConfirm,"{gpu} layers on the GPU, {cpu} on the CPU: generation will be much slower.","{gpu} camadas na GPU, {cpu} na CPU: a geração vai ficar bem mais lenta."
 deploy.deploy,Deploy this way,Implantar assim
 deploy.deployment,Deployment,Implantação
 deploy.destination,Destination,Vai para
@@ -889,14 +963,6 @@ deploy.speculative,Speculative decoding,Decodificação especulativa
 deploy.speculativeHint,"Guesses the next tokens from repetitions already in the text and checks them in a single pass through the pipeline, so one internet round trip can yield several tokens. A wrong guess is discarded, never emitted - the answer is the same either way.","Adivinha os próximos tokens a partir de repetições que já estão no texto e confere todos numa passagem só pelo pipeline, então uma ida e volta pela internet pode render vários tokens. Palpite errado é descartado, nunca sai na resposta - o texto gerado é o mesmo."
 deploy.startFailed,Deployment did not start,A implantação não começou
 deploy.started,Deployment started,Implantação começou
-deployProgress.runningTitle,Deploying,Implantando
-deployProgress.doneTitle,Deployment ready,Implantação pronta
-deployProgress.failedTitle,Deployment failed,A implantação falhou
-deployProgress.starting,Starting the deployment…,Iniciando a implantação…
-deployProgress.doneDetail,The model is in service on the network.,O modelo está em serviço na rede.
-deployProgress.failedDetail,The deployment did not complete.,A implantação não terminou.
-deployProgress.closeHint,"Closing this window does not stop the deployment; its result also stays in the bell.","Fechar esta janela não interrompe a implantação; o resultado também fica no sino."
-deployProgress.dashboard,Switch to dashboard,Ir para o painel
 deploy.startedDetail,"Follow it below or from the bell. Progress comes from the nodes, so reloading does not lose anything.","Acompanhe abaixo ou no sino. O progresso vem dos nós, então recarregar não perde nada."
 deploy.subtitle,"Take a model a cluster machine already has and put it into service on the network — a set of shards across machines, or one whole file on one machine.","Pegue um modelo que alguma máquina do cluster já tem e coloque-o para atender na rede - um conjunto de fatias espalhado pelas máquinas, ou um arquivo inteiro numa máquina só."
 deploy.thisDeployment,This deployment,Nesta implantação
@@ -924,43 +990,93 @@ deploy.wholeNoLayers,unreadable header,cabeçalho ilegível
 deploy.whyNotBlocked,see the reason above,veja o motivo acima
 deploy.whyNotChecking,checking with the node…,conferindo com o nó…
 deploy.whyNotEmpty,select at least one shard,marque ao menos uma fatia
+deploy.whyNotLacksModel,"Without the model: {machines}. Download it on the card, or place the file and rescan.","Sem o modelo: {machines}. Baixe pelo cartão, ou coloque o arquivo e varra de novo."
 deploy.whyNotMismatch,the node did not accept this selection - see the reason above,o nó não aceitou esta seleção - veja o motivo acima
 deploy.whyNotNoModel,choose a machine for the model,escolha uma máquina para o modelo
 deploy.yourChoice,Your selection,Sua escolha
+deployProgress.closeHint,"Closing this window does not stop the deployment; its result also stays in the bell.","Fechar esta janela não interrompe a implantação; o resultado também fica no sino."
+deployProgress.dashboard,Switch to dashboard,Ir para o painel
+deployProgress.doneDetail,The model is in service on the network.,O modelo está em serviço na rede.
+deployProgress.doneTitle,Deployment ready,Implantação pronta
+deployProgress.failedDetail,The deployment did not complete.,A implantação não terminou.
+deployProgress.failedTitle,Deployment failed,A implantação falhou
+deployProgress.runningTitle,Deploying,Implantando
+deployProgress.starting,Starting the deployment…,Iniciando a implantação…
 deployStudio.assignRangeAria,Assign {range} to {machine},Atribuir {range} a {machine}
 deployStudio.assignRangeTitle,Give {range} to {machine},Dar {range} a {machine}
+deployStudio.autoBalance,Auto-balance by free memory,Equilibrar pela memória livre
+deployStudio.autoBalanceAllLocked,Unlock at least two machines to balance their layers,Destrave pelo menos duas máquinas para equilibrar as camadas
+deployStudio.autoBalanceHint,"Divides the unlocked machines' layers in proportion to each one's free memory (GPU, or RAM without a GPU), counting the weights and the context's KV cache, at cuts the model allows. Locked ranges stay as they are.","Divide as camadas das máquinas destravadas na proporção da memória livre de cada uma (GPU, ou RAM sem GPU), contando os pesos e o cache KV do contexto, em cortes que o modelo permite. Faixas travadas ficam como estão."
+deployStudio.autoBalanceNoSizes,"The plan does not give the size of every cut yet, or the cuts are too few for every machine","O plano ainda não informa o tamanho de todo corte, ou os cortes são poucos para todas as máquinas"
+deployStudio.autoBalanceWaiting,Waiting for the model's cuts from the plan,Aguardando os cortes do modelo vindos do plano
 deployStudio.available,available,disponível
 deployStudio.availableForPlan,available for the plan,disponível para o plano
+deployStudio.cannotDeployClose,Back to the map,Voltar ao mapa
+deployStudio.cannotDeployDetail,The node checked the map on screen and found:,O nó verificou o mapa da tela e encontrou:
+deployStudio.cannotDeployTitle,This deployment cannot run,Esta implantação não pode rodar
 deployStudio.deploy,Deploy,Implantar
 deployStudio.deploymentName,Deployment name,Nome da implantação
 deployStudio.diskFree,Free disk,Disco livre
+deployStudio.downloadHere,Download here,Baixar aqui
+deployStudio.downloadingHere,Downloading the model: {pct}%,Baixando o modelo: {pct}%
 deployStudio.dropMachine,Drop a machine here to build the topology.,Solte uma máquina aqui para montar a topologia.
 deployStudio.dropToInclude,drop here to include,solte aqui para incluir
 deployStudio.engineUnsupported,This path cannot honor the chosen engine.,Este caminho não pode honrar o motor escolhido.
+deployStudio.fewerLayers,Fewer layers on {machine},Menos camadas em {machine}
 deployStudio.fitCanvas,Fit to canvas,Ajustar ao canvas
 deployStudio.fitsButTrimmed,"It fits on {machine}, but ""Fit to memory"" would trim the request.","Cabe em {machine}, mas o ""Ajustar à memória"" apararia o pedido."
+deployStudio.gpuCpuSplit,"{gpu} on GPU, {cpu} on CPU","{gpu} na GPU, {cpu} na CPU"
+deployStudio.gpuCpuSplitDetail,"The VRAM does not hold the whole range: the rest runs on the CPU from {ram} of RAM, and generation will be much slower.","A VRAM não comporta a faixa inteira: o resto roda na CPU usando {ram} de RAM, e a geração fica bem mais lenta."
 deployStudio.gpuLayers,GPU layers,Camadas GPU
 deployStudio.gpuProjectedOf,GPU {index}: {projected} of {total},GPU {index}: {projected} de {total}
 deployStudio.gpuProjection,GPU · projection,GPU · projeção
 deployStudio.gpuUseFree,GPU used / free,GPU uso / livre
+deployStudio.head,Head,Cabeça
 deployStudio.heldBy,Held by,Está em
 deployStudio.hideInspector,Hide inspector,Ocultar inspetor
 deployStudio.inDeployment,in the deployment,na implantação
 deployStudio.kindImage,Image model,Modelo de imagem
+deployStudio.kindPipeline,Pipeline,Pipeline
 deployStudio.kindShards,Shards,Fatias
+deployStudio.kindShardsLegacy,Slices (legacy),Fatias (legado)
 deployStudio.kindWhole,Whole model,Modelo inteiro
 deployStudio.kvCacheOnGpu,KV cache on the GPU,KV cache na GPU
+deployStudio.lacksFileDownload,"Download it here, or place the file in a model folder and rescan.","Baixe aqui, ou coloque o arquivo numa pasta de modelos e varra de novo."
+deployStudio.lacksFilePlace,"Place the file in one of its model folders, then rescan.","Coloque o arquivo numa das pastas de modelos dela e varra de novo."
+deployStudio.lacksMmproj,This machine needs the vision projector {name}.,Esta máquina precisa do projetor de visão {name}.
+deployStudio.lacksModel,"This machine does not have the model. Download it here, or place the file in a model folder and rescan.","Esta máquina não tem o modelo. Baixe aqui, ou coloque o arquivo numa pasta de modelos e varra de novo."
+deployStudio.lacksModelPlace,"This machine does not have the model. Place the file in one of its model folders, then rescan.","Esta máquina não tem o modelo. Coloque o arquivo numa das pastas de modelos dela e varra de novo."
+deployStudio.lacksMtp,This machine needs the MTP draft {name}.,Esta máquina precisa do rascunho MTP {name}.
+deployStudio.layerCount,{count} layers,{count} camadas
+deployStudio.layerLimitEmpty,"A machine would be left with no layers: take it off the map instead","Uma máquina ficaria sem camadas: tire-a do mapa"
+deployStudio.layerLimitLocked,This range is locked: unlock it to change it,Esta faixa está travada: destrave para mudar
+deployStudio.layerLimitNeighbourLocked,The machine sharing this cut is locked,A máquina que divide este corte está travada
+deployStudio.layerLimitNoCut,This model has no valid cut in that direction,Este modelo não tem corte válido nessa direção
 deployStudio.layers,Layers,Camadas
 deployStudio.layersOnMachine,Layers on this machine,Camadas nesta máquina
 deployStudio.layersOnPeer,Layers available on this peer,Camadas disponíveis neste peer
 deployStudio.layersWithoutMachine,Layers without a machine: {ranges},Camadas sem máquina: {ranges}
+deployStudio.legendAnswer,answer,resposta
 deployStudio.localRtt,Local RTT,RTT local
+deployStudio.lockRange,Lock the range of {machine},Travar a faixa de {machine}
+deployStudio.machineLacksModel,This machine does not have the model: download it here or place the file in one of its model folders.,Esta máquina não tem o modelo: baixe-o aqui ou coloque o arquivo em uma das pastas de modelos dela.
+deployStudio.machineOffMap,Take {machine} off the map,Tirar {machine} do mapa
+deployStudio.machineRangeAria,Layers of {machine},Camadas de {machine}
+deployStudio.machineRemoveRange,Remove {range} from {machine},Remover {range} de {machine}
+deployStudio.machineWholeModel,Whole model,Modelo inteiro
+deployStudio.machinesEmpty,Drag a machine from the strip below onto the map.,Arraste uma máquina da faixa abaixo para o mapa.
 deployStudio.mapSummary,{nodes} nodes · {layers} layers,{nodes} nós · {layers} camadas
 deployStudio.mapTitle,Deployment map,Mapa da implantação
+deployStudio.moveMachineDown,Move {machine} down the pipeline,Mover {machine} para baixo no pipeline
+deployStudio.moveMachineUp,Move {machine} up the pipeline,Mover {machine} para cima no pipeline
+deployStudio.markMachine,Mark {machine} for Split the layers,Marcar {machine} para dividir as camadas
 deployStudio.markPrimary,Mark as primary,Marcar como primary
 deployStudio.markPrimaryAria,Mark {machine} as primary,Marcar {machine} como primary
+deployStudio.marked,marked,marcada
+deployStudio.memoryKvRam,"Weights {weights} · KV {kv} in RAM","Pesos {weights} · KV {kv} na RAM"
+deployStudio.memoryKvVram,"Weights {weights} · KV {kv} in VRAM","Pesos {weights} · KV {kv} na VRAM"
 deployStudio.modelCoverage,Model coverage,Cobertura do modelo
-deployStudio.moeNeedsMetadata,MoE requires real expert metadata in the GGUF of this model.,MoE exige metadata real de experts no GGUF deste modelo.
+deployStudio.moreLayers,More layers on {machine},Mais camadas em {machine}
 deployStudio.noGpu,no GPU,sem GPU
 deployStudio.noLayerAssigned,No layer assigned,Nenhuma camada atribuída
 deployStudio.noMachine,no machine,nenhuma máquina
@@ -969,8 +1085,10 @@ deployStudio.noSliceAvailable,No slice available,Nenhuma fatia disponível
 deployStudio.nowProjection,now {pct}% · projection after the copy,agora {pct}% · projeção após a cópia
 deployStudio.organizeMachines,Organize machines,Organizar máquinas
 deployStudio.primary,Primary,Principal
+deployStudio.projection,≈ {used} of {holds},≈ {used} de {holds}
 deployStudio.projectionExceedsMany,The projection exceeds the VRAM of one of the GPUs of {machine}.,A projeção passa da VRAM de uma das GPUs de {machine}.
 deployStudio.projectionExceedsOne,The projection exceeds the VRAM of the GPU of {machine}.,A projeção passa da VRAM da GPU de {machine}.
+deployStudio.projectionHint,"Resident weights and KV cache of this machine''s ranges, against its GPUs'' total VRAM less the fit margin (the deploy releases the model it serves now).","Pesos residentes e cache KV das faixas desta máquina, contra a VRAM total das GPUs dela menos a margem do ajuste (a implantação libera o modelo que ela serve agora)."
 deployStudio.propertiesLabel,Deployment properties,Propriedades da implantação
 deployStudio.quantization,Quantization,Quantização
 deployStudio.ramUseFree,RAM used / free,RAM uso / livre
@@ -982,13 +1100,19 @@ deployStudio.removeFromDeployment,Remove from the deployment,Remover da implanta
 deployStudio.removeMachineAria,Remove {machine} from the deployment,Remover {machine} da implantação
 deployStudio.removeRangeAria,Remove {range} from {machine},Remover {range} de {machine}
 deployStudio.removeRangeTitle,Take {range} from {machine},Tirar {range} de {machine}
+deployStudio.rescan,Rescan,Varrer
 deployStudio.resetLayout,Reset layout,Redefinir disposição
 deployStudio.restoreNodePlan,Back to the node plan,Voltar ao plano do nó
 deployStudio.selectMachine,Select a machine on the canvas.,Selecione uma máquina no canvas.
+deployStudio.serviceNoRanges,"{service} does not split this model's architecture into layer ranges, so each machine runs the whole model (prefill and decode). To split the layers, deploy it with llama.cpp.","{service} não divide a arquitetura deste modelo em faixas de camadas, então cada máquina roda o modelo inteiro (prefill e decode). Para dividir as camadas, implante com o llama.cpp."
 deployStudio.showInspector,Show inspector,Mostrar inspetor
 deployStudio.size,Size,Tamanho
+deployStudio.splitLayers,Split the layers over {count} machines,Dividir as camadas entre {count} máquinas
+deployStudio.splitLayersHint,"Each machine serves its range from its own copy of the model, so nothing is copied.","Cada máquina serve sua faixa a partir da própria cópia do modelo, então nada é copiado."
+deployStudio.splitMarkedHint,Splits over the marked machines the layers no unmarked machine serves (the whole model when they serve it all) in proportion to each one''s VRAM: each share''s weights and KV cache fit its machine when the model fits them together. Unmarked machines keep their ranges; Shift+click a card on the map to mark or unmark it.,Divide entre as máquinas marcadas as camadas que nenhuma desmarcada serve (o modelo inteiro quando elas servem tudo) na proporção da VRAM de cada uma: os pesos e o cache KV de cada parte cabem na sua máquina quando o modelo cabe nelas juntas. As desmarcadas mantêm as faixas; Shift+clique num cartão do mapa marca ou desmarca.
 deployStudio.tabGlobal,Global,Globais
 deployStudio.tabMachine,Machine,Máquina
+deployStudio.tabMachines,"Machines ({count})","Máquinas ({count})"
 deployStudio.technicalModel,Technical model,Modelo técnico
 deployStudio.tensorParallel,Tensor parallel,Tensor paralelo
 deployStudio.tpGroup,Tensor Parallelism group,Grupo Tensor Parallelism
@@ -999,6 +1123,7 @@ deployStudio.tpPrimaryAria,Tensor Parallelism primary machine,Máquina principal
 deployStudio.tpWorkersAria,Tensor Parallelism workers,Workers do Tensor Parallelism
 deployStudio.trimmed,trimmed,aparada
 deployStudio.unassigned,unassigned,não atribuído
+deployStudio.unlockRange,Unlock the range of {machine},Destravar a faixa de {machine}
 deployStudio.unmarkPrimary,Unmark primary,Desmarcar primary
 deployStudio.unmarkPrimaryAria,Unmark {machine} as primary,Desmarcar {machine} como primary
 deployStudio.visionModel,Vision model,Modelo de visão
@@ -1010,9 +1135,6 @@ deployStudio.wholeOnEachPeer,whole model on each peer,modelo inteiro em cada pee
 deploymentLogs.allDeployments,All deployments,Todas as implantações
 deploymentLogs.autoScrollOff,Auto-scroll: off,Rolagem automática: desligada
 deploymentLogs.autoScrollOn,Auto-scroll: on,Rolagem automática: ligada
-"deploymentLogs.collectionOff","Collection of the cluster process logs is off, so no new line arrives: what is shown is the last batch received.","A coleta dos logs de processo do cluster está desligada, então nenhuma linha nova chega: o que aparece é o último lote recebido."
-"deploymentLogs.collectionOffLink","Turn it on in Administrative preferences","Ligue nas Preferências administrativas"
-"deploymentLogs.collectionOffPrincipal","Collection of the cluster process logs is off on this network, so no new line arrives. An admin turns it on in Administrative preferences.","A coleta dos logs de processo do cluster está desligada nesta rede, então nenhuma linha nova chega. Um admin liga nas Preferências administrativas."
 deploymentLogs.consoleSubtitle,Node names and source timestamps are informational; arrival order is authoritative.,Nomes dos nós e horários de origem são informativos; a ordem de chegada é a que vale.
 deploymentLogs.consoleTitle,Cluster console,Console do cluster
 deploymentLogs.copyFailed,Could not copy logs.,Não foi possível copiar os logs.
@@ -1026,7 +1148,6 @@ deploymentLogs.filterLabel,Filter by deployment,Filtrar por implantação
 deploymentLogs.live,Live,Ao vivo
 deploymentLogs.logsCopied,Logs copied,Logs copiados
 deploymentLogs.offline,Offline,Indisponível
-"deploymentLogs.paused","Collection off","Coleta desligada"
 deploymentLogs.pluginRequiredHint,"The cluster process logs are kept by the Logs plugin. Activate it on this admin machine, then turn collection on in Administrative preferences.","Os logs de processo do cluster ficam no plugin de Logs. Ative-o nesta máquina administradora e depois ligue a coleta nas Preferências administrativas."
 deploymentLogs.pluginRequiredTitle,The Logs plugin is not active here,O plugin de Logs não está ativo aqui
 deploymentLogs.subtitle,The cluster process console. Lines are shown in the order they reached this local replica.,O console do processo do cluster. As linhas aparecem na ordem em que chegaram a esta réplica local.
@@ -1035,6 +1156,7 @@ deployments.actions,Actions,Ações
 deployments.activateFailed,Could not make it the default,Não deu para tornar padrão
 deployments.activated,Requests for {model} now go here,Pedidos de {model} passam a vir para cá
 deployments.activeVersion,Active,Ativa
+deployments.backToVersion,Back to the version,Voltar à versão
 deployments.closeProperties,Close the properties,Fechar as propriedades
 deployments.collapseVersions,Hide versions,Ocultar versões
 deployments.created,Created,Criada
@@ -1054,11 +1176,26 @@ deployments.lastActivated,Last activation,Última ativação
 deployments.layers,Layers,Camadas
 deployments.listSubtitle,"“Serving” means live machines are announcing it. “Default” means it answers requests that name only the model, with no @ suffix.","“No ar” é ter máquina viva anunciando. “Padrão” é atender quem pede só o nome do modelo, sem o sufixo @."
 deployments.machine,Machine,Máquina
+deployments.machineEngine,Engine: {engine},Motor: {engine}
+deployments.machineProperties,Machine: {host},Máquina: {host}
 deployments.machines,Machines,Máquinas
 deployments.makeDefault,Make default,Tornar padrão
 deployments.model,Model,Modelo
 deployments.noAir,Not serving,Fora do ar
 deployments.nodeCount,"{count, plural, one {{count} machine} other {{count} machines}}","{count, plural, one {{count} máquina} other {{count} máquinas}}"
+deployments.nodeInheritChoice,Inherit from the version,Herdar da versão
+deployments.nodeInherited,inherited,herdado
+deployments.nodeOverrideCtx,Context (n_ctx),Contexto (n_ctx)
+deployments.nodeOverrideDone,The machine reloaded with its own values.,A máquina recarregou com os valores próprios.
+deployments.nodeOverrideFailed,The machine did not accept the change: {error},A máquina não aceitou a mudança: {error}
+deployments.nodeOverrideGpuLayers,GPU layers (n_gpu_layers),Camadas na GPU (n_gpu_layers)
+deployments.nodeOverrideKv,KV cache placement,Colocação do cache KV
+deployments.nodeOverrideReset,Back to the version's values,Voltar aos valores da versão
+deployments.nodeOverrideSave,Apply to this machine,Aplicar a esta máquina
+deployments.nodeOverrideSessions,Sessions (max_sessions),Sessões (max_sessions)
+deployments.nodeOverridesHint,Changing {machine}'s own values reloads only this machine. The other machines keep the version's values.,Mudar os valores próprios de {machine} recarrega só esta máquina. As outras mantêm os valores da versão.
+deployments.nodeOwn,own values,valores próprios
+deployments.nodesTitle,Machines,Máquinas
 deployments.peerIdle,Idle,Ocioso
 deployments.perMachine,Per machine,Por máquina
 deployments.redeploy,Re-deploy,Reimplantar
@@ -1077,23 +1214,7 @@ deployments.version,v{n},v{n}
 deployments.versionCount,"{count, plural, =1 {1 version} other {{count} versions}}","{count, plural, =1 {1 versão} other {{count} versões}}"
 deployments.versionPick,See the properties of version {n},Ver as propriedades da versão {n}
 deployments.versionProperties,Version {n} properties,Propriedades da versão {n}
-deployments.nodesTitle,Machines,Máquinas
-deployments.nodeOwn,own values,valores próprios
-deployments.nodeInherited,inherited,herdado
-deployments.nodeInheritChoice,Inherit from the version,Herdar da versão
-deployments.nodeOverridesHint,Changing {machine}'s own values reloads only this machine. The other machines keep the version's values.,Mudar os valores próprios de {machine} recarrega só esta máquina. As outras mantêm os valores da versão.
-deployments.nodeOverrideCtx,Context (n_ctx),Contexto (n_ctx)
-deployments.nodeOverrideSessions,Sessions (max_sessions),Sessões (max_sessions)
-deployments.nodeOverrideGpuLayers,GPU layers (n_gpu_layers),Camadas na GPU (n_gpu_layers)
-deployments.nodeOverrideKv,KV cache placement,Colocação do cache KV
-deployments.nodeOverrideReset,Back to the version's values,Voltar aos valores da versão
-deployments.nodeOverrideSave,Apply to this machine,Aplicar a esta máquina
-deployments.nodeOverrideDone,The machine reloaded with its own values.,A máquina recarregou com os valores próprios.
-deployments.nodeOverrideFailed,The machine did not accept the change: {error},A máquina não aceitou a mudança: {error}
 deployments.versionPropertiesHint,"The parameters this version was deployed with. To change them, redeploy with new parameters.","Os parâmetros com que esta versão foi implantada. Para mudá-los, reimplante com novos parâmetros."
-deployments.machineProperties,Machine: {host},Máquina: {host}
-deployments.backToVersion,Back to the version,Voltar à versão
-deployments.machineEngine,Engine: {engine},Motor: {engine}
 deployments.versionRedeployStarted,Re-deploying v{n},Reimplantando a v{n}
 deployments.versions,Versions,Versões
 deployments.versionsHint,"Every settings change under this deployment id, newest first.","Cada mudança de parâmetros sob este id de implantação, da mais nova para a mais antiga."
@@ -1135,23 +1256,13 @@ enterprise.requiredSubtitle,Request Logs and Statistics become available after a
 enterprise.requiredTitle,This feature is part of Enterprise,Este recurso faz parte do Enterprise
 enterprise.showcase.logs.screenshotAlt,Preview of the Request Logs screen,Prévia da tela de Logs de Requisições
 enterprise.showcase.logs.title,Request Logs,Logs de Requisições
-"enterprise.showcase.quota.title","Quota","Quota"
 enterprise.showcase.statistics.screenshotAlt,Preview of the Statistics screen,Prévia da tela de Estatísticas
 enterprise.showcase.statistics.title,Statistics,Estatísticas
 enterprise.store.badgeInstant,Installs in seconds,Instala em segundos
 enterprise.store.badgeLocal,Your data stays on your nodes,Seus dados ficam nos seus nós
-"enterprise.store.badgePaddle","Secure payment with Paddle","Pagamento seguro com Paddle"
 enterprise.store.buy,Buy now,Comprar agora
-"enterprise.store.contactBody","Every company needs something different: tell us how many computers and what support you need, and we send you an offer with the price and a link to subscribe.","Cada empresa tem uma necessidade: conte quantos computadores e que suporte você precisa, e enviamos uma proposta com o preço e um link para assinar."
-"enterprise.store.contactSales","Talk to sales","Falar com vendas"
-"enterprise.store.contactStep1.body","Tell us how many computers and what support you need. We send you an offer with the price and a link to subscribe with Paddle; card details never pass through your node.","Conte quantos computadores e que suporte você precisa. Enviamos uma proposta com o preço e um link para assinar com o Paddle; os dados do cartão nunca passam pelo seu nó."
-"enterprise.store.contactStep1.title","Talk to our team","Fale com a nossa equipe"
-"enterprise.store.ctaBody","One purchase brings Request Logs, Deployment Logs, Statistics and Quota. The price is shown at checkout. Cancel anytime.","Uma compra traz Logs de Requisições, Logs de Implantação, Estatísticas e Quota. O preço aparece no checkout. Cancele quando quiser."
-"enterprise.store.ctaContact","Business Pack (logs, statistics and quota) for your company, priced to what it needs. Talk to our team.","Business Pack (logs, estatísticas e quota) para a sua empresa, com preço sob medida. Fale com a nossa equipe."
-"enterprise.store.ctaPrice","Business Pack (logs, statistics and quota) for {price}. Cancel anytime.","Business Pack (logs, estatísticas e quota) por {price}. Cancele quando quiser."
 enterprise.store.ctaTitle,Ready to see inside your cluster?,Pronto para enxergar dentro do seu cluster?
 enterprise.store.description,"Advanced observability for POM inference workloads: searchable request logs with a complete, redacted request inspector, and an operational statistics dashboard for tokens, latency, cache, nodes and network.","Observabilidade avançada para a inferência no POM: logs de requisições pesquisáveis com um inspetor completo e com segredos redigidos, e um painel de estatísticas operacionais de tokens, latência, cache, nós e rede."
-"enterprise.store.eyebrow","POM plugin · Business Pack: logs, statistics and quota","Plugin do POM · Business Pack: logs, estatísticas e quota"
 enterprise.store.faq1.a,"On your own administrative nodes, in the plugin's local database. Prompts and answers are never sent to POM or to the license server.","Nos seus próprios nós administradores, no banco local do plugin. Prompts e respostas nunca são enviados ao POM nem ao servidor de licenças."
 enterprise.store.faq1.q,Where is my request data stored?,Onde ficam os dados das minhas requisições?
 enterprise.store.faq2.a,Only to activate and to renew the license from time to time. Logging and charts work locally.,Só para ativar e renovar a licença de tempos em tempos. Os logs e os gráficos funcionam localmente.
@@ -1163,14 +1274,10 @@ enterprise.store.faq4.q,Can I try it before buying?,Posso ver antes de comprar?
 enterprise.store.faqLabel,Questions,Perguntas
 enterprise.store.faqTitle,Before you buy,Antes de comprar
 enterprise.store.featuresLabel,Features,Recursos
-"enterprise.store.featuresTitle","Three screens, one purchase","Três telas, uma compra"
-"enterprise.store.forAdmins","Made for the network's admins: they see every node's requests, usage and budgets.","Feito para os admins da rede: eles veem as requisições, o uso e as quotas de todos os nós."
 enterprise.store.haveKey,I already have a license key,Já tenho uma chave de licença
-"enterprise.store.included1","Request Logs, Deployment Logs, Statistics and Quota screens","Telas de Logs de Requisições, Logs de Implantação, Estatísticas e Quota"
 enterprise.store.included2,Updates while the license is active,Atualizações enquanto a licença estiver ativa
 enterprise.store.included3,Activation on your cluster machines,Ativação nas máquinas do seu cluster
 enterprise.store.included4,Cancel anytime; the POM keeps working,Cancele quando quiser; o POM continua funcionando
-"enterprise.store.included5","Token budgets per machine, team or project, with a default plan for the network","Quotas de tokens por máquina, equipe ou projeto, com um plano padrão para a rede"
 enterprise.store.interval,Billing period,Período de cobrança
 enterprise.store.interval.month,Monthly,Mensal
 enterprise.store.interval.year,Yearly,Anual
@@ -1184,15 +1291,6 @@ enterprise.store.logs.summary,Find any request and inspect it whole.,Encontre qu
 enterprise.store.logs.titleA,See every request.,Veja cada requisição.
 enterprise.store.logs.titleB,Fix issues in minutes.,Resolva problemas em minutos.
 enterprise.store.moreOnSite,More on the plugin store,Mais na loja de plugins
-"enterprise.store.name","Business Pack","Business Pack"
-"enterprise.store.opensContact","Opens the contact form in your browser.","Abre o formulário de contato no navegador."
-"enterprise.store.opensInBrowser","Opens the purchase in your browser; POM keeps running here.","Abre a compra no seu navegador; o POM continua rodando aqui."
-"enterprise.store.quota.feature1","Plans of input and output tokens per day, week, month or a rolling session","Planos de tokens de entrada e saída por dia, semana, mês ou sessão contínua"
-"enterprise.store.quota.feature2","Assign them to a machine, a team, a project or the whole network","Atribua a uma máquina, a uma equipe, a um projeto ou à rede inteira"
-"enterprise.store.quota.feature3","A default plan for every machine that joins without one","Um plano padrão para toda máquina que entrar sem plano"
-"enterprise.store.quota.feature4","Grants, session resets and requests for more, in an exceptions inbox","Concessões, resets de sessão e pedidos de mais quota, numa caixa de exceções"
-"enterprise.store.quota.feature5","Each machine sees its own usage on its Usage screen","Cada máquina vê o próprio consumo na tela Uso"
-"enterprise.store.quota.summary","Keep the network's tokens fair, without a spreadsheet.","Mantenha os tokens da rede justos, sem planilha."
 enterprise.store.per.month,/month,/mês
 enterprise.store.per.year,/year,/ano
 enterprise.store.priceAtCheckout,Price shown at checkout,Preço mostrado no checkout
@@ -1210,11 +1308,8 @@ enterprise.store.statistics.lede,"Statistics turns the same trail into charts: t
 enterprise.store.statistics.summary,An operational overview for capacity and performance.,Uma visão operacional para capacidade e desempenho.
 enterprise.store.statistics.titleA,Know your cluster.,Conheça o seu cluster.
 enterprise.store.statistics.titleB,Optimize with data.,Otimize com dados.
-"enterprise.store.step1.body","The button opens the purchase in your browser, with Paddle and the official price published by POM. Card data never touches your node.","O botão abre a compra no seu navegador, com o Paddle e o preço oficial publicado pelo POM. Os dados do cartão nunca passam pelo seu nó."
-"enterprise.store.step1.title","Buy with Paddle","Compre com Paddle"
 enterprise.store.step2.body,"After payment, the confirmation page shows your license key.","Depois do pagamento, a página de confirmação mostra a sua chave de licença."
 enterprise.store.step2.title,Get your license key,Receba a sua chave de licença
-"enterprise.store.step3.body","Paste the key in the Plugins menu on an admin machine. The plugin installs itself and its screens replace this page.","Cole a chave no menu Plugins de uma máquina admin. O plugin se instala sozinho e as telas dele substituem esta página."
 enterprise.store.step3.title,Activate in Plugins,Ative em Plugins
 enterprise.store.stepsLabel,How it works,Como funciona
 enterprise.store.stepsTitle,From checkout to your first log in three steps,Do checkout ao primeiro log em três passos
@@ -1305,7 +1400,7 @@ guide.deployWait,The model is loading. This step ends by itself once it is servi
 guide.deployWhole,This model is small enough to run whole on one machine: choose Whole model.,Este modelo é pequeno o bastante para rodar inteiro em uma máquina: escolha Modelo inteiro.
 guide.downloadConfirm,Confirm the download and wait for it to finish; this step ends by itself.,Confirme o download e aguarde o término; este passo se encerra sozinho.
 guide.downloadFile,"Pick a file to download. Q4_K_M is a good default, under 500 MB.","Escolha um arquivo para baixar. Q4_K_M é uma boa opção, com menos de 500 MB."
-guide.downloadGo,"Open Models, then Find HF models, to download a small model from Hugging Face.","Abra Modelos e depois Encontrar Modelos HF para baixar um modelo pequeno do Hugging Face."
+guide.downloadGo,"Open Search Models to download a small model from Hugging Face. Not in the menu? Install the Hugging Face plugin in Plugins first.","Abra Procurar Modelos para baixar um modelo pequeno do Hugging Face. Não está no menu? Instale antes o plugin do Hugging Face em Plugins."
 guide.downloadHere,Search for {model} and open it.,Busque por {model} e abra-o.
 guide.downloadOpen,This is the one: open {model} to see its files.,É este: abra {model} para ver os arquivos.
 guide.downloadTitle,Download a small model,Baixe um modelo pequeno
@@ -1341,18 +1436,6 @@ https.title,Node certificate,Certificado do nó
 https.trust.not_trusted,Not trusted,Não confiável
 https.trust.trusted,Trusted,Confiável
 https.trust.unknown,Cannot tell,Não foi possível verificar
-huggingFace.clear,Remove saved token,Remover token salvo
-huggingFace.cleared,Saved Hugging Face token removed,Token salvo do Hugging Face removido
-huggingFace.precedence,"Precedence: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, pom.json, then the Hugging Face cache file. Environment variables always win.","Precedência: HF_TOKEN, HUGGING_FACE_HUB_TOKEN, pom.json e, por fim, o arquivo de cache do Hugging Face. As variáveis de ambiente sempre vencem."
-huggingFace.save,Save token,Salvar token
-huggingFace.saveFailed,The Hugging Face token was not saved,O token do Hugging Face não foi salvo
-huggingFace.saved,Hugging Face token saved,Token do Hugging Face salvo
-huggingFace.source,Active source: {source},Fonte ativa: {source}
-huggingFace.subtitle,Optional access token for private and gated models.,Token de acesso opcional para modelos privados e gated.
-huggingFace.title,Hugging Face,Hugging Face
-huggingFace.tokenHint,The token is saved in this node''s pom.json with owner-only permissions and is never returned here.,O token é salvo no pom.json deste nó com permissão exclusiva do proprietário e nunca é devolvido aqui.
-huggingFace.tokenLabel,Access token,Token de acesso
-huggingFace.tokenPlaceholder,••••••••last four characters,••••••••últimos quatro caracteres
 imageDeploy.back,LLM models,Modelos LLM
 imageDeploy.chooseFile,Choose a file,Escolha um arquivo
 imageDeploy.chooseMachine,Choose a machine,Escolha uma máquina
@@ -1390,12 +1473,16 @@ imageMap.notRecorded,"This deployment was made from another machine: add replica
 imageMap.routing,"ComfyUI calls each stage from the machine it runs on; each call goes to the nearest ready replica and moves to the next one if it does not answer.","O ComfyUI chama cada estágio da máquina onde roda; cada chamada vai para a réplica pronta mais próxima e passa para a próxima se ela não responder."
 imageMap.stage,Stage,Estágio
 imageMap.undeployPartial,Some machines did not confirm,Algumas máquinas não confirmaram
+imageStudio.addLora,Add a LoRA…,Adicionar um LoRA…
 imageStudio.chooseDiffusion,"Choose the diffusion model, then drag machines onto each stage.","Escolha o modelo de difusão e arraste máquinas para cada estágio."
 imageStudio.copiesUnsupported,"A machine without the file would need a copy; image files cannot be copied yet, so place the file on that machine first.","Uma máquina sem o arquivo precisaria de uma cópia; arquivos de imagem ainda não são copiados, então coloque o arquivo nessa máquina antes."
 imageStudio.dropHere,Drag a machine here,Arraste uma máquina para cá
 imageStudio.hint,"Text encoder, diffusion and VAE, in the order the image is made. More machines on a stage are replicas; one machine can serve several stages.","Text encoder, difusão e VAE, na ordem em que a imagem é feita. Mais máquinas num estágio são réplicas; uma máquina pode servir vários estágios."
+imageStudio.loraStrength,"Strength of {name}","Força de {name}"
+imageStudio.loras,LoRAs,LoRAs
 imageStudio.memory,"{gpu} VRAM, {ram} RAM free · needs about {need}","{gpu} de VRAM, {ram} de RAM livres · precisa de cerca de {need}"
 imageStudio.remove,"Remove {host}","Remover {host}"
+imageStudio.removeLora,Remove {name},Remover {name}
 imageStudio.replicas,"{count} replicas: each call goes to the nearest one that answers","{count} réplicas: cada chamada vai para a mais próxima que responder"
 imageTable.active,Active,Ativa
 imageTable.notServing,Not serving,Fora do ar
@@ -1415,17 +1502,13 @@ inspector.capabilityLimited,Capability limited in the runtime; the control stays
 inspector.capabilitySource,Source: {source}.,Fonte: {source}.
 inspector.capabilityTopology,The topology limits this option; the control stays actionable.,A topologia limita esta opção; o controle continua acionável.
 inspector.capabilityUnknown,Capability not confirmed. Turning it on is at the operator''s own risk.,Capacidade não confirmada. Ligar é por conta e risco do usuário.
-inspector.engine.auto,Automatic,Automático
-inspector.engine.dense,llama.cpp,llama.cpp
-inspector.engine.moe,MoE,MoE
+inspector.contextLimit,The model supports up to {n} tokens of context,O modelo aceita até {n} tokens de contexto
 inspector.engineDefault,Engine default,Padrão do motor
 inspector.engineOff,Off,Desligado
 inspector.engineOn,On,Ligado
 inspector.fitMemory,Fit to memory,Ajustar à memória
 inspector.guideBack,Back to the guide,Voltar ao guia
 inspector.guideHelp,Learn more about {section},Saiba mais sobre {section}
-inspector.inferenceMode,Inference engine,Motor de inferência
-inspector.inferenceModeHint,"Which engine runs the forward pass. The choice reaches the whole model, the shards and tensor parallelism alike; llama.cpp is the default and MoE is POM''s own path for mixture-of-experts models.","Qual motor roda a passagem à frente. A escolha vale para o modelo inteiro, para as fatias e para o Tensor Parallelism; o llama.cpp é o padrão e o MoE é o caminho próprio do POM para modelos de mistura de especialistas."
 inspector.inferenceServiceNote,"{name} runs the whole model on the chosen machine, on all of its NVIDIA cards. The context and the concurrent requests are passed to it; the llama.cpp settings do not apply.","O {name} roda o modelo inteiro na máquina escolhida, em todas as placas NVIDIA dela. O contexto e as requisições simultâneas são repassados a ele; as configurações do llama.cpp não se aplicam."
 inspector.knob.dry_allowed_length,DRY allowed length,DRY: tamanho permitido
 inspector.knob.dry_base,DRY base,DRY: base
@@ -1569,9 +1652,7 @@ lobby.connectionRelayed,through a relay,por um relé
 lobby.cpu,CPU,CPU
 lobby.cpuCount,{count} CPU threads,{count} threads de CPU
 lobby.declaredNote,Hardware is declared by each candidate and is not verified.,O hardware é declarado por cada candidato e não é verificado.
-"lobby.detail","You are talking to this network's admins before joining it. Only they read what you write here and see the hardware card beside it, and the conversation is erased once you are admitted.","Você está conversando com os administradores desta rede antes de entrar. Só eles leem o que você escreve aqui e veem o cartão de hardware ao lado, e a conversa é apagada quando você for admitido."
 lobby.empty,No messages yet. Introduce yourself to the network.,Nenhuma mensagem ainda. Apresente-se à rede.
-"lobby.emptyMember","Machines that have not joined yet write here before asking to be admitted, each in its own conversation with the admins.","Máquinas que ainda não entraram escrevem aqui antes de pedir admissão, cada uma numa conversa própria com os administradores."
 lobby.errorBlocked,This network blocked this machine.,Esta rede bloqueou esta máquina.
 lobby.errorDisabled,This network cannot be reached for admission right now.,Esta rede não pode ser alcançada para admissão no momento.
 lobby.errorFull,The lobby is full. Try again later.,O lobby está cheio. Tente novamente mais tarde.
@@ -1581,7 +1662,6 @@ lobby.errorRejected,This network declined this machine recently. Try again later
 lobby.errorRole,This network is not accepting that role right now.,Esta rede não está aceitando esse papel no momento.
 lobby.errorText,The message is empty or too long (2 KB at most).,A mensagem está vazia ou longa demais (no máximo 2 KB).
 lobby.errorUnreachable,Could not reach the admin of this network. It may be offline or unreachable from here.,Não foi possível alcançar o administrador desta rede. Ele pode estar offline ou inalcançável daqui.
-"lobby.hintMember","Enter sends. Only this candidate and the network's admins read this conversation. It is erased when the candidate is approved, or after a day without messages.","Enter envia. Só este candidato e os administradores da rede leem esta conversa. Ela é apagada quando o candidato é aprovado, ou após um dia sem mensagens."
 lobby.joinDetail,"Joining replaces the network this machine is in now: its current network and deployments stop, and the node restarts as a member of the new one.","Entrar substitui a rede em que esta máquina está agora: a rede atual e as implantações param, e o nó reinicia como membro da nova."
 lobby.joinFailed,Could not join the network,Não foi possível entrar na rede
 lobby.joinNow,Join now,Entrar agora
@@ -1662,6 +1742,7 @@ models.columnSource,Source,Fonte
 models.deleteAria,Delete {name} from disk,Excluir {name} do disco
 models.deleteButton,Delete,Excluir
 models.deleteConfirm,Delete {name} from this machine?,Apagar {name} do disco desta máquina?
+models.deleteDialogTitle,Confirm file deletion,Confirmar exclusão do arquivo
 models.deleteFailed,Could not delete,Não deu para apagar
 models.deleteForce,Delete anyway?,Apagar mesmo assim?
 models.deleteWarning,Warning:,Atenção:
@@ -1671,26 +1752,48 @@ models.emptyTitle,No full models found,Nenhum modelo inteiro encontrado
 models.fileCount,"{count}{count, plural, =1 { file} other { files}}","{count}{count, plural, =1 { arquivo} other { arquivos}}"
 models.folderMissing,does not exist on this machine,não existe nesta máquina
 models.folderSettings,Choose search folders in Settings › Model folders.,Escolha onde procurar em Configurações › Pastas de modelos.
-models.fullSubtitle,Complete GGUF files found on this machine. Full models can be sliced; shards are shown on the next screen.,Os GGUF completos encontrados nesta máquina. Um modelo inteiro é o que se fatia; as fatias ficam na tela ao lado.
-models.fullTitle,Full models,Modelos inteiros
+models.fullSubtitle,Complete GGUF files found on this machine. Inspect multipart parts and manage local model files here.,GGUFs completos encontrados nesta máquina. Consulte as partes dos modelos multipart e gerencie os arquivos locais por aqui.
+models.fullTitle,Models,Modelos
 models.imageEmptyDetail,No .safetensors files were found in the model folders. Files ComfyUI downloads land there.,Nenhum arquivo .safetensors foi encontrado nas pastas de modelos. Os arquivos que o ComfyUI baixa vão para lá.
 models.imageEmptyTitle,No image models,Nenhum modelo de imagem
 models.imageUnreadable,"Unreadable: {error}","Ilegível: {error}"
 models.kindImage,Image,Imagem
 models.kindLlm,LLM (GGUF),LLM (GGUF)
+models.kindMtp,MTP drafts,Rascunhos MTP
 models.layers,Layers,Camadas
-models.localSlice,Slicing is local: each machine extracts its own range from its own GGUF copy. No weights travel over the network.,Fatiar é local: cada máquina extrai a própria faixa da própria cópia do GGUF. Nenhum peso trafega pela rede.
 models.machineCount,"{count}{count, plural, =1 { model on this machine} other { models on this machine}}","{count}{count, plural, =1 { modelo nesta máquina} other { modelos nesta máquina}}"
 models.mmproj,Vision (mmproj),Visão (mmproj)
 models.mmprojNone,No projector,Sem projetor
+models.multipartFiles,"{count}{count, plural, =1 { physical file in this multipart model} other { physical files in this multipart model}}","{count}{count, plural, =1 { arquivo físico neste modelo multipart} other { arquivos físicos neste modelo multipart}}"
+models.multipartPart,{index} of {count},{index} de {count}
 models.quant,Quantisation,Quantização
 models.rescan,Scan again,Varrer de novo
 models.scannedFolders,Scanned folders,Pastas varridas
 models.send,Send,Enviar
 models.sendAria,Send {name},Enviar {name}
+models.sendOfferFailed,The offer was not sent,A oferta não saiu
+models.sendOfferSent,Offer sent,Oferta enviada
+models.sendOfferSentDetail,"The owner of the other machine must accept before any bytes leave this machine.","O dono da outra máquina precisa aceitar; só então os bytes saem daqui."
+models.sendTo,Send to…,Enviar para…
+models.sendToAria,Send {name} to,Enviar {name} para
+models.sending,Sending offer…,Enviando oferta…
+models.sidecarArchitecture,Architecture,Arquitetura
+models.sidecarDimension,Embedding/projection width,Largura do embedding/projeção
+models.sidecarEmptyMmprojDetail,No vision-projector GGUF files were found in the catalogued folders.,A varredura não encontrou GGUFs de projetor de visão nas pastas catalogadas.
+models.sidecarEmptyMmprojTitle,No vision projector files,Nenhum arquivo de projetor de visão
+models.sidecarEmptyMtpDetail,No MTP draft GGUF files were found in the catalogued folders.,A varredura não encontrou GGUFs de rascunho MTP nas pastas catalogadas.
+models.sidecarEmptyMtpTitle,No MTP draft files,Nenhum arquivo de rascunho MTP
 models.size,Size,Tamanho
-models.slice,Slice,Fatiar
 models.slowScan,The first scan of a slow volume takes time. The previous result stays on screen while it runs.,Varrer um volume lento leva tempo na primeira vez. O resultado anterior fica na tela enquanto isso.
+myKeys.copyOnce,Copy the key now: it is shown only once.,Copie a chave agora: ela é mostrada só uma vez.
+myKeys.create,Create key,Criar chave
+myKeys.empty,No keys yet.,Nenhuma chave ainda.
+myKeys.failed,The node refused the request.,O nó recusou o pedido.
+myKeys.label,Name (optional),Nome (opcional)
+myKeys.revoke,Revoke,Revogar
+myKeys.revoked,revoked,revogada
+myKeys.subtitle,Keys for using this node's models from your own tools. Requests with them count against your quota and appear in your logs.,Chaves para usar os modelos deste nó nas suas ferramentas. As requisições com elas contam na sua cota e aparecem nos seus logs.
+myKeys.title,My API keys,Minhas chaves de API
 myMachine.nameHint,"Leave it empty to go by the system's hostname. The name is only a label: the machine's identity is its key.","Deixe vazio para usar o hostname do sistema. O nome é só um rótulo: a identidade da máquina é a chave dela."
 myMachine.nameLabel,Name,Nome
 myMachine.nameSaveFailed,Could not save the name,Não foi possível salvar o nome
@@ -1721,21 +1824,19 @@ nav.administration,Administration,Administração
 nav.administrativePreferences,Administrative preferences,Preferências administrativas
 nav.administrators,Administrators,Administradores
 nav.apiKeys,API keys,API keys
-"nav.budget","Usage","Uso"
 nav.chat,Chat,Chat
 nav.connectionKeys,Connection keys,Chaves de conexão
 nav.dashboard,Dashboard,Painel
 nav.deploy,Deploy to network,Implantar na rede
 nav.deploymentLogs,Deployment logs,Logs da implantação
-nav.deployments,Deployments,Implantações
+nav.deployments,Deploy,Implantar
 nav.documentation,Documentation,Documentação
-nav.fullModels,Full models,Modelos inteiros
 nav.history,History,Histórico
 nav.inProgress,In progress,Em andamento
 nav.logs,Logs,Logs
-"nav.businessPack","Business Pack","Business Pack"
 nav.modelFolders,Storage,Armazenamento
 nav.models,Models,Modelos
+nav.myKeys,My API keys,Minhas chaves de API
 nav.myMachine,My machine,Minha máquina
 nav.network,My Network,Minha Rede
 nav.networkChat,Network Chat,Chat da rede
@@ -1744,18 +1845,14 @@ nav.networkParticipants,Network participants,Participantes da rede
 nav.plugins,Plugins,Plugins
 nav.preferences,Preferences,Preferências
 nav.publicNetworks,Networks,Redes
-nav.remoteModels,Find HF models,Encontrar Modelos HF
 nav.requestLogs,Request logs,Logs de requisições
 nav.sendFile,Send a file,Enviar um arquivo
 nav.settings,Settings,Configurações
 nav.setupWizard,Setup wizard,Wizard de configuração
-nav.shards,Shards,Fatias
 nav.shareNetwork,Share network access,Compartilhar acesso à rede
 nav.sharing,Sharing,Compartilhamento
-nav.sliceModels,Slice models,Fatiar modelos
 nav.statistics,Statistics,Estatísticas
 nav.storage,Storage,Armazenamento
-nav.transfers,Transfers,Transferências
 nav.trustAnchor,Trust root,Raiz de confiança
 nav.trustMachine,This machine,Esta máquina
 network.acceptedEnrollments,Accepting new members,Aceitando novos membros
@@ -1811,7 +1908,6 @@ network.blocked,Node blocked,Nó bloqueado
 network.blockedLabel,blocked,bloqueado
 network.channels,Discord or Telegram,Discord ou Telegram
 network.chatVisitors,Visitors can use the network Chat,Visitantes podem usar o Chat da rede
-"network.chatVisitorsHint","Off, the Chat is for admins and workers only. On, visitors join it and see who else talks there, other visitors included.","Desligado, o Chat é só de administradores e trabalhadores. Ligado, visitantes entram nele e veem quem mais fala ali, inclusive outros visitantes."
 network.chooseCity,Choose a city,Escolha uma cidade
 network.chooseCountry,Choose a country,Escolha um país
 network.city,City,Cidade
@@ -1882,10 +1978,8 @@ network.logsEnable,Turn logs on,Ligar logs
 network.logsEnabled,Process logs turned on,Logs de processo ligados
 network.logsFailed,Could not change the process log policy,Não deu para mudar a política de logs de processo
 network.logsHowItWorks,"The admin only tells the network to collect: every node sends a copy to each admin over a separate p2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.","O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo p2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin."
-"network.logsNotAuthority","Only an admin decides this, and the decision applies to the whole cluster.","Só um admin decide isso, e a decisão vale para o cluster inteiro."
 network.logsOff,paused,pausada
 network.logsOn,collecting,coletando
-"network.logsPropagates","No restart needed. Any admin can change it: a secondary admin's change goes to the main node, and the other nodes confirm the policy with it before adopting.","Não precisa reiniciar. Qualquer admin pode mudar: a mudança de um admin secundário vai para o principal, e os demais nós confirmam a política com ele antes de adotar."
 network.logsState,Cluster collection,Coleta do cluster
 network.logsSubtitle,"When on, this node reports its process log to every admin replica. The bounded queue drops lines under pressure so inference is never held up.","Ligado, este nó envia seu log de processo para cada réplica admin. A fila limitada descarta linhas sob pressão para nunca segurar a inferência."
 network.logsTitle,Process logs between nodes,Logs de processo entre nós
@@ -2105,6 +2199,9 @@ notifications.defaultPasswordTitle,Default administrative password,Senha adminis
 notifications.downloadProgress,"{done} of {total} · {rate}{__truthy_remaining, select, false {} other { · {remaining} remaining}}","{done} de {total} · {rate}{__truthy_remaining, select, false {} other { · faltam {remaining}}}"
 notifications.empty,Nothing happening,Nada acontecendo
 notifications.emptyDetail,"Slicing and transfers appear here while running, even after reloading the page.","Fatiamentos e transferências aparecem aqui enquanto rodam, mesmo depois de recarregar a página."
+notifications.jobDismiss,Remove from the bell,Remover do sino
+notifications.jobDone,finished,terminou
+notifications.jobFailed,failed,falhou
 notifications.nodePromotionAccepted,Node request approved,Pedido de node aprovado
 notifications.nodePromotionAcceptedDetail,{host} is now a node after administrator approval.,{host} agora é node após a aprovação do administrador.
 notifications.nodePromotionDetail,{host} requests permission to become a node.,{host} pede permissão para virar node.
@@ -2131,9 +2228,6 @@ notifications.reject,Reject,Recusar
 notifications.requestApproved,{name} approved this machine,{name} aprovou esta máquina
 notifications.requestRejected,{name} declined this machine,{name} recusou esta máquina
 notifications.started,started,começou
-notifications.jobDone,finished,terminou
-notifications.jobFailed,failed,falhou
-notifications.jobDismiss,Remove from the bell,Remover do sino
 notifications.state.cancelled,cancelled,cancelada
 notifications.state.done,completed · {size},concluída · {size}
 notifications.state.failed,failed,falhou
@@ -2167,7 +2261,6 @@ paths.addFolder,Add another folder,Mais uma pasta
 paths.addMissing,"{count, plural, =1 {Add the missing folder} other {Add missing folders}}","{count, plural, =1 {Adicionar a que falta} other {Adicionar as que faltam}}"
 paths.autoDetect,automatic detection,detecção automática
 paths.customList,your list,lista sua
-paths.defaultHint,Blank restores the default: {path},Em branco volta para o padrão: {path}
 paths.detected,Detected on this machine,Detectadas nesta máquina
 paths.detectedSubtitle,What automatic detection would find.,O que a detecção automática encontraria.
 paths.emptyList,"An empty list means do not search anywhere, not detect again. Saving it leaves the full-model catalog empty.","Lista vazia significa não procurar em lugar nenhum, e não detectar de novo. Salvar assim deixa o catálogo de modelos inteiros vazio."
@@ -2177,23 +2270,19 @@ paths.fromEnvBadge,Set by {name},Definido por {name}
 paths.fromEnvNote,"The {name} environment variable sets this value and takes precedence over pom.json. To change it, change the variable and restart the node.","A variável de ambiente {name} define este valor e vence o pom.json. Para mudar, altere a variável e reinicie o nó."
 paths.fullDetail,"Read only. Each folder is read for what it is: an Ollama store, an LM Studio library, or a regular GGUF folder.","Só leitura. Cada pasta é lida pelo que ela é: store do Ollama, biblioteca do LM Studio, ou pasta comum de GGUF."
 paths.fullModels,Full models,Modelos inteiros
-paths.maxShardGb,Maximum slice storage (GB),Máximo da pasta de fatias (GB)
-paths.maxShardGbHint,Only the slice folder is limited. Old generated slices are removed when a new one needs space.,Só a pasta de fatias tem limite. Fatias antigas são removidas quando uma nova precisa de espaço.
 paths.missing,does not exist,não existe
 paths.noneDetected,Neither LM Studio nor Ollama was found here.,Nem LM Studio nem Ollama foram encontrados aqui.
 paths.path,Path,Caminho
-paths.received,Files arriving from another machine go into this folder''s received/ subfolder.,Os arquivos que chegam de outra máquina vão para a subpasta received/ desta.
 paths.removeFolderAria,Remove {path},Remover {path}
+paths.rescan,Rescan folders,Varrer pastas
+paths.rescanFailed,Could not scan the folders again,Não foi possível varrer as pastas de novo
+paths.rescanStarted,"Scanning the model folders again; new files show up in a moment.","Varrendo as pastas de modelos de novo; arquivos novos aparecem em instantes."
 paths.save,Save,Salvar
 paths.saveFailed,The folders were not saved,As pastas não foram salvas
 paths.saved,Folders saved,Pastas salvas
 paths.savedDetail,The scan restarts in the background.,A varredura recomeça em segundo plano.
-paths.shardDetail,"One folder only. It receives local slicing and incoming files, and is the only folder a peer may pull a file from.","Uma só pasta. Ela recebe o fatiamento local e os arquivos recebidos, e é a única de onde um peer pode puxar um arquivo."
-paths.shardFolder,Shard folder,Pasta de fatias
 paths.subtitle,"Model folders, slice storage and the disk limit for generated slices.","Pastas de modelos, armazenamento de fatias e limite de disco para fatias novas."
 paths.title,Storage,Armazenamento
-paths.usageAria,Slice folder disk usage,Uso em disco da pasta de fatias
-paths.usedOf,used of,usados de
 paths.validation,"Saving a folder that does not exist yet creates it (only from an absolute path). A path that points to a file is refused.","Salvar uma pasta que ainda não existe cria a pasta (só a partir de um caminho absoluto). Um caminho que aponta para um arquivo é recusado."
 paths.workspaceDetail,"One shared root for user projects and dynamic data from every plugin. It is separate from whole-model and slice folders.","Uma raiz compartilhada para projetos do usuário e dados dinâmicos de todos os plugins. Ela é separada das pastas de modelos inteiros e fatias."
 paths.workspaceFolder,Project workspace,Workspace de projetos
@@ -2251,7 +2340,6 @@ plugins.catalogError,Could not load the public plugin catalog.,Não foi possíve
 plugins.catalogLoading,Loading the public plugin catalog,Carregando o catálogo público de plugins
 plugins.closeFailed,The plugin process did not stop,O processo do plugin não parou
 plugins.community,Community,Comunidade
-"plugins.contactSales","Talk to sales","Falar com vendas"
 plugins.deactivate,Deactivate,Desativar
 plugins.deactivateConfirmDescription,This will deactivate the plugin on this node. You can activate it again later with a license key.,Isso desativará o plugin neste nó. Você poderá ativá-lo novamente com uma chave de licença.
 plugins.deactivateConfirmTitle,Deactivate {name}?,Desativar {name}?
@@ -2290,15 +2378,12 @@ plugins.githubCheck,Refresh releases,Atualizar releases
 plugins.githubCheckFailed,Could not refresh this GitHub repository.,Não foi possível atualizar este repositório GitHub.
 plugins.githubInstall,Install,Instalar
 plugins.githubInstallConfirmDescription,The selected release ({version}) will replace the plugin version currently installed on this node.,A release selecionada ({version}) substituirá a versão do plugin instalada neste nó.
-"plugins.githubInstallConfirmTitle","Install {name}?","Instalar {name}?"
 plugins.githubInstallFailed,Could not install the selected release.,Não foi possível instalar a release selecionada.
 plugins.githubInstalled,Installed,Instalada
-"plugins.githubInstallLatestDescription","The latest release published for this machine ({version}) will be installed on this node.","A última release publicada para esta máquina ({version}) será instalada neste nó."
 plugins.githubLatest,latest,mais recente
 plugins.githubListFailed,Could not load registered GitHub repositories.,Não foi possível carregar os repositórios GitHub cadastrados.
 plugins.githubNoCompatibleReleases,No release published for this machine yet.,Nenhuma release publicada para esta máquina ainda.
 plugins.githubPrerelease,Pre-release,Pré-release
-"plugins.githubReleaseSelect","Update to install","Atualização para instalar"
 plugins.githubRemove,Remove repository,Remover repositório
 plugins.githubRepositoriesLoading,Loading registered repositories,Carregando repositórios cadastrados
 plugins.githubRepositoryLabel,Public GitHub repository URL,URL do repositório público do GitHub
@@ -2310,7 +2395,6 @@ plugins.githubUninstall,Uninstall plugin,Desinstalar plugin
 plugins.githubUninstallConfirmDescription,This removes the public GitHub plugin from this node. You can install it again later.,Isso remove o plugin público do GitHub deste nó. Você poderá instalá-lo novamente depois.
 plugins.githubUninstallConfirmTitle,Uninstall {name}?,Desinstalar {name}?
 plugins.githubUpdate,Update,Atualizar
-"plugins.githubUpdateConfirmTitle","Update {name}?","Atualizar {name}?"
 plugins.inactiveTitle,Available,Disponível
 plugins.installationFailed,"Plugin installation failed. The host is not ready. Resolve the error below and activate again.","Falha na instalação do plugin. O host não está pronto. Corrija o erro abaixo e tente ativar novamente."
 plugins.installedAt,Last installed,Última instalação
@@ -2351,10 +2435,7 @@ plugins.preferencesOpen,Open {name} preferences,Abrir preferências de {name}
 plugins.preferencesSave,Save preferences,Salvar preferências
 plugins.preferencesSaveFailed,Could not save these preferences locally.,Não foi possível salvar estas preferências localmente.
 plugins.preferencesTitle,Plugin preferences,Preferências do plugin
-"plugins.priceOnRequest","Pricing on request","Preço sob consulta"
 plugins.pricing,Pricing,Preços
-"plugins.promotion.badge","Sale -{percent}%","Promoção -{percent}%"
-"plugins.promotion.note","Limited time, until {date}: {percent}% off {appliesTo, select, first {the first payment} payments {the first {payments} payments} other {every payment while you stay subscribed}}.","Por tempo limitado, até {date}: {percent}% de desconto {appliesTo, select, first {no primeiro pagamento} payments {nos {payments} primeiros pagamentos} other {em todos os pagamentos, enquanto a assinatura durar}}."
 plugins.publishDescription,Submit your plugin's public GitHub repository on the POM website.,Envie o repositório público do seu plugin pelo site do POM.
 plugins.publishEyebrow,Publish,Publicar
 plugins.publishLink,Submit my plugin,Enviar meu plugin
@@ -2393,16 +2474,6 @@ plugins.updateApply,Install update,Instalar atualização
 plugins.updateApplyFailed,Could not apply the plugin update.,Não foi possível aplicar a atualização do plugin.
 plugins.updateAvailable,Update available: {version},Atualização disponível: {version}
 plugins.updateRelease,Release {release_id},Release {release_id}
-"plugins.updatesCheck","Check for updates","Verificar atualizações"
-"plugins.updatesCheckFailed","Some sources did not answer:","Algumas fontes não responderam:"
-"plugins.updatesFailed","Could not install this update.","Não foi possível instalar esta atualização."
-"plugins.updatesInstall","Install","Instalar"
-"plugins.updatesInstallAll","{count, plural, one {Install # update} other {Install all # updates}}","{count, plural, one {Instalar # atualização} other {Instalar todas as # atualizações}}"
-"plugins.updatesInstalled","Installed","Instalada"
-"plugins.updatesNone","POM and every installed plugin are up to date.","O POM e todos os plugins instalados estão atualizados."
-"plugins.updatesRestarting","Restarting","Reiniciando"
-"plugins.updatesRestarts","Restarts POM","Reinicia o POM"
-"plugins.updatesTitle","Available updates","Atualizações disponíveis"
 plugins.version,Version,Versão
 preferences.accessConnectionKeyNote,The connection key is separate: it authenticates nodes to each other and is not reused as the interface password.,A connection key é outra coisa: autentica os nós entre si e não é reutilizada como senha da interface.
 preferences.accessEyebrow,Administrative surface,Superfície administrativa
@@ -2459,11 +2530,11 @@ publicNetworks.cachedDetail,"This machine heard of the network before, but it di
 publicNetworks.chat,Chat,Conversar
 publicNetworks.checking,Checking reachability,Verificando alcance
 publicNetworks.city,City,Cidade
+publicNetworks.closeLobby,Close the lobby of {name},Fechar o lobby de {name}
+publicNetworks.closePanel,Close panel,Fechar painel
 publicNetworks.closed,Closed,Fechada
 publicNetworks.closedDetail,This network is not accepting new members right now.,Esta rede não está aceitando novos membros no momento.
 publicNetworks.closedShort,closed,fechada
-publicNetworks.closeLobby,Close the lobby of {name},Fechar o lobby de {name}
-publicNetworks.closePanel,Close panel,Fechar painel
 publicNetworks.country,Country,País
 publicNetworks.detailsTitle,Details for {name},Detalhes de {name}
 publicNetworks.directoryReplicas,Directory replicas,Réplicas do diretório
@@ -2626,105 +2697,11 @@ release.title,Release {range}?,Liberar {range}?
 release.uncovered,{range} has no owner,{range} ficou sem ninguém
 release.uncoveredDetail,Memory was released. The model stops serving until someone takes this range.,A memória foi liberada. O modelo para de atender até alguém assumir esta faixa.
 release.withSuccessor,Release and hand off,Liberar e passar adiante
-remoteModels.accessDenied,You do not have access to this model.,Você não tem acesso a este modelo.
-remoteModels.authDetail,"Authenticate on the POM node, then try again.",Faça a autenticação pelo nó do POM e tente novamente.
-remoteModels.authNeeded,Login needed,Login necessário
-remoteModels.authRequired,Provider authentication is required.,A autenticação do provider é necessária.
-remoteModels.authRequiredStatus,Hugging Face authentication is required.,Autenticação do Hugging Face necessária.
-remoteModels.authenticated,Authenticated,Autenticado
-remoteModels.authenticatedStatus,Authenticated as {username}.,Autenticado como {username}.
-remoteModels.author,Author,Autor
-remoteModels.availableSpace,Available space,Espaço disponível
-remoteModels.cancel,Cancel,Cancelar
-remoteModels.cancelled,Cancelled,Cancelado
-remoteModels.cliMissing,The model provider is not installed on this node.,O provedor de modelos não está instalado nesta máquina.
-remoteModels.cliMissingStatus,The Hugging Face CLI is not installed on this machine.,O CLI do Hugging Face não está instalado nesta máquina.
-remoteModels.cliUnavailable,CLI unavailable,CLI indisponível
-remoteModels.completed,Completed,Concluído
-remoteModels.configureAuth,Configure in Settings,Configurar em Configurações
-remoteModels.confirmDownload,Start download,Iniciar download
-remoteModels.destination,POM model folders,Pastas de modelos do POM
-remoteModels.destinationUnavailable,No model folder is configured on this node.,Nenhuma pasta de modelos está configurada nesta máquina.
-remoteModels.detailsTitle,Model details,Detalhes do modelo
-remoteModels.download,Download,Baixar
-remoteModels.downloadEmpty,No model downloads,Nenhum download de modelo
 remoteModels.downloadFailed,The model download could not be completed.,Não foi possível concluir o download do modelo.
-remoteModels.downloadInProgress,This model is already being downloaded.,Este modelo já está sendo baixado.
 remoteModels.downloadStarted,Model download started,Download do modelo começou
-remoteModels.downloadStartedDetail,{name} is being downloaded in the background.,{name} está sendo baixado em segundo plano.
-remoteModels.downloadTitle,Download model,Baixar modelo
-remoteModels.downloaded,Downloaded,Baixado
-remoteModels.downloading,Downloading,Baixando
-remoteModels.downloads,Most downloaded,Mais baixados
-remoteModels.downloadsCount,"{count}{count, plural, =1 { model download} other { model downloads}}","{count}{count, plural, =1 { download de modelo} other { downloads de modelos}}"
-remoteModels.downloadsTitle,Downloads,Downloads
-remoteModels.failed,Failed,Falhou
-remoteModels.files,Files,Arquivos
-remoteModels.gated,Gated,Gated
-remoteModels.gatedDetail,This model requires authorisation on the provider.,Este modelo exige autorização no provedor.
-remoteModels.gguf,GGUF,GGUF
-remoteModels.ggufFiles,GGUF quantisations,Quantizações GGUF
-remoteModels.ggufOnly,Only GGUF,Apenas GGUF
-remoteModels.installed,Installed,Instalado
-remoteModels.insufficientSpace,There is not enough disk space for this model.,Não há espaço suficiente para este modelo.
-remoteModels.license,License,Licença
-remoteModels.licenseUnknown,License not identified,Licença não identificada
-remoteModels.likes,Likes,Curtidas
-remoteModels.loginRequired,Log in to Hugging Face to search,Entre no Hugging Face para buscar
-remoteModels.modelInstalled,This model is already installed.,Este modelo já está instalado.
-remoteModels.noResults,No models match this search,Nenhum modelo corresponde à busca
-remoteModels.noResultsDetail,"Try an author, repository id, or a broader term.","Tente um autor, repo_id ou termo mais amplo."
-remoteModels.notFound,Model not found.,Modelo não encontrado.
-remoteModels.openDetails,Open details for {name},Abrir detalhes de {name}
-remoteModels.private,Private,Privado
-remoteModels.providerStatus,Provider status,Estado do provedor
-remoteModels.quantisation,Quantisation,Quantização
-remoteModels.queued,Queued,Na fila
-remoteModels.recent,Recently updated,Mais recentes
-remoteModels.relevance,Relevance,Relevância
-remoteModels.remaining,{time} remaining,{time} restantes
-remoteModels.requiredSpace,Space required,Espaço necessário
-remoteModels.results,"{count}{count, plural, =1 { result} other { results}}","{count}{count, plural, =1 { resultado} other { resultados}}"
-remoteModels.retry,Try again,Tentar de novo
-remoteModels.dismiss,Dismiss,Descartar
-remoteModels.dismissFailed,Could not dismiss the download,Não foi possível descartar o download
-remoteModels.revision,Revision,Revisão
-remoteModels.savedTo,Saved to,Salvo em
-remoteModels.searchAria,Search remote models,Buscar modelos remotos
-remoteModels.searchButton,Search,Buscar
-remoteModels.searchHint,"Search by model name, repository, author, or related terms.","Busque por nome, repositório, autor ou termos relacionados."
-remoteModels.searchLabel,Search models,Buscar modelos
-remoteModels.searchPlaceholder,"Qwen, DeepSeek, Gemma, author…","Qwen, DeepSeek, Gemma, autor…"
-remoteModels.size,Size,Tamanho
-remoteModels.sort,Sort,Ordenar
-remoteModels.speed,Speed,Velocidade
-remoteModels.starting,Starting,Começando
-remoteModels.subtitle,"Search the model provider, inspect GGUF files, and download one into this node''s model folders.","Busque no provedor, inspecione os arquivos GGUF e baixe um modelo para as pastas desta máquina."
-remoteModels.tags,Tags,Tags
-remoteModels.title,Find models on Hugging Face,Encontrar modelos no Hugging Face
-remoteModels.trending,Trending GGUF models,Modelos GGUF em alta
-remoteModels.trendingSubtitle,"Public Hugging Face discovery, without signing in.","Descoberta pública do Hugging Face, sem precisar entrar."
-remoteModels.updated,Updated,Atualizado
-remoteModels.verifying,Verifying,Verificando
-sendFile.choose,Choose…,Escolher…
-sendFile.destination,Destination machine,Máquina de destino
-sendFile.file,GGUF file,Arquivo GGUF
-sendFile.fileAndTarget,File and destination,Arquivo e destino
-sendFile.fileHint,Only files from the local catalog with the .gguf extension can be sent.,Só arquivos do catálogo local com extensão .gguf podem ser enviados.
-sendFile.howItWorks,How it works,Como funciona
-sendFile.inviteOnly,Nothing is written to another machine''s disk without an invitation. The other side sees the offer in the bell and decides.,Nada é gravado no disco alheio sem convite. O outro lado vê a oferta no sino e decide.
-sendFile.noPeers,No other machine on the network,Nenhuma outra máquina na rede
-sendFile.noPeersDetail,There is no destination available. Check discovery under Settings › Network.,Não há para quem enviar. Confira a descoberta em Configurações › Rede.
-sendFile.offer,Offer file,Oferecer o arquivo
-sendFile.offerFailed,The offer was not sent,A oferta não saiu
-sendFile.offerNotWrite,"Offer, not remote write","Oferta, não escrita"
-sendFile.offerSent,Offer sent,Oferta enviada
-sendFile.offerSentDetail,The owner of the other machine must accept before any bytes leave this machine.,O dono da outra máquina precisa aceitar; só então os bytes saem daqui.
-sendFile.pickFromList,Choose a file…,Escolher um arquivo…
-sendFile.received,"Once accepted, the destination machine fetches the file and stores it in its shard folder''s received/ directory.","Depois de aceita, a máquina de destino busca o arquivo e o grava em received/, dentro da pasta de fatias dela."
-sendFile.resume,"The transfer resumes with Range and verifies MD5 before the file gets its final name. If it does not match, the partial file is deleted.","A transferência retoma por Range e o MD5 é conferido antes de o arquivo tomar o nome final. Se não bater, o parcial é apagado."
-sendFile.subtitle,Choose a GGUF already present in this machine''s catalog and a destination.,Escolha um GGUF que já esteja no catálogo desta máquina e uma máquina de destino.
-sendFile.title,Send a file from this machine,Enviar um arquivo desta máquina
+remoteModels.downloadStartedOn,{name} is being downloaded on {machine}.,{name} está sendo baixado em {machine}.
+session.demo,Demo,Demo
+session.signOut,Sign out,Sair
 setup.addresses,Addresses other nodes should use,Endereços que os outros nós devem usar
 setup.adminDetail,Creates the cluster key and administers the network.,Cria a chave do cluster e administra a rede.
 setup.connectionKey,Cluster connection key,Chave de conexão do cluster
@@ -2961,29 +2938,6 @@ setupWizard.vulkanAvailable,Vulkan ready,Vulkan disponível
 setupWizard.welcomeDetail,Let us set up this machine.,Vamos configurar esta máquina.
 setupWizard.welcomeEyebrow,Your first step,Seu primeiro passo
 setupWizard.welcomeTitle,Welcome to POM,Bem-vindo ao POM
-shards.complete,covers model,cobre o modelo
-shards.empty,No shards on this machine,Nenhuma fatia nesta máquina
-shards.emptyDetail,Shards appear here after local slicing or an accepted transfer. They are stored in the configured shard folder.,Fatias aparecem aqui depois de um fatiamento local ou de uma transferência aceita. Elas são gravadas na pasta de fatias configurada.
-shards.everyoneHas,everyone already has it,todas já têm
-shards.incomplete,incomplete coverage,cobertura incompleta
-shards.noOtherMachine,no other machine,nenhuma outra máquina
-shards.offerDetail,"Sending creates an offer. The owner of the other machine accepts it, and only then do bytes leave this machine.","Enviar cria uma oferta: o dono da outra máquina aceita, e só então os bytes saem daqui."
-shards.offerFailed,The offer was not sent,A oferta não saiu
-shards.offerSent,Offer sent,Oferta enviada
-shards.offerSentDetail,The other machine must accept before the transfer starts.,O outro lado precisa aceitar antes de a transferência começar.
-shards.parts,Pipeline parts,Partes do pipeline
-shards.rescan,Scan again,Varrer de novo
-shards.sendAria,Send {name} to,Enviar {name} para
-shards.sendTo,Send to…,Enviar para…
-shards.sending,Sending offer…,Enviando oferta…
-shards.set,Shard set,Conjunto de fatias
-shards.setDetail,"{count}{count, plural, =1 { shard of a } other { shards of a }}{total}-layer model","{count}{count, plural, =1 { fatia de um modelo de } other { fatias de um modelo de }}{total} camadas"
-shards.setUnknown,"{count}{count, plural, =1 { shard} other { shards}}","{count}{count, plural, =1 { fatia} other { fatias}}"
-shards.subtitle,"Every local shard appears here, even when everyone already has a copy. Destinations are restricted to machines that do not have it.","Toda fatia local aparece aqui, mesmo quando todo mundo já tem uma cópia. O destino se restringe a quem ainda não tem."
-shards.title,Shards on this machine,Fatias nesta máquina
-shards.tpGroup,Tensor-parallel - {size} ranks,Tensor-parallel - {size} ranks
-shards.tpParts,Tensor-parallel parts,Partes tensor-parallel
-shards.unknownRange,unknown range,faixa desconhecida
 sidebar.build,build,build
 sidebar.buildTitle,Commit this node''s binary was built from. Compare it across cards to see whether every node runs the same version.,Commit de que o binário deste nó foi compilado. Compare entre os cards para ver se todos os nós estão na mesma versão.
 sidebar.collapse,Minimize menu,Minimizar menu
@@ -3082,6 +3036,8 @@ slice.title,Slice models,Fatiar modelos
 slice.tooSmall,too small,pequena demais
 slice.tpAllLayers,Each rank covers all layers. The output folder and model manifest stay the same as pipeline slicing.,Cada rank cobre todas as camadas. A pasta de saída e o manifesto do modelo são os mesmos do fatiamento de pipeline.
 slice.tpAllLayersShort,all layers,todas as camadas
+slice.tpDevOnly,Tensor parallel shards need development mode,Partes tensor-parallel exigem o modo de desenvolvimento
+slice.tpDevOnlyDetail,"A pipeline deploy serves each range from the whole model, so nothing is sliced. Tensor parallel shards are cut here only on a node started with POM_DEV_MODE=1.","Uma implantação em pipeline serve cada faixa a partir do modelo inteiro, então nada é fatiado. Partes tensor-parallel só são cortadas aqui num nó iniciado com POM_DEV_MODE=1."
 slice.tpParts,Tensor-parallel parts,Partes tensor-parallel
 slice.tpPartsDetail,Create one complete-model tensor shard for each rank in the group.,Cria uma parte do modelo completo para cada rank do grupo.
 slice.tpPreviewDetail,Every row is a rank. All ranks cover the same layers and receive one tensor shard.,Cada linha é um rank. Todos cobrem as mesmas camadas e recebem uma parte tensorial.
@@ -3089,6 +3045,8 @@ slice.tpRankCount,{size} ranks,{size} ranks
 slice.tpSize,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeAria,Number of TP ranks,Quantidade de ranks TP
 slice.tpSizeHint,Choose the number of machines that will hold this tensor-parallel model.,Escolha quantas máquinas vão guardar este modelo em tensor parallelism.
+slice.tpSubtitle,"Cut one tensor shard per rank from a whole model, for a tensor parallel deploy.","Corte uma parte tensorial por rank de um modelo inteiro, para uma implantação em tensor parallel."
+slice.tpTitle,Tensor parallel shards,Partes tensor-parallel
 topbar.apiTitle,OpenAI-compatible API served by this node,API compatível com OpenAI servida por este nó
 topbar.behindNat,Behind NAT,Atrás de NAT
 topbar.behindNatHint,Some connections of this machine go through a relay. Click for what it means and how to fix it.,Algumas conexões desta máquina passam por um relé. Clique para ver o que isso significa e como resolver.
@@ -3136,6 +3094,7 @@ transfers.columnItem,Item,Item
 transfers.columnProgress,Progress,Andamento
 transfers.columnState,State,Estado
 transfers.completed,completed,concluída
+transfers.destFolder,Save into folder,Salvar na pasta
 transfers.failed,failed,falhou
 transfers.finished,Finished,Terminadas
 transfers.from,from,de
@@ -3147,14 +3106,14 @@ transfers.offerFailed,The offer could not be answered,A oferta não pôde ser re
 transfers.offerRejected,Offer rejected,Oferta recusada
 transfers.offersFromMachine,"{count}{count, plural, =1 { offer from another machine} other { offers from another machine}}","{count}{count, plural, =1 { oferta de outra máquina} other { ofertas de outra máquina}}"
 transfers.progressDetail,"Progress comes from the node, so reloading does not lose the bar.","O andamento vem do nó, então recarregar a página não perde a barra."
-transfers.receivedDetail,Received files go into the configured shard folder''s received/ subfolder.,Os arquivos recebidos vão para a subpasta received/ da pasta de fatias configurada.
+transfers.receivedDetail,Received files go into one of this machine's model folders; with more than one you pick it before accepting.,Os arquivos recebidos vão para uma das pastas de modelos desta máquina; com mais de uma você escolhe antes de aceitar.
 transfers.receivingFrom,receiving from {host},recebendo de {host}
 transfers.reject,Reject,Recusar
 transfers.remaining,remaining,faltam
 transfers.replyNeeded,Your response is needed,Precisa da sua resposta
 transfers.sendFile,Send a file,Enviar um arquivo
 transfers.sendingTo,sending to {host},enviando para {host}
-transfers.subtitle,"A 10 GB shard takes minutes over a real link, so every transfer resumes and verifies MD5 before using the final file name.","Uma fatia de 10 GB leva minutos no enlace real, então tudo aqui retoma de onde parou e confere o MD5 antes de o arquivo tomar o nome final."
+transfers.subtitle,"Files an older admin sends to this machine. Model downloads moved to Search Models, the Hugging Face plugin''s screen.","Arquivos que um admin mais antigo envia para esta máquina. Os downloads de modelos foram para Procurar Modelos, a tela do plugin do Hugging Face."
 transfers.title,Transfers,Transferências
 trustAnchor.anchored,This node has a trust root,Este nó tem raiz de confiança
 trustAnchor.anchoredElsewhereDetail,The root was brought in by the operator and this node checks the administrators' chain against it.,A raiz foi trazida pelo operador e este nó confere a cadeia dos administradores contra ela.
@@ -3495,15 +3454,3 @@ wizard.welcomeEyebrow,A calmer way to start,Um começo mais tranquilo
 wizard.welcomeSubtitle,Your AI. Your infrastructure. Your network. Set up a capable local network in a few clear steps.,Sua IA. Sua infraestrutura. Sua rede. Configure uma rede local capaz em poucos passos claros.
 wizard.welcomeTitle,Piece of Mind,Piece of Mind
 wizard.whenIdle,Only when this computer is idle,Somente quando o computador estiver ocioso
-session.signOut,Sign out,Sair
-session.demo,Demo,Demo
-myKeys.title,My API keys,Minhas chaves de API
-myKeys.subtitle,Keys for using this node's models from your own tools. Requests with them count against your quota and appear in your logs.,Chaves para usar os modelos deste nó nas suas ferramentas. As requisições com elas contam na sua cota e aparecem nos seus logs.
-myKeys.create,Create key,Criar chave
-myKeys.label,Name (optional),Nome (opcional)
-myKeys.copyOnce,Copy the key now: it is shown only once.,Copie a chave agora: ela é mostrada só uma vez.
-myKeys.revoke,Revoke,Revogar
-myKeys.revoked,revoked,revogada
-myKeys.empty,No keys yet.,Nenhuma chave ainda.
-myKeys.failed,The node refused the request.,O nó recusou o pedido.
-nav.myKeys,My API keys,Minhas chaves de API

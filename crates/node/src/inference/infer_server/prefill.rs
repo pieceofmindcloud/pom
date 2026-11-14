@@ -1065,7 +1065,6 @@ pub(super) fn prefill_blocking(
     let lock_started = Instant::now();
     let mut s = lock_inference_state(&state)?;
     timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
-    timings.selected_path = s.inference_path;
     s.note_thinking(&sid_key, thinking_enabled);
 
     // ── Session setup ────────────────────────────────────────────────────────
@@ -1212,19 +1211,6 @@ pub(super) fn prefill_blocking(
         }
     }
 
-    let input_was_hidden = tensor.is_some();
-    let selected_moe = s.inference_path.is_moe();
-    let mut moe_forwarded = false;
-    let tensor = if let Some((hidden, shape)) = tensor {
-        let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
-        moe_forwarded = selected_moe
-            && s.engine.moe_external_executor_enabled()
-            && !s.engine.moe_hook_enabled();
-        Some((hidden, shape))
-    } else {
-        None
-    };
-
     let n_tokens;
     let mut multimodal_n_past = None;
     let mut multimodal_complete = false;
@@ -1281,23 +1267,7 @@ pub(super) fn prefill_blocking(
             .engine
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
-    if is_last
-        && selected_moe
-        && s.engine.moe_external_executor_enabled()
-        && !moe_forwarded
-        && !s.engine.moe_hook_enabled()
-    {
-        let residual = s.engine.take_residual(n_tokens)?;
-        let _ = s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
-        moe_forwarded = true;
-    }
-    timings.merge_engine_moe(&engine_timing);
-    moe_forwarded |= engine_timing.moe_forward_us != 0;
-    if is_last {
-        record_terminal_engine(&mut timings, s.inference_path, moe_forwarded);
-    } else {
-        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
-    }
+    timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     s.perf.observe_prefill(decode_started.elapsed(), n_tokens);
     timings.tp = crate::tp::take_decode_telemetry();
@@ -1469,11 +1439,7 @@ pub(super) fn prefill_blocking(
     }
 
     let residual_started = Instant::now();
-    let mut residual = s.engine.take_residual(n_tokens)?;
-    if !input_was_hidden {
-        residual.values =
-            s.apply_moe_hidden(residual.values, n_tokens, capture_block, &mut timings)?;
-    }
+    let residual = s.engine.take_residual(n_tokens)?;
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let n_prompt_tokens = s.sessions[&sid_key].prompt_tokens.len();
     let mut reply_meta = json!({
@@ -1577,7 +1543,6 @@ pub(super) fn prefill_batch_blocking(
         }
     };
     let lock_wait_us = lock_started.elapsed().as_micros() as u64;
-    let selected_path = s.inference_path;
     let mut prepared = Vec::with_capacity(jobs.len());
 
     for (job, reply) in jobs {
@@ -1823,36 +1788,6 @@ pub(super) fn prefill_batch_blocking(
         }
     }
 
-    let mut transform_error = None;
-    let mut moe_input_items: HashMap<String, MoeTimings> = HashMap::new();
-    for (_, item) in &mut prepared {
-        if let PreparedPrefillInput::Hidden { values, .. } = &mut item.input {
-            let mut transform_timings = NodeTimings::default();
-            match s.apply_moe_hidden(
-                std::mem::take(values),
-                item.n_tokens,
-                capture_block,
-                &mut transform_timings,
-            ) {
-                Ok(transformed) => *values = transformed,
-                Err(error) => {
-                    transform_error = Some(error);
-                    break;
-                }
-            }
-            if !transform_timings.moe.executors.is_empty() {
-                moe_input_items.insert(item.sid_key.clone(), transform_timings.moe);
-            }
-        }
-    }
-    if let Some(error) = transform_error {
-        let message = error.to_string();
-        for (reply, _) in prepared {
-            replies.push((reply, Err(anyhow::anyhow!(message.clone()))));
-        }
-        return replies;
-    }
-
     // A `llama_decode` with more tokens than `n_batch` aborts the process. The
     // scheduler already cuts the batch at `n_batch`, but lets through an isolated
     // item larger than that; a refusal here is one lost request, not the whole node.
@@ -1906,6 +1841,7 @@ pub(super) fn prefill_batch_blocking(
                         PreparedPrefillInput::Tokens(_) => Vec::new(),
                     },
                     mrope_positions: item.mrope_positions.clone(),
+                    tokens: item.chunk_tokens.clone(),
                 })
                 .collect();
             s.engine.decode_hidden_batch(&entries, need_residual)
@@ -1954,7 +1890,6 @@ pub(super) fn prefill_batch_blocking(
 
             let mut timings = NodeTimings {
                 session_id: Some(item.sid_key.clone()),
-                selected_path,
                 queue_us: item.queued_at.elapsed().as_micros() as u64,
                 scheduler_wait_us: item.scheduler_wait_us,
                 scheduler_wait_reason: item.scheduler_wait_reason,
@@ -1966,11 +1901,6 @@ pub(super) fn prefill_batch_blocking(
                 ..Default::default()
             };
             timings.merge_engine_capture(&engine_timings);
-            timings.merge_engine_moe(&engine_timings);
-            if let Some(moe) = moe_input_items.remove(&item.sid_key) {
-                timings.merge_moe(&moe);
-                timings.record_engine(crate::executor::ExecutionEngine::Moe);
-            }
             timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
 
             if item.is_last {
@@ -2074,13 +2004,8 @@ pub(super) fn prefill_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let input_was_hidden = matches!(&item.input, PreparedPrefillInput::Hidden { .. });
-            let (mut residual, residual_shape) =
+            let (residual, residual_shape) =
                 output.residual_for(&item.sid_key, s.engine.n_embd)?;
-            if !input_was_hidden {
-                residual =
-                    s.apply_moe_hidden(residual, item.n_tokens, item.capture_block, &mut timings)?;
-            }
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let mut meta = json!({
                 "done": false,
@@ -2275,7 +2200,6 @@ pub(super) fn step_batch_blocking(
         }
     };
     let lock_wait_us = lock_started.elapsed().as_micros() as u64;
-    let selected_path = s.inference_path;
     let mut prepared = Vec::with_capacity(jobs.len());
 
     for (job, reply) in jobs {
@@ -2291,6 +2215,7 @@ pub(super) fn step_batch_blocking(
             scheduler_wait_reason,
             scheduler_session_existing,
             pipeline_session,
+            batch_tokens,
             ..
         } = job;
         let result = (|| -> Result<PreparedStep> {
@@ -2341,6 +2266,7 @@ pub(super) fn step_batch_blocking(
                 wire_dtype,
                 capture_block,
                 input,
+                batch_tokens,
                 queued_at,
                 scheduler_wait_us,
                 scheduler_wait_reason,
@@ -2382,35 +2308,6 @@ pub(super) fn step_batch_blocking(
             }
             return replies;
         }
-    }
-    let mut transform_error = None;
-    let mut moe_input_items: HashMap<String, MoeTimings> = HashMap::new();
-    for (_, item) in &mut prepared {
-        if let PreparedStepInput::Hidden { values, shape } = &mut item.input {
-            let mut transform_timings = NodeTimings::default();
-            match s.apply_moe_hidden(
-                std::mem::take(values),
-                shape[0],
-                capture_block,
-                &mut transform_timings,
-            ) {
-                Ok(transformed) => *values = transformed,
-                Err(error) => {
-                    transform_error = Some(error);
-                    break;
-                }
-            }
-            if !transform_timings.moe.executors.is_empty() {
-                moe_input_items.insert(item.sid_key.clone(), transform_timings.moe);
-            }
-        }
-    }
-    if let Some(error) = transform_error {
-        let message = error.to_string();
-        for (reply, _) in prepared {
-            replies.push((reply, Err(anyhow::anyhow!(message.clone()))));
-        }
-        return replies;
     }
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
     let decode_started = Instant::now();
@@ -2454,6 +2351,7 @@ pub(super) fn step_batch_blocking(
                         PreparedStepInput::Tokens { .. } => Vec::new(),
                     },
                     mrope_positions: None,
+                    tokens: item.batch_tokens.clone(),
                 })
                 .collect();
             s.engine.decode_hidden_batch(&entries, need_residual)
@@ -2478,7 +2376,6 @@ pub(super) fn step_batch_blocking(
             s.sessions.get_mut(&item.sid_key).unwrap().n_past = new_n_past;
             let mut timings = NodeTimings {
                 session_id: Some(item.sid_key.clone()),
-                selected_path,
                 queue_us: item.queued_at.elapsed().as_micros() as u64,
                 scheduler_wait_us: item.scheduler_wait_us,
                 scheduler_wait_reason: item.scheduler_wait_reason,
@@ -2490,11 +2387,6 @@ pub(super) fn step_batch_blocking(
                 ..Default::default()
             };
             timings.merge_engine_capture(&engine_timings);
-            timings.merge_engine_moe(&engine_timings);
-            if let Some(moe) = moe_input_items.remove(&item.sid_key) {
-                timings.merge_moe(&moe);
-                timings.record_engine(crate::executor::ExecutionEngine::Moe);
-            }
             timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
 
             if item.is_last {
@@ -2560,13 +2452,8 @@ pub(super) fn step_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let input_was_hidden = matches!(&item.input, PreparedStepInput::Hidden { .. });
-            let (mut residual, residual_shape) =
+            let (residual, residual_shape) =
                 output.residual_for(&item.sid_key, s.engine.n_embd)?;
-            if !input_was_hidden {
-                residual =
-                    s.apply_moe_hidden(residual, item.n_tokens, item.capture_block, &mut timings)?;
-            }
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let tokens = match &item.input {
                 PreparedStepInput::Tokens { token } => vec![*token],

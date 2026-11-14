@@ -652,27 +652,12 @@ mod tests {
     }
 
     #[test]
-    fn inference_mode_defaults_to_dense_and_round_trips() {
-        let default: RuntimeParams = serde_json::from_str("{}").unwrap();
-        assert_eq!(default.inference_mode, InferenceMode::Dense);
-
-        let explicit: RuntimeParams = serde_json::from_value(serde_json::json!({
+    fn a_record_with_the_old_inference_mode_still_reads() {
+        let old: RuntimeParams = serde_json::from_value(serde_json::json!({
             "inference_mode": "moe"
         }))
         .unwrap();
-        assert_eq!(explicit.inference_mode, InferenceMode::Moe);
-        let encoded = serde_json::to_value(explicit).unwrap();
-        assert_eq!(encoded["inference_mode"], "moe");
-
-        let explicit_auto: RuntimeParams = serde_json::from_value(serde_json::json!({
-            "inference_mode": "auto"
-        }))
-        .unwrap();
-        assert_eq!(explicit_auto.inference_mode, InferenceMode::Auto);
-        assert_eq!(
-            serde_json::to_value(explicit_auto).unwrap()["inference_mode"],
-            "auto"
-        );
+        assert!(serde_json::to_value(old).unwrap().get("inference_mode").is_none());
     }
 
     #[test]
@@ -804,6 +789,31 @@ mod tests {
             vec![(0, 0, 3), (1, 0, 3)]
         );
 
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// A model read once is identified again without reading it; a file
+    /// rewritten with other bytes gets its new hash.
+    #[test]
+    fn source_hash_is_cached_until_the_file_changes() {
+        let root = std::env::temp_dir().join(format!("pom-hash-cache-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("model.gguf");
+        std::fs::write(&source, crate::splitter::test_gguf_bytes(4)).unwrap();
+        let first = hash_source_with_progress(&source, |_, _| {}).unwrap();
+        let mut reports = Vec::new();
+        let again = hash_source_with_progress(&source, |done, total| reports.push((done, total))).unwrap();
+        assert_eq!(first, again);
+        assert_eq!(reports.len(), 1, "a cached hash reads nothing: {reports:?}");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&source, crate::splitter::test_gguf_bytes(5)).unwrap();
+        let changed = hash_source_with_progress(&source, |_, _| {}).unwrap();
+        assert_ne!(changed, first);
+        assert_eq!(
+            changed,
+            crate::multipart::GgufSource::open(&source).unwrap().hash_sha256()
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -1311,5 +1321,25 @@ mod tests {
 
             std::fs::remove_dir_all(&root).ok();
         });
+    }
+
+    /// Rescan answers at once for this machine, and for a machine that is not
+    /// in the network says so instead of walking this node's folders.
+    #[tokio::test]
+    async fn rescan_runs_here_or_names_the_missing_machine() {
+        let state = crate::gateway::testkit::state_with("rescan", vec![]).await;
+        let response = rescan_models(ConnectionAuth, State(state.clone()), None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["rescanning"], true);
+        let response = rescan_models(
+            ConnectionAuth,
+            State(state),
+            Some(Json(RescanRequest {
+                node_id: Some("not-a-member".into()),
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

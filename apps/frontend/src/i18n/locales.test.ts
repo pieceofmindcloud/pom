@@ -46,13 +46,6 @@ describe("formatMessage", () => {
     expect(formatMessage("pt-BR", "cluster.peerCount", { count: 2 })).toBe("2 nós");
   });
 
-  it("names the Hugging Face search entry and screen explicitly", () => {
-    expect(formatMessage("pt-BR", "nav.remoteModels")).toBe("Encontrar Modelos HF");
-    expect(formatMessage("pt-BR", "remoteModels.title")).toBe(
-      "Encontrar modelos no Hugging Face",
-    );
-  });
-
   it("returns a safe fallback instead of throwing when an ICU value is missing", () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 

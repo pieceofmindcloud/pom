@@ -71,6 +71,25 @@ pub(crate) struct DownloadRequest {
     pub revision: Option<String>,
     pub filename: String,
     pub quantization: Option<String>,
+    /// The machine that downloads, when it is not this one. The admin's node
+    /// forwards the call, signed, and the worker downloads with its own
+    /// Hugging Face token into its own models folder. Absent or this node's
+    /// id: a local download, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    /// Other files of the same repository fetched by the same action: the
+    /// other parts of a split GGUF, a vision projector, an MTP draft. Each
+    /// becomes its own download row; one already installed or downloading
+    /// is skipped, not an error.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_files: Vec<String>,
+}
+
+/// `?node_id=` on the download routes that name a download by id, and on the
+/// list: the machine whose downloads are meant.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct NodeQuery {
+    pub node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,7 +250,10 @@ pub(crate) fn routes() -> Router<GatewayState> {
             get(token_config).post(save_token_config),
         )
         .route("/api/ui/model-provider/storage", get(storage_info))
-        .route("/api/ui/model-provider/downloads", post(start_download))
+        .route(
+            "/api/ui/model-provider/downloads",
+            get(list_downloads).post(start_download),
+        )
         .route(
             "/api/ui/model-provider/downloads/:id/cancel",
             post(cancel_download),
@@ -483,11 +505,175 @@ async fn storage_info(
     Json(storage_response(&state).await)
 }
 
+/// How long the admin's node waits on a forwarded download call. Starting a
+/// download lists the repository's files on the worker first.
+const FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The other machine a call names, or `None` when it is meant for this node
+/// (no id, or this node's own).
+fn remote_target<'a>(state: &GatewayState, node_id: Option<&'a str>) -> Option<&'a str> {
+    node_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && *id != state.network.node_id)
+}
+
+/// Sends a model call to the machine that must carry it out, signed by this
+/// node (`GatewayState::control_post_json` / `control_get`, over the tunnel
+/// when no address answers), and hands its answer back as it came. The
+/// worker authorizes the signature by its own route policy: an admin of the
+/// chain may ask, a visitor never holds models.
+pub(crate) async fn forward_to_node(
+    state: &GatewayState,
+    node_id: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Response {
+    let Some(peer) = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == node_id)
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": {
+                "code": "node_not_found",
+                "message": "that machine is not in the network",
+            } })),
+        )
+            .into_response();
+    };
+    let sent = if method == reqwest::Method::GET {
+        state.control_get(&peer, path, FORWARD_TIMEOUT).await
+    } else {
+        let body = body.unwrap_or_else(|| json!({}));
+        state
+            .control_post_json(&peer, path, &body, FORWARD_TIMEOUT)
+            .await
+    };
+    let response = match sent {
+        Ok(response) => response,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": {
+                    "code": "node_unreachable",
+                    "message": format!("could not reach that machine: {error:#}"),
+                } })),
+            )
+                .into_response();
+        }
+    };
+    let status = StatusCode::from_u16(response.status().as_u16())
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let bytes = response.bytes().await.unwrap_or_default();
+    (
+        status,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        bytes,
+    )
+        .into_response()
+}
+
+/// This machine's model downloads, newest first; with `?node_id=` another
+/// machine's, so the admin follows a download it started on a worker.
+async fn list_downloads(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Query(query): Query<NodeQuery>,
+) -> Response {
+    if let Some(node_id) = remote_target(&state, query.node_id.as_deref()) {
+        return forward_to_node(
+            &state,
+            node_id,
+            reqwest::Method::GET,
+            "/api/ui/model-provider/downloads",
+            None,
+        )
+        .await;
+    }
+    let mut list: Vec<Job> = webui::jobs()
+        .read()
+        .await
+        .values()
+        .filter(|job| job.kind == MODEL_DOWNLOAD_KIND)
+        .cloned()
+        .collect();
+    list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    Json(json!({ "node_id": state.network.node_id, "downloads": list })).into_response()
+}
+
 async fn start_download(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
-    Json(request): Json<DownloadRequest>,
+    Json(mut request): Json<DownloadRequest>,
 ) -> Response {
+    if let Some(node_id) = remote_target(&state, request.node_id.as_deref()).map(str::to_owned) {
+        request.node_id = None;
+        return forward_to_node(
+            &state,
+            &node_id,
+            reqwest::Method::POST,
+            "/api/ui/model-provider/downloads",
+            serde_json::to_value(&request).ok(),
+        )
+        .await;
+    }
+    request.node_id = None;
+    let extra_files = std::mem::take(&mut request.extra_files);
+    let main = start_one(state.clone(), request.clone()).await;
+    if !main.status().is_success() || extra_files.is_empty() {
+        return main;
+    }
+    let body = axum::body::to_bytes(main.into_body(), 64 * 1024)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or_default();
+    let mut extra_ids = Vec::new();
+    let mut skipped = Vec::new();
+    let mut failed = Vec::new();
+    let mut seen = HashSet::from([request.filename.clone()]);
+    for filename in extra_files {
+        if !seen.insert(filename.clone()) {
+            continue;
+        }
+        let extra = DownloadRequest {
+            filename: filename.clone(),
+            quantization: None,
+            ..request.clone()
+        };
+        let response = start_one(state.clone(), extra).await;
+        let status = response.status();
+        let answer = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .unwrap_or_default();
+        if status.is_success() {
+            extra_ids.push(answer["download_id"].clone());
+            continue;
+        }
+        let code = answer["error"]["code"].as_str().unwrap_or("download_failed").to_string();
+        if matches!(code.as_str(), "model_installed" | "download_in_progress") {
+            skipped.push(json!({ "filename": filename, "code": code }));
+        } else {
+            failed.push(json!({ "filename": filename, "code": code }));
+        }
+    }
+    Json(json!({
+        "download_id": body["download_id"],
+        "extra_download_ids": extra_ids,
+        "skipped": skipped,
+        "failed": failed,
+    }))
+    .into_response()
+}
+
+/// Starts one file's download on this machine: the checks, the job row and
+/// the background task.
+async fn start_one(state: GatewayState, request: DownloadRequest) -> Response {
     let identity = match request.identity() {
         Ok(identity) => identity,
         Err(error) => return provider_error(error),
@@ -598,7 +784,18 @@ async fn cancel_download(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     axum::extract::Path(id): axum::extract::Path<String>,
+    Query(query): Query<NodeQuery>,
 ) -> Response {
+    if let Some(node_id) = remote_target(&state, query.node_id.as_deref()) {
+        return forward_to_node(
+            &state,
+            node_id,
+            reqwest::Method::POST,
+            &download_path(&id, "cancel"),
+            None,
+        )
+        .await;
+    }
     let active = webui::jobs().read().await.get(&id).is_some_and(|job| {
         job.kind == MODEL_DOWNLOAD_KIND
             && job.state == "running"
@@ -633,7 +830,18 @@ async fn retry_download(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     axum::extract::Path(id): axum::extract::Path<String>,
+    Query(query): Query<NodeQuery>,
 ) -> Response {
+    if let Some(node_id) = remote_target(&state, query.node_id.as_deref()) {
+        return forward_to_node(
+            &state,
+            node_id,
+            reqwest::Method::POST,
+            &download_path(&id, "retry"),
+            None,
+        )
+        .await;
+    }
     let job = match webui::jobs().read().await.get(&id).cloned() {
         Some(job) if job.kind == MODEL_DOWNLOAD_KIND => job,
         _ => return not_found("download not found"),
@@ -652,6 +860,8 @@ async fn retry_download(
         revision: job.revision,
         filename: job.filename.unwrap_or_default(),
         quantization: job.quantization,
+        node_id: None,
+        extra_files: Vec::new(),
     };
     let response = start_download(ConnectionAuth, State(state), Json(request)).await;
     // The new attempt replaces the old row: "Try again" used to add a second
@@ -666,8 +876,20 @@ async fn retry_download(
 /// the list. A running one is refused: that is what Cancel is for.
 async fn dismiss_download(
     _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
     axum::extract::Path(id): axum::extract::Path<String>,
+    Query(query): Query<NodeQuery>,
 ) -> Response {
+    if let Some(node_id) = remote_target(&state, query.node_id.as_deref()) {
+        return forward_to_node(
+            &state,
+            node_id,
+            reqwest::Method::POST,
+            &download_path(&id, "dismiss"),
+            None,
+        )
+        .await;
+    }
     let mut jobs = webui::jobs().write().await;
     match jobs.get(&id) {
         Some(job) if job.kind == MODEL_DOWNLOAD_KIND => {
@@ -682,6 +904,16 @@ async fn dismiss_download(
         }
         _ => not_found("download not found"),
     }
+}
+
+/// The path of an action on one download, as the worker serves it. The id
+/// is checked so a forwarded call cannot reach another route.
+fn download_path(id: &str, action: &str) -> String {
+    let id: String = id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    format!("/api/ui/model-provider/downloads/{id}/{action}")
 }
 
 async fn run_download(
@@ -935,6 +1167,44 @@ struct InstalledRecord {
     sha256: Option<String>,
     files: Vec<ManifestFile>,
     downloaded_at: String,
+}
+
+/// Where each model downloaded through POM came from, read from the
+/// records the download leaves in `<models folder>/.pom-hf/`:
+/// `{ path, repo_id, revision, filename }`, `path` being the file in that
+/// folder. The catalogs carry it (`hf_sources`) so the deploy screen can ask
+/// a machine that lacks a model to download the same repository and file. A
+/// file placed by hand has no record and no entry.
+pub(crate) async fn installed_sources(directories: Vec<PathBuf>) -> Vec<serde_json::Value> {
+    tokio::task::spawn_blocking(move || {
+        let mut sources = Vec::new();
+        for directory in directories {
+            let Ok(entries) = std::fs::read_dir(directory.join(".pom-hf")) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let Ok(data) = std::fs::read_to_string(entry.path()) else {
+                    continue;
+                };
+                let Ok(record) = serde_json::from_str::<InstalledRecord>(&data) else {
+                    continue;
+                };
+                let path = directory.join(&record.filename);
+                if !path.is_file() {
+                    continue;
+                }
+                sources.push(json!({
+                    "path": path.to_string_lossy(),
+                    "repo_id": record.repo_id,
+                    "revision": record.revision,
+                    "filename": record.filename,
+                }));
+            }
+        }
+        sources
+    })
+    .await
+    .unwrap_or_default()
 }
 
 async fn installed_repo_ids(state: &GatewayState) -> HashSet<String> {
@@ -1522,7 +1792,7 @@ mod tests {
         failed.filename = Some("model.gguf".into());
         webui::jobs().write().await.insert(old_id.clone(), failed);
 
-        let response = retry_download(ConnectionAuth, State(state), axum::extract::Path(old_id.clone())).await;
+        let response = retry_download(ConnectionAuth, State(state), axum::extract::Path(old_id.clone()), Query(NodeQuery::default())).await;
         assert_eq!(response.status(), StatusCode::OK);
         let new_id = crate::gateway::testkit::body_of(response).await["download_id"]
             .as_str()
@@ -1540,6 +1810,7 @@ mod tests {
     /// running.
     #[tokio::test]
     async fn dismiss_removes_a_failed_download_and_refuses_a_running_one() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
         let failed_id = uuid::Uuid::new_v4().simple().to_string();
         let mut failed = webui::new_job(&failed_id, MODEL_DOWNLOAD_KIND, "failed", "failed");
         failed.state = "failed";
@@ -1553,15 +1824,15 @@ mod tests {
             jobs.insert(running_id.clone(), running);
         }
 
-        let response = dismiss_download(ConnectionAuth, axum::extract::Path(failed_id.clone())).await;
+        let response = dismiss_download(ConnectionAuth, State(state.clone()), axum::extract::Path(failed_id.clone()), Query(NodeQuery::default())).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(!webui::jobs().read().await.contains_key(&failed_id));
 
-        let response = dismiss_download(ConnectionAuth, axum::extract::Path(running_id.clone())).await;
+        let response = dismiss_download(ConnectionAuth, State(state.clone()), axum::extract::Path(running_id.clone()), Query(NodeQuery::default())).await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(webui::jobs().write().await.remove(&running_id).is_some());
 
-        let response = dismiss_download(ConnectionAuth, axum::extract::Path("no-such-download".into())).await;
+        let response = dismiss_download(ConnectionAuth, State(state.clone()), axum::extract::Path("no-such-download".into()), Query(NodeQuery::default())).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
@@ -1581,10 +1852,145 @@ mod tests {
             .await
             .insert(id.clone(), token.clone());
 
-        let response = cancel_download(ConnectionAuth, State(state), axum::extract::Path(id.clone())).await;
+        let response = cancel_download(ConnectionAuth, State(state), axum::extract::Path(id.clone()), Query(NodeQuery::default())).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(token.is_cancelled());
         assert!(!webui::jobs().read().await.contains_key(&id));
+    }
+
+    /// A download on another machine is forwarded, not started here: with
+    /// a node id this node does not know, the answer is "not in the
+    /// network" and no row appears on this node.
+    #[tokio::test]
+    async fn a_download_for_another_machine_is_not_started_here() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let before = webui::jobs().read().await.len();
+        let response = start_download(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(DownloadRequest {
+                repo_id: "owner/model".into(),
+                revision: None,
+                filename: "model.gguf".into(),
+                quantization: None,
+                node_id: Some("someone-else".into()),
+                extra_files: Vec::new(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["error"]["code"], "node_not_found");
+        assert_eq!(webui::jobs().read().await.len(), before);
+
+        let remote = Query(NodeQuery {
+            node_id: Some("someone-else".into()),
+        });
+        let response = list_downloads(ConnectionAuth, State(state.clone()), remote).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// This node's own id, or none, means here.
+    #[tokio::test]
+    async fn the_own_node_id_means_this_machine() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let own = state.network.node_id.clone();
+        assert_eq!(remote_target(&state, Some(&own)), None);
+        assert_eq!(remote_target(&state, Some("  ")), None);
+        assert_eq!(remote_target(&state, None), None);
+        assert_eq!(remote_target(&state, Some("other")), Some("other"));
+        let response = list_downloads(
+            ConnectionAuth,
+            State(state),
+            Query(NodeQuery { node_id: Some(own.clone()) }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["node_id"], own.as_str());
+        assert!(body["downloads"].is_array());
+    }
+
+    /// A finished download names its repository beside the file; a record
+    /// whose file is gone names nothing.
+    #[tokio::test]
+    async fn installed_sources_name_the_repository_of_each_file() {
+        let dir = std::env::temp_dir().join(format!("pom-hf-sources-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(dir.join(".pom-hf")).unwrap();
+        std::fs::write(dir.join("m.gguf"), b"x").unwrap();
+        let record = |filename: &str| InstalledRecord {
+            source: "huggingface".into(),
+            repo_id: "org/m".into(),
+            revision: Some("main".into()),
+            filename: filename.into(),
+            quantization: None,
+            size_bytes: 1,
+            sha256: None,
+            files: Vec::new(),
+            downloaded_at: "now".into(),
+        };
+        for (name, file) in [("a", "m.gguf"), ("b", "gone.gguf")] {
+            std::fs::write(
+                dir.join(".pom-hf").join(format!("{name}.json")),
+                serde_json::to_vec(&record(file)).unwrap(),
+            )
+            .unwrap();
+        }
+        let sources = installed_sources(vec![dir.clone()]).await;
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0]["repo_id"], "org/m");
+        assert_eq!(sources[0]["filename"], "m.gguf");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_forwarded_download_path_keeps_to_its_route() {
+        assert_eq!(
+            download_path("ab12", "cancel"),
+            "/api/ui/model-provider/downloads/ab12/cancel"
+        );
+        assert_eq!(
+            download_path("../../admin/x", "retry"),
+            "/api/ui/model-provider/downloads/adminx/retry"
+        );
+    }
+
+    /// The extra files of one action: the main file again is ignored, a file
+    /// the repository lacks is reported as failed, and the main download
+    /// still starts.
+    #[tokio::test]
+    async fn extra_files_ride_on_the_same_action() {
+        let destination = std::env::temp_dir().join(format!(
+            "pom-model-extra-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&destination).await.unwrap();
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.auth.write().await.model_dirs =
+            Some(vec![destination.to_string_lossy().into_owned()]);
+        state.model_service = Arc::new(ModelService::new(Arc::new(DestinationProvider)));
+        let response = start_download(
+            ConnectionAuth,
+            State(state),
+            Json(DownloadRequest {
+                repo_id: "owner/extra-model".into(),
+                revision: None,
+                filename: "model.gguf".into(),
+                quantization: None,
+                node_id: None,
+                extra_files: vec!["model.gguf".into(), "mmproj.gguf".into()],
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        let main = body["download_id"].as_str().unwrap().to_string();
+        assert!(body["extra_download_ids"].as_array().unwrap().is_empty());
+        assert_eq!(body["failed"][0]["filename"], "mmproj.gguf");
+        if let Some(token) = webui::jobs().write().await.remove(&main) {
+            drop(token);
+        }
+        let _ = tokio::fs::remove_dir_all(destination).await;
     }
 
     #[tokio::test]
@@ -1607,6 +2013,8 @@ mod tests {
                 revision: None,
                 filename: "model.gguf".into(),
                 quantization: None,
+                node_id: None,
+                extra_files: Vec::new(),
             }),
         )
         .await;
@@ -1633,6 +2041,8 @@ mod tests {
             revision: Some("refs/main".into()),
             filename: "Qwen3-Q5_K_M.gguf".into(),
             quantization: Some("Q5_K_M".into()),
+            node_id: None,
+            extra_files: Vec::new(),
         };
 
         assert_eq!(valid.identity().unwrap().repo_id, "Qwen/model");

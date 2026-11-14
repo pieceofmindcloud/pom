@@ -11,10 +11,9 @@ config keep the `pom` name; the brand is UI-only.
 `README.md` in this folder is the authoritative dev walkthrough (serving model,
 dev proxy setup, routing on the axum side). Its deployment section mirrors the
 current planner contract: one machine may own several valid ranges, while a
-global gap or overlap blocks the plan. The whole-model mode starts empty when
-chosen from slices, so the operator explicitly adds its machines.
-Topology edits query the planner after the 260 ms debounce; runtime settings
-remain local until the deploy preflight.
+global gap or overlap blocks the plan. The Deploy screen surveys the plan once
+per model and validates the map only when Deploy is pressed; map edits and
+runtime settings stay local until then.
 
 ## Build tooling
 
@@ -89,7 +88,7 @@ Documentation; an item with `children` becomes an expandable section with
 submenus. `components/PluginBridge.tsx` connects the shell to the plugins through
 the `pom-plugin-events/v1` protocol (`lib/pluginEvents.ts`); over the same
 protocol a plugin drives POM's loader and installer over its own screen
-(`lib/pluginLoader.ts`, `components/PluginLoader.tsx`, host version 7). POM shows and opens
+(`lib/pluginLoader.ts`, `components/PluginLoader.tsx`, host version 7; version 8 adds `api.post`). POM shows and opens
 the interfaces of all plugins in the `admin`, `worker` and `visitor` profiles; the
 manifest's `roles` and `profiles` are validated but do not restrict this UI. The
 native restrictions of the `visitor` profile still apply to the POM routes. The
@@ -109,7 +108,7 @@ It never sees deployment logs (denied in `lib/access.ts` even where a plugin
 claims the route); request logs and statistics open only once an active plugin
 serves them, with its own node's requests, and never as the advertising
 fallback. Its preferences hide
-the GPU thermal protection and the Hugging Face token. The cluster's connection
+the GPU thermal protection. The cluster's connection
 key shows only to `admin` (`/config/keys/connection` and the Sharing screen). The value
 comes from `/api/ui/node`, it is a persisted property of the node, and it appears
 in the toolbar. This does not replace backend authorization: the server also
@@ -139,30 +138,36 @@ a choice.
   On mobile, the list of online users stays closed until `See online` is
   triggered.
 - `/admin-ui/chat` -> the compact Chat for the native macOS status bar panel; it keeps only the chat screen, with an `h-full min-h-0 overflow-hidden` layout, and the larger-window button appears only when the native WebKit provides the `pomOpenWindow` bridge.
-- `/models` -> WholeModels; `/models/remote` -> RemoteModels (search,
-  details and downloads persisted on the node); `/models/slice` -> SliceModels, which also
-  shows the slicing jobs and their progress bars
-- `/shards` -> Shards; `/shards/deploy` -> redirects to `/deploy` (kept for old links)
-- `/models`, `/models/remote`, `/models/slice`, `/shards`,
+- `/models` -> WholeModels (menu "Models", no submenu); `/models/remote`
+  redirects to the Hugging Face plugin's Search Models (`lib/modelSearch.ts`), or
+  to `/models` without the plugin - searching, downloading and the token are that
+  plugin's screen; `/models/slice` -> SliceModels, tensor parallel
+  shards only (development mode, off the menu, reachable through its route),
+  with the slicing jobs and their progress bars
+- `/shards` -> redirects to `/models`, `/shards/deploy` to `/deploy` (old
+  links; the Shards screen was removed with pipeline slicing)
+- `/models`, `/models/slice`
   and `/transfers` are full-bleed, in the same
   pattern as `/deployments`/`/deployments/logs`: fixed header
   (`FullBleedHeader`, `components/ui.tsx`) and a table or content scrolling
-  inside. Whole models and Slices show the `mmproj` file name when the
+  inside. Whole models show the `mmproj` file name when the
   model/round has vision (`DiscoveredModel.mmproj_path`/
   `ShardSet.mmproj_path`, already coming from the catalog - the screen only
   renders it). See `src/routes/AGENTS.md`.
 - `/deploy` -> DeployModel (first-level entry for putting models in service,
-  full-bleed Deploy Studio with central cluster map, property inspector and
-  draggable peer strip; whole-model mode takes more machines while their
-  ranges cover every layer, one machine only under an inference service)
+  full-bleed Deploy Studio with central cluster map, property inspector with
+  the Machines tab (each machine's layer ranges on sliders) and draggable peer
+  strip; Pipeline and Image model only, the map is validated when Deploy is
+  pressed; one machine only under an inference service)
 - `/deployments` -> Deployments, full-bleed like Logs: the same
   `DeploymentInspector` from the deploy screen opens on the right, in read-only
   mode, with the parameters of the chosen version
 - `/deployments/logs` -> DeploymentLogs, the terminal console of the cluster's
   process logs, in arrival order on the principal and filterable by `deploy_id`
 - `/setup` is not a route: the deprecated wizard has no path.
-- `/transfers` -> Transfers, with the send panel first (one menu entry);
-  `/transfers/send` redirects there keeping `?filename=`
+- `/transfers` -> Transfers, off the menu (the bell links to it): an older
+  admin's file offers and transfers only, the model downloads being the Hugging
+  Face plugin's Downloads tab; `/transfers/send` redirects there keeping `?filename=`
 - Plugin routes -> `PluginScreen` under `/<plugin_code>/<manifest route>`,
   outside `<Routes>` and before the native table. The basename turns, for
   example, `base` + `/plugin-de-base` into `/admin-ui/base/plugin-de-base`.
@@ -185,8 +190,8 @@ a choice.
   is handled separately in `/config/about`. This replaced the former
   single-product `/enterprise` screen (`Enterprise.tsx`); see
   `src/routes/AGENTS.md` and `crates/node/src/plugins.rs`.
-- `/config/preferences` -> Preferences with exposure, Hugging Face and thermal
-  protection; `/config/storage` -> ModelPaths, which also configures the shared
+- `/config/preferences` -> Preferences with exposure and thermal
+  protection (the Hugging Face token is the plugin's Settings tab); `/config/storage` -> ModelPaths, which also configures the shared
   persistent root for projects and dynamic plugin data;
   `/config/preferences/admin`
   -> administrative preferences for TLS, QUIC, logs and network chat; and
@@ -211,7 +216,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 - `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, shared types, the generated license catalog, image resizing by context budget, and the contract of TTFT, prefill, generation and total metrics. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider, including telemetry and initial-model copy. See `src/i18n/AGENTS.md`.
-- `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action, initial-model mark and `RemoteModels`. See `src/routes/AGENTS.md`.
+- `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action, and initial-model mark. See `src/routes/AGENTS.md`.
 - `src/components/` - chrome (Sidebar, Topbar, nav, Notifications, TlsIndicator, ChatSessionList) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog, ApiKeysTable, DeploymentLogDock, OpenNativeChatWindowButton). `nav.ts` carries both `nav.chat` (`/chat`) and `nav.networkChat` (`/network-chat`), and that is how the two Chat surfaces are reached; `NetworkChat.tsx` uses `Tabs` (`components/ui.tsx`) to switch between the network room and the lobby room. `DeploymentInspector` is the single editor of the deployment's settings, in the Deploy Studio and in the History's redeploy panel, including the f32/f16/f8/i4 hidden-state formats (f16 default).
 - `src/brand/` + `public/brand/` - **generated** by `scripts/build-brand.mjs` from the root `brand.json`; read through `src/lib/brand.ts` (`brand`, `storageKey`). Never edit or commit.
 - `src/guides/` - the human half of the documentation: the loader of the markdown guides, their renderer and the SVG diagrams. See `src/guides/AGENTS.md`.
@@ -257,11 +262,6 @@ Test fixtures: a hand-written partial peer can still crash a component (see
 - A non-text, non-PDF attachment (a `.docx`, for example) is still read with
   `file.text()` in `routes/Chat.tsx`, so the model receives binary garbage instead
   of a refusal.
-- Two hard-coded Portuguese words show in the English interface: the
-  Simple/Complete strategy switch of the Deploy screen (`routes/DeployModel.tsx`,
-  `"Simples"`/`"Completa"`, development mode only) and the `resposta` step of the
-  deploy map's route legend (`components/DeployNetworkCanvas.tsx`). Both belong
-  in `i18n/messages.csv`.
 
 ## Maintaining this file
 

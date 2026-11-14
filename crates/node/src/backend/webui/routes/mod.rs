@@ -515,6 +515,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::PrincipalOnly,
     },
     RouteRule {
+        prefix: "/api/ui/network/relay-policy",
+        method: None,
+        scope: RouteScope::PrincipalOnly,
+    },
+    RouteRule {
         prefix: "/api/ui/network/logs",
         method: None,
         // Every admin decides it; a secondary's request is passed on to the
@@ -565,6 +570,14 @@ const ROUTE_RULES: &[RouteRule] = &[
         prefix: "/api/ui/image-undeploy",
         method: None,
         scope: RouteScope::AnyAdmin,
+    },
+    // Reading what image models the network serves is the Dashboard's, on a
+    // worker too (it asks each peer, so no local image plugin is needed);
+    // changing them stays an admin's.
+    RouteRule {
+        prefix: "/api/ui/image-deployments",
+        method: Some(Method::GET),
+        scope: RouteScope::ServingMember,
     },
     RouteRule {
         prefix: "/api/ui/image-deployments",
@@ -673,6 +686,22 @@ pub(crate) fn route_scope(method: &Method, path: &str) -> RouteScope {
         })
 }
 
+/// The scope a route takes when another node asks, where it is narrower
+/// than for this machine's own operator. A worker downloads models and walks
+/// its folders for itself (`ServingMember`), but making another machine
+/// download or rescan is an admin's act: a worker signing that request for a
+/// neighbour is refused. Reading a machine's downloads stays open to the same
+/// callers as before.
+pub(crate) fn node_to_node_scope(method: &Method, path: &str, scope: RouteScope) -> RouteScope {
+    let admin_only = (method == Method::POST && is_under(path, "/api/ui/model-provider/downloads"))
+        || is_under(path, "/api/ui/models/rescan");
+    if admin_only && scope == RouteScope::ServingMember {
+        RouteScope::AnyAdmin
+    } else {
+        scope
+    }
+}
+
 /// Routes an inference node refuses whoever asks, an admin included: they
 /// are how a machine comes to hold and serve a model - receiving files,
 /// slicing, loading a slice, being a deployment target. The role is what the
@@ -731,6 +760,21 @@ mod policy_tests {
     /// Read shortcut: almost every rule in the table is indifferent to the method.
     fn scope_of(path: &str) -> RouteScope {
         route_scope(&Method::GET, path)
+    }
+
+    #[test]
+    fn another_node_needs_an_admin_to_download_or_rescan_here() {
+        let post = |path: &str| node_to_node_scope(&Method::POST, path, route_scope(&Method::POST, path));
+        assert_eq!(post("/api/ui/model-provider/downloads"), RouteScope::AnyAdmin);
+        assert_eq!(post("/api/ui/model-provider/downloads/ab/cancel"), RouteScope::AnyAdmin);
+        assert_eq!(post("/api/ui/models/rescan"), RouteScope::AnyAdmin);
+        assert_eq!(
+            node_to_node_scope(&Method::GET, "/api/ui/model-provider/downloads", scope_of("/api/ui/model-provider/downloads")),
+            RouteScope::ServingMember
+        );
+        assert_eq!(post("/api/ui/models/delete"), RouteScope::ServingMember);
+        // The local operator's scope is unchanged.
+        assert_eq!(route_scope(&Method::POST, "/api/ui/models/rescan"), RouteScope::ServingMember);
     }
 
     #[test]
@@ -850,6 +894,7 @@ mod policy_tests {
             RouteScope::PrincipalOnly
         );
         assert_eq!(scope_of("/api/ui/deployments"), RouteScope::ServingMember);
+        assert_eq!(scope_of("/api/ui/image-deployments"), RouteScope::ServingMember);
         assert_eq!(
             route_scope(&Method::POST, "/api/ui/deployments"),
             RouteScope::AnyAdmin

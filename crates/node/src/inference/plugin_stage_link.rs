@@ -177,6 +177,34 @@ async fn earlier_peer(
 /// How often a later stage checks that the earlier stage's link secret is still the one its engine holds.
 const WATCH_SECRET: Duration = Duration::from_secs(10);
 
+/// The one-shot "restart this stage" of a later stage's relay, shared by the secret watch and the relay's
+/// connections: the first reason sent wins, the later ones are dropped.
+#[derive(Clone)]
+struct StaleSignal(Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<String>>>>);
+
+impl StaleSignal {
+    fn fire(&self, why: String) {
+        if let Some(sender) = self.0.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = sender.send(why);
+        }
+    }
+}
+
+impl ConnSlot {
+    /// Whether no newer engine connection was opened after this one.
+    fn still_newest(&self) -> bool {
+        self.newest.load(std::sync::atomic::Ordering::SeqCst) == self.mine
+    }
+}
+
+/// A connection the engine opened to the relay, and the newest one's number: a connection the earlier stage reset
+/// restarts this stage only while it is still the engine's newest (a newer one means the engine linked again).
+#[derive(Clone)]
+struct ConnSlot {
+    newest: Arc<std::sync::atomic::AtomicU64>,
+    mine: u64,
+}
+
 /// The loopback relay of a later stage; it ends when dropped. `stale` fires once
 /// the earlier stage's link secret is no longer the one this stage's engine was
 /// loaded with (the earlier engine restarted, or the secret was taken while it
@@ -203,7 +231,7 @@ fn watch_secret(
     cfg: crate::runtime::NodeConfig,
     code: String,
     token: String,
-    stale: tokio::sync::oneshot::Sender<String>,
+    stale: StaleSignal,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -214,7 +242,7 @@ fn watch_secret(
             match link_secret(&state, &peer, &code, &cfg.deploy_id).await {
                 Ok(current) if current != token => {
                     warn!(plugin = %code, peer = %peer.node_id, "stage link: the earlier stage's link secret changed; restarting this stage");
-                    let _ = stale.send("the earlier stage restarted: its link secret changed".to_owned());
+                    stale.fire("the earlier stage restarted: its link secret changed".to_owned());
                     return;
                 }
                 _ => {}
@@ -271,26 +299,34 @@ pub(crate) async fn prepare(
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
     let (stale_tx, stale) = tokio::sync::oneshot::channel();
+    let signal = StaleSignal(Arc::new(std::sync::Mutex::new(Some(stale_tx))));
     let watch = watch_secret(
         state.clone(),
         cfg.clone(),
         code.to_owned(),
         token.clone(),
-        stale_tx,
+        signal.clone(),
     );
     let relay_cfg = cfg.clone();
     let relay_code = code.to_owned();
+    let newest = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let task = tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
             let _ = stream.set_nodelay(true);
+            let mine = newest.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             tokio::spawn(relay_connection(
                 state.clone(),
                 relay_cfg.clone(),
                 relay_code.clone(),
                 stream,
+                signal.clone(),
+                ConnSlot {
+                    newest: Arc::clone(&newest),
+                    mine,
+                },
             ));
         }
     });
@@ -373,6 +409,8 @@ async fn relay_connection(
     cfg: crate::runtime::NodeConfig,
     code: String,
     stream: TcpStream,
+    stale: StaleSignal,
+    slot: ConnSlot,
 ) {
     let conn = uuid::Uuid::new_v4().simple().to_string();
     let base = format!(
@@ -427,6 +465,8 @@ async fn relay_connection(
                         Arc::clone(&peer),
                         format!("{base}/{seq}"),
                         frame,
+                        stale.clone(),
+                        slot.clone(),
                     ));
                     seq += 1;
                 }
@@ -914,6 +954,7 @@ pub(crate) fn merge_reported_link(code: &str, link: ReportedLink) {
     merge_in(code, &link.node, link.phase, link.stats, &link.channels);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn forward(
     state: GatewayState,
     cfg: crate::runtime::NodeConfig,
@@ -921,6 +962,8 @@ async fn forward(
     peer: Arc<tokio::sync::Mutex<Option<crate::network::PeerInfo>>>,
     path: String,
     frame: Vec<u8>,
+    stale: StaleSignal,
+    slot: ConnSlot,
 ) -> Option<Vec<u8>> {
     // A prompt piece ('P') says it is the prompt, whatever the stream has told this machine. A window ('W', 'V') does
     // not say it is the decode: DeepSeek-V4.1's engine reads a prompt's pieces as 'W' too, and this machine's own
@@ -987,8 +1030,23 @@ async fn forward(
                 *peer.lock().await = None;
                 tokio::time::sleep(RETRY).await;
             }
-            Err(Refusal::Retry(error) | Refusal::Final(error)) => {
+            Err(Refusal::Retry(error)) => {
                 warn!(plugin = %code, %error, "stage link: giving up");
+                return None;
+            }
+            Err(Refusal::Final(error)) => {
+                warn!(plugin = %code, %error, "stage link: giving up");
+                // The earlier stage reset this connection (it restarted, or took a newer one). The engine loses it and,
+                // when it does not open another, answers "the earlier stage is not connected" to every request while its
+                // /health stays ready. Unless the engine linked again within RETRY, this stage restarts as it does when
+                // the earlier stage's secret changes, and the new generation links afresh.
+                tokio::spawn(async move {
+                    tokio::time::sleep(RETRY).await;
+                    if slot.still_newest() {
+                        warn!(plugin = %code, "stage link: the earlier stage reset the link and the engine did not link again; restarting this stage");
+                        stale.fire(format!("the earlier stage reset the link: {error}"));
+                    }
+                });
                 return None;
             }
         }
@@ -1521,6 +1579,28 @@ async fn link_frame(
 
 #[cfg(test)]
 mod tests {
+    use super::{ConnSlot, StaleSignal};
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
+
+    #[test]
+    fn the_restart_signal_fires_once_with_the_first_reason() {
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let signal = StaleSignal(Arc::new(std::sync::Mutex::new(Some(tx))));
+        signal.clone().fire("the earlier stage reset the link".into());
+        signal.fire("the earlier stage restarted: its link secret changed".into());
+        assert_eq!(rx.try_recv().unwrap(), "the earlier stage reset the link");
+    }
+
+    #[test]
+    fn a_reset_connection_restarts_only_while_it_is_the_engines_newest() {
+        let newest = Arc::new(AtomicU64::new(1));
+        let first = ConnSlot { newest: Arc::clone(&newest), mine: 1 };
+        assert!(first.still_newest(), "no other connection: the engine did not link again");
+        newest.store(2, std::sync::atomic::Ordering::SeqCst);
+        assert!(!first.still_newest(), "the engine opened a newer connection: no restart");
+    }
+
     use super::*;
 
     #[test]

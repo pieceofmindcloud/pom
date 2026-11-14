@@ -198,8 +198,9 @@ describe("pom-plugin-events/v1", () => {
       expect(loaderState("base")).toBeNull();
     });
 
-    it("is host version 7", () => {
-      expect(buildPluginHost().version).toBe(7);
+    it("is host version 8, with api.post", () => {
+      expect(buildPluginHost().version).toBe(8);
+      expect(typeof buildPluginHost().api.post).toBe("function");
     });
   });
 });

@@ -610,6 +610,26 @@ and `discovery.rs` builds the endpoint and everything that rides on it.
   QUIC address discovery is only asked of HTTPS relays (`relay_config`): a
   node's embedded relay does not serve it. `examples/relay-node/docker-compose.yml`
   is the example of a dedicated relay, outside the network it serves.
+- **The network's relay policy** (`NetworkSettings.relay_policy`, set only by
+  the principal through `POST /api/ui/network/relay-policy`, absent reads as
+  `all`): `all` keeps the map above; `members` takes n0's public relays out
+  of every machine's map, leaving the dedicated and member relays; `none`
+  takes every relay out, and the node relays for nobody (`RelayGate` checks
+  the policy in `serving`, `everyone`, `anonymous_serving` and `allows`) and
+  opens no tunnel through a visitor's anonymous relay. The first map already
+  follows the saved policy (`Discovery::new`); afterwards every policy round
+  reconciles the map with it (`discovery::apply_relay_policy`, live
+  `insert_relay`/`remove_relay`), so a change needs no restart. The policy
+  reaches the members in `NetworkSettings` and each one sets it on its gate
+  when it adopts them (`webui::network::apply_network_settings_with_key`).
+  Enforcement is on each machine's own side: an endpoint never connects to a
+  relay outside its map, so a machine that ignores the policy still cannot
+  reach a compliant one through such a relay. Without any relay iroh still
+  dials direct paths (LAN, mDNS, public or announced address) but cannot
+  punch a NAT, so a machine behind NAT without an open port is unreachable.
+  Before a node joins (lobby, public directory) it still uses n0's relays,
+  since the policy is not yet known there; pkarr lookups are not relays and
+  are not affected.
 - **Hole punching.** iroh punches the NAT on its own, coordinated over the
   relay, and moves the same connection from the relay path to a direct one when
   it closes. There is no separate event to wire, nor a reservation to ask for:

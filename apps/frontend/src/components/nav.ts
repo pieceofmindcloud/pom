@@ -12,13 +12,11 @@ import {
   Info,
   KeyRound,
   Laptop,
-  Layers,
   ListTree,
   MessagesSquare,
   Network,
   Puzzle,
   Rocket,
-  Scissors,
   Search,
   Send,
   Settings,
@@ -80,28 +78,12 @@ export const NAV: NavSection[] = [
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
   { labelKey: "nav.chat", icon: MessagesSquare, to: "/chat", chatPanelProfiles: ["visitor"] },
   { labelKey: "nav.networkChat", icon: MessagesSquare, to: "/network-chat" },
-  {
-    labelKey: "nav.models",
-    icon: Boxes,
-    children: [
-      { labelKey: "nav.remoteModels", to: "/models/remote", icon: Search },
-      { labelKey: "nav.fullModels", to: "/models", icon: Boxes, end: true },
-      { labelKey: "nav.sliceModels", to: "/models/slice", icon: Scissors },
-      { labelKey: "nav.shards", to: "/shards", icon: Layers, end: true },
-    ],
-  },
-  {
-    labelKey: "nav.deployments",
-    icon: Rocket,
-    children: [
-      { labelKey: "nav.deploy", to: "/deploy", icon: Rocket },
-      // Separate from "deploy" on purpose: one creates, the other shows and
-      // adjusts what already exists. They are two different moments of the same work.
-      { labelKey: "nav.history", to: "/deployments", icon: History },
-    ],
-  },
-  // One screen: send a file, and everything under way or just finished.
-  { labelKey: "nav.transfers", icon: Send, to: "/transfers" },
+  // Searching and downloading models is the Hugging Face plugin's own menu
+  // entry (Search Models), not a child of this one.
+  { labelKey: "nav.models", icon: Boxes, to: "/models" },
+  // A single entry: the deploy screen links to the history of what is
+  // already deployed (/deployments) from a button beside Deploy.
+  { labelKey: "nav.deployments", icon: Rocket, to: "/deploy" },
   {
     labelKey: "nav.logs",
     icon: ListTree,
@@ -169,6 +151,7 @@ const PLUGIN_ICONS: Readonly<Record<string, LucideIcon>> = {
   "messages-square": MessagesSquare,
   cpu: Cpu,
   activity: Activity,
+  search: Search,
 };
 
 function pluginIcon(name?: string | null): LucideIcon {
@@ -229,6 +212,21 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
       }
     }
     if (placed) continue;
+    // A leaf asking for POM's Settings section goes in it, before About.
+    const settings = result.find((s) => s.labelKey === "nav.settings");
+    if (item.section === "settings" && !item.children && settings?.children) {
+      const about = settings.children.findIndex((c) => c.to === "/config/about");
+      const leaf = {
+        labelKey: key,
+        to: item.to,
+        icon: pluginIcon(item.icon),
+        iconImage: item.iconImage ? pluginAssetUrl(item.code, item.iconImage) : undefined,
+        pluginCode: item.code,
+      };
+      settings.children = [...settings.children];
+      settings.children.splice(about < 0 ? settings.children.length : about, 0, leaf);
+      continue;
+    }
     // Next to the entries this plugin already took (Quota after Statistics,
     // both the logs plugin's), else at the root before the documentation.
     const own = result.map((s) => s.pluginCode === item.code || s.children?.some((c) => c.pluginCode === item.code));

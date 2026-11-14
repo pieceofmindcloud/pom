@@ -26,7 +26,8 @@ import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcas
 import { useI18n } from "./i18n/provider";
 import type { AdminAccessStatus } from "./lib/types";
 import { isDemoUser, loadSession } from "./lib/session";
-import { DemoExpiredNotice, DemoNetwork, DemoQueue, DemoWelcome, useDemoSeat } from "./components/DemoMode";
+import { modelSearchRoute } from "./lib/modelSearch";
+import { DemoExpiredNotice, DemoNetwork, guestHold, startGuestVisit, DemoQueue, DemoWelcome, useDemoSeat, useQueueReload } from "./components/DemoMode";
 import pomMark from "./assets/pom-mark-dark.png";
 import { BrandLanguageSwitch } from "./components/BrandLanguageSwitch";
 import { Panel, PanelHeader } from "./components/ui";
@@ -73,6 +74,14 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
   }, []);
 
   const providers = access?.auth_providers ?? [];
+  /** `DEMO_NO_AUTH`: why this guest stays here instead of going in. */
+  const [hold] = useState(guestHold);
+  const guestUrl = access?.guest_url;
+  // A visit that could not open (a full demonstration among the causes) tries again by itself.
+  useQueueReload(Boolean(guestUrl && hold && "stuck" in hold && !operatorPath), () => guestUrl && startGuestVisit(guestUrl));
+  useEffect(() => {
+    if (guestUrl && !hold && !operatorPath) startGuestVisit(guestUrl);
+  }, [guestUrl, hold, operatorPath]);
 
   /** Shakes the form on a refused password, except with reduced motion. */
   function shake() {
@@ -159,9 +168,36 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
         <p className="pom-login-sub">PIECE OF MIND</p>
         {/* A piece of mind traveling between machines: decorative. */}
         <span className="pom-login-link" aria-hidden="true"><i /><i /><i /></span>
-        {showProviders ? (
+        {guestUrl && !operatorPath ? (
+          // Without sign-in only the animation shows while the visit opens;
+          // a visit that ran out says so and stays here.
+          hold && (
+            <p role="status" className="pom-login-error" data-testid="demo-guest-hold">
+              {"cooldownSecs" in hold
+                ? t("demo.guestCooldown", { minutes: Math.max(1, Math.ceil(hold.cooldownSecs / 60)) })
+                : "signedOut" in hold
+                  ? (
+                    <>
+                      {t("demo.signedOut")}{" "}
+                      <a className="underline" href={guestUrl} onClick={(event) => { event.preventDefault(); startGuestVisit(guestUrl); }}>
+                        {t("demo.newVisit")}
+                      </a>
+                    </>
+                  )
+                : "stuck" in hold
+                  ? (
+                    <>
+                      {t("demo.guestStuck")}{" "}
+                      <a className="underline" href={guestUrl} onClick={(event) => { event.preventDefault(); startGuestVisit(guestUrl); }}>
+                        {t("demo.guestRetry")}
+                      </a>
+                    </>
+                  )
+                  : t("demo.guestExpired")}
+            </p>
+          )
+        ) : operatorPath === undefined && !access ? null : showProviders ? (
           <div className="pom-login-form">
-            <p className="pom-login-error" style={{ opacity: 0.8 }}>{t("accessGate.providersSubtitle")}</p>
             {providers.map((provider) => (
               <a
                 key={`${provider.plugin}:${provider.id}`}
@@ -172,7 +208,6 @@ function AdminAccessGate({ onAuthenticated }: { onAuthenticated: () => void }) {
                 {t("accessGate.signInWith", { provider: provider.label })}
               </a>
             ))}
-            {access?.demo_mode && <p className="pom-login-error" style={{ opacity: 0.7 }}>{t("accessGate.demoNotice")}</p>}
             {access?.demo_mode && <DemoExpiredNotice />}
           </div>
         ) : (
@@ -269,13 +304,11 @@ export const routeLoaders = {
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
   deployments: () => import("./routes/Deployments").then(({ Deployments }) => Deployments),
-  shards: () => import("./routes/Shards").then(({ Shards }) => Shards),
   sliceModels: () => import("./routes/SliceModels").then(({ SliceModels }) => SliceModels),
   tokenKeys: () => import("./routes/Keys").then(({ TokenKeys }) => TokenKeys),
   connectionKeys: () => import("./routes/Keys").then(({ ConnectionKeys }) => ConnectionKeys),
   transfers: () => import("./routes/Transfers").then(({ Transfers }) => Transfers),
   wholeModels: () => import("./routes/WholeModels").then(({ WholeModels }) => WholeModels),
-  remoteModels: () => import("./routes/RemoteModels").then(({ RemoteModels }) => RemoteModels),
   documentation: () => import("./routes/Documentation").then(({ Documentation }) => Documentation),
   forbidden: () => import("./routes/Forbidden").then(({ Forbidden }) => Forbidden),
 };
@@ -304,13 +337,11 @@ const About = lazyRoute(routeLoaders.about);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
 const Deployments = lazyRoute(routeLoaders.deployments);
-const Shards = lazyRoute(routeLoaders.shards);
 const SliceModels = lazyRoute(routeLoaders.sliceModels);
 const TokenKeys = lazyRoute(routeLoaders.tokenKeys);
 const ConnectionKeys = lazyRoute(routeLoaders.connectionKeys);
 const Transfers = lazyRoute(routeLoaders.transfers);
 const WholeModels = lazyRoute(routeLoaders.wholeModels);
-const RemoteModels = lazyRoute(routeLoaders.remoteModels);
 const Documentation = lazyRoute(routeLoaders.documentation);
 const Forbidden = lazyRoute(routeLoaders.forbidden);
 
@@ -409,10 +440,8 @@ export default function App() {
       location.pathname === "/network-chat" ||
       location.pathname === "/config/keys/api" ||
       location.pathname === "/models" ||
-      location.pathname === "/models/remote" ||
       location.pathname === "/models/slice" ||
       location.pathname === "/plugins" ||
-      location.pathname === "/shards" ||
       location.pathname === "/transfers");
   const adminSurface = useAdminSurface();
   const [adminReady, setAdminReady] = useState(false);
@@ -604,9 +633,10 @@ export default function App() {
                         <Route path="/public-networks" element={<Page><PublicNetworks /></Page>} />
                         <Route path="/network-chat" element={<Page><NetworkChat /></Page>} />
                         <Route path="/models" element={<Page><WholeModels /></Page>} />
-                        <Route path="/models/remote" element={<Page><RemoteModels /></Page>} />
+                        {/* The search moved to the Hugging Face plugin; an old link lands on it, or on Models. */}
+                        <Route path="/models/remote" element={<Navigate to={modelSearchRoute() ?? "/models"} replace />} />
                         <Route path="/models/slice" element={<Page><SliceModels /></Page>} />
-                        <Route path="/shards" element={<Page><Shards /></Page>} />
+                        <Route path="/shards" element={<Navigate to="/models" replace />} />
                         <Route path="/deploy" element={<Page><DeployModel /></Page>} />
                         <Route path="/deploy/image" element={<Navigate to="/deploy?mode=image" replace />} />
                         <Route path="/deployments" element={<Page><Deployments /></Page>} />

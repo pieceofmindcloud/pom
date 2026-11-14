@@ -8,11 +8,11 @@
  * visitor gets in place of the Network settings. The node enforces all of it;
  * this is only what the person sees.
  */
-import { Clock, Globe2, Hourglass, LogOut, Star, Users } from "lucide-react";
+import { Clock, Globe2, Hourglass, Info, LogOut, MessageCircle, Star, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../lib/api";
 import { useCluster, useNetworkInfo, useNode } from "../lib/queries";
-import { isDemoUser, sessionInfo, signOut, type DemoSeat } from "../lib/session";
+import { isDemoUser, sessionInfo, signOut, SIGNED_OUT_FLAG, type DemoSeat } from "../lib/session";
 import { useI18n } from "../i18n/provider";
 import { Modal } from "./Confirm";
 import { Badge, Button, KeyValue, Panel, PanelHeader } from "./ui";
@@ -21,6 +21,12 @@ import pomMark from "../assets/pom-mark-dark.png";
 
 /** The public POM repository, where a visitor who liked it can leave a star. */
 const POM_REPOSITORY = "https://github.com/pieceofmindcloud/pom";
+/** The POM community on Discord, offered in the welcome dialog. */
+const POM_DISCORD = "https://discord.gg/ptGMZbaDkN";
+/** The project's site, offered in the welcome dialog. */
+const POM_SITE = "https://pieceofmind.cloud";
+/** Fired by the top bar's info button to open the welcome dialog again. */
+const OPEN_WELCOME_EVENT = "pom:demo-welcome";
 const EXPIRED_FLAG = "pom.demo.expired";
 const WELCOMED_FLAG = "pom.demo.welcomed";
 
@@ -30,6 +36,52 @@ function storage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * `DEMO_NO_AUTH`: why a guest is not sent straight back in. The node answers
+ * `/?demo_cooldown=<secs>` while the same visitor waits after their time ran
+ * out; a tab whose time just ran out does not re-enter on its own either.
+ */
+export function guestHold(): { cooldownSecs: number } | { expired: true } | { signedOut: true } | { stuck: true } | null {
+  const raw = new URLSearchParams(window.location.search).get("demo_cooldown");
+  const secs = raw ? Number(raw) : NaN;
+  if (Number.isFinite(secs) && secs > 0) return { cooldownSecs: secs };
+  if (takeDemoExpired()) return { expired: true };
+  if (takeSignedOut()) return { signedOut: true };
+  return recentGuestStart() ? { stuck: true } : null;
+}
+
+const GUEST_START_FLAG = "pom.demo.guestStart";
+/** A guest start this tab made this long ago and came back without a session is a loop, not a visit. */
+const GUEST_LOOP_MS = 15_000;
+
+function recentGuestStart(): boolean {
+  try {
+    const at = Number(window.sessionStorage.getItem(GUEST_START_FLAG));
+    return Number.isFinite(at) && at > 0 && Date.now() - at < GUEST_LOOP_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** Sends the tab to the guest start, noting when, so a start that does not
+ *  stick (no session after it) stops at the gate instead of reloading forever. */
+export function startGuestVisit(url: string) {
+  try {
+    window.sessionStorage.setItem(GUEST_START_FLAG, String(Date.now()));
+  } catch {
+    // without storage there is no guard, but the visit still opens
+  }
+  window.location.replace(url);
+}
+
+/** Whether this tab just signed out: it stays at the gate until the visitor asks for a new visit. */
+function takeSignedOut(): boolean {
+  const store = storage();
+  const signedOut = store?.getItem(SIGNED_OUT_FLAG) === "1";
+  store?.removeItem(SIGNED_OUT_FLAG);
+  return signedOut;
 }
 
 /** Whether the last visit of this tab ended because its time ran out. */
@@ -109,19 +161,58 @@ export function DemoClock() {
   }, [left]);
   if (!isDemoUser() || left === null) return null;
   const tone = left <= 60 ? "rose" : left <= 300 ? "amber" : "iris";
+  const online = seat?.active_sessions;
   return (
+    <span className="flex items-center gap-1.5">
+    <button
+      type="button"
+      onClick={() => window.dispatchEvent(new Event(OPEN_WELCOME_EVENT))}
+      title={t("demo.infoTitle")}
+      aria-label={t("demo.infoTitle")}
+      data-testid="demo-info"
+      className="flex h-6 w-6 items-center justify-center rounded-full border border-line text-muted transition hover:border-iris/60 hover:text-fg"
+    >
+      <Info className="h-3.5 w-3.5" aria-hidden="true" />
+    </button>
+    {online !== undefined && (
+      <Badge tone="aqua" data-testid="demo-online">
+        <span
+          title={t("demo.onlineTitle")}
+          aria-label={t("demo.onlineLabel", { count: online, max: seat?.max_sessions ?? online })}
+          className="flex items-center gap-1"
+        >
+          <Users className="h-3 w-3" aria-hidden="true" />
+          <span className="font-mono">{online}/{seat?.max_sessions ?? online}</span>
+        </span>
+      </Badge>
+    )}
     <Badge tone={tone} data-testid="demo-clock">
       <span title={t("demo.clockTitle")} aria-label={t("demo.clockLabel", { time: clock(left) })} className="flex items-center gap-1">
         <Clock className="h-3 w-3" aria-hidden="true" />
         <span className="font-mono">{clock(left)}</span>
       </span>
     </Badge>
+    </span>
   );
+}
+
+/** How often a waiting page reloads by itself and tries for a seat again. */
+export const DEMO_QUEUE_RELOAD_MS = 5 * 60_000;
+
+/** Reloads the page every `DEMO_QUEUE_RELOAD_MS` while `enabled`. */
+export function useQueueReload(enabled: boolean, reload: () => void = () => window.location.reload()) {
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = window.setTimeout(reload, DEMO_QUEUE_RELOAD_MS);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
 }
 
 /** In place of the whole panel while every seat is taken. */
 export function DemoQueue({ seat }: { seat: DemoSeat }) {
   const { t } = useI18n();
+  useQueueReload(true);
   const position = seat.position ?? 1;
   const waiting = seat.waiting ?? position;
   return (
@@ -146,6 +237,7 @@ export function DemoQueue({ seat }: { seat: DemoSeat }) {
             </span>
           </div>
           <p className="pom-login-error" style={{ opacity: 0.6 }}>{t("demo.queueKeepOpen")}</p>
+          <p className="pom-login-error" style={{ opacity: 0.6 }}>{t("demo.queueAutoRefresh", { minutes: DEMO_QUEUE_RELOAD_MS / 60_000 })}</p>
           <button className="pom-login-button" type="button" onClick={() => void signOut()}>
             {t("demo.leaveQueue")}
           </button>
@@ -158,15 +250,22 @@ export function DemoQueue({ seat }: { seat: DemoSeat }) {
 /** Once per seat: what a demonstration node is, and that the visit is timed. */
 export function DemoWelcome({ seat }: { seat: DemoSeat | undefined }) {
   const { t } = useI18n();
-  const key = seat?.state === "active" ? `${sessionInfo()?.user?.user_id}:${seat.expires_at}` : null;
+  // Once per person and tab. Not keyed by `expires_at`: the node computes it
+  // again on every poll, and a second of drift reopened the dialog.
+  const key = seat?.state === "active" ? `${sessionInfo()?.user?.user_id ?? ""}` : null;
   const [open, setOpen] = useState(false);
   useEffect(() => {
-    if (!key) return;
+    if (key === null) return;
     if (storage()?.getItem(WELCOMED_FLAG) === key) return;
     setOpen(true);
   }, [key]);
+  useEffect(() => {
+    const reopen = () => setOpen(true);
+    window.addEventListener(OPEN_WELCOME_EVENT, reopen);
+    return () => window.removeEventListener(OPEN_WELCOME_EVENT, reopen);
+  }, []);
   const close = () => {
-    if (key) storage()?.setItem(WELCOMED_FLAG, key);
+    if (key !== null) storage()?.setItem(WELCOMED_FLAG, key);
     setOpen(false);
   };
   const total = Math.round((seat?.session_secs ?? 0) / 60);
@@ -181,6 +280,24 @@ export function DemoWelcome({ seat }: { seat: DemoSeat | undefined }) {
         <p>{t("demo.welcomeIntro")}</p>
         <p>{t("demo.welcomeDisabled")}</p>
         <p className="font-medium text-fg">{t("demo.welcomeTime", { minutes: total })}</p>
+        <p className="flex items-start gap-2 rounded-lg border border-aqua/35 bg-aqua/10 px-3 py-2 text-fg">
+          <Globe2 className="mt-0.5 h-4 w-4 shrink-0 text-aqua" aria-hidden="true" />
+          <span>
+            {t("demo.welcomeSite")}{" "}
+            <a className="font-medium text-iris underline" href={POM_SITE} target="_blank" rel="noreferrer" data-testid="demo-site">
+              pieceofmind.cloud
+            </a>
+          </span>
+        </p>
+        <p className="flex items-start gap-2 rounded-lg border border-iris/35 bg-iris/10 px-3 py-2 text-fg">
+          <MessageCircle className="mt-0.5 h-4 w-4 shrink-0 text-iris" aria-hidden="true" />
+          <span>
+            {t("demo.welcomeDiscord")}{" "}
+            <a className="font-medium text-iris underline" href={POM_DISCORD} target="_blank" rel="noreferrer" data-testid="demo-discord">
+              discord.gg/ptGMZbaDkN
+            </a>
+          </span>
+        </p>
         <p className="flex items-start gap-2 rounded-lg border border-amber/35 bg-amber/10 px-3 py-2 text-fg">
           <Star className="mt-0.5 h-4 w-4 shrink-0 text-amber" aria-hidden="true" />
           <span>

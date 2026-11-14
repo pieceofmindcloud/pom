@@ -396,6 +396,14 @@ where
 {
     let source = crate::multipart::GgufSource::open(path)?;
     let total = source.source_bytes();
+    // A full read of a large model takes minutes: the hash is kept per file
+    // set, keyed by every part's path, size and mtime, so a model read once
+    // is identified at once until it changes.
+    let fingerprint = source_fingerprint(&source);
+    if let Some(known) = fingerprint.as_deref().and_then(model_hash_cache::get) {
+        on_progress(total, total);
+        return Ok(known);
+    }
     let mut hasher = Sha256::new();
     let mut done = 0u64;
     let mut reported = 0u64;
@@ -414,7 +422,87 @@ where
     if done != total {
         anyhow::bail!("the GGUF size changed while the hash was being computed");
     }
-    Ok(hex::encode(hasher.finalize()))
+    let sha = hex::encode(hasher.finalize());
+    // Taken again after the read: a file rewritten meanwhile is not cached
+    // under its old fingerprint.
+    if let Some(fingerprint) = fingerprint.filter(|before| source_fingerprint(&source).as_ref() == Some(before)) {
+        model_hash_cache::put(&fingerprint, &sha);
+    }
+    Ok(sha)
+}
+
+/// Every part's canonical path, size and modification time, as one key.
+fn source_fingerprint(source: &crate::multipart::GgufSource) -> Option<String> {
+    let mut key = String::new();
+    for part in source.parts() {
+        let path = std::fs::canonicalize(&part.path).ok()?;
+        let meta = std::fs::metadata(&path).ok()?;
+        let mtime = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        key.push_str(&format!("{}\u{0}{}\u{0}{}\n", path.display(), meta.len(), mtime));
+    }
+    Some(key)
+}
+
+/// The sha256 of model files already read, in memory and in a small file in
+/// the project root (`.<slug>-model-hashes.json`), so a restart does not read
+/// every model again. Keys are fingerprints (`source_fingerprint`); a changed
+/// file has a new key, and old keys are dropped past `MAX_ENTRIES`.
+pub(crate) mod model_hash_cache {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    const MAX_ENTRIES: usize = 512;
+
+    fn file() -> std::path::PathBuf {
+        // Tests never write into whatever the project root resolves to.
+        #[cfg(test)]
+        return std::env::temp_dir().join(format!("pom-model-hashes-test-{}.json", std::process::id()));
+        #[cfg(not(test))]
+        crate::config::project_root().join(format!(".{}-model-hashes.json", crate::brand::slug()))
+    }
+
+    fn table() -> &'static Mutex<Option<BTreeMap<String, String>>> {
+        static TABLE: Mutex<Option<BTreeMap<String, String>>> = Mutex::new(None);
+        &TABLE
+    }
+
+    fn with_table<T>(f: impl FnOnce(&mut BTreeMap<String, String>) -> T) -> T {
+        let mut guard = table().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let map = guard.get_or_insert_with(|| {
+            std::fs::read(file())
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default()
+        });
+        f(map)
+    }
+
+    pub(crate) fn get(fingerprint: &str) -> Option<String> {
+        with_table(|map| map.get(fingerprint).cloned())
+    }
+
+    pub(crate) fn put(fingerprint: &str, sha256: &str) {
+        let snapshot = with_table(|map| {
+            map.insert(fingerprint.to_string(), sha256.to_string());
+            while map.len() > MAX_ENTRIES {
+                let Some(first) = map.keys().next().cloned() else { break };
+                map.remove(&first);
+            }
+            serde_json::to_vec(map).ok()
+        });
+        if let Some(bytes) = snapshot {
+            let path = file();
+            let temp = path.with_extension("json.tmp");
+            if std::fs::write(&temp, bytes).is_ok() {
+                let _ = std::fs::rename(&temp, &path);
+            }
+        }
+    }
 }
 
 pub(super) async fn source_model_sha256(path: &std::path::Path) -> anyhow::Result<String> {
@@ -475,6 +563,20 @@ pub(crate) struct LayerCut {
     pub layers: u32,
     pub size_bytes: u64,
     pub remainder_bytes: u64,
+    /// KV cache of layers 0..=end_layer and of the remainder, for the context
+    /// asked in `ModelLayerOptionsRequest::kv`. Absent without it, or on an
+    /// older node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remainder_kv_bytes: Option<u64>,
+    /// Of `size_bytes` / `remainder_bytes`, what must be resident in memory:
+    /// the lazy lookup tables (`plan::LAZY_LOOKUP_TABLES`, a `deepseek41`
+    /// Engram table) stay on disk. Absent on an older node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remainder_resident_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,6 +592,17 @@ pub(crate) struct ModelLayerOptions {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct ModelLayerOptionsRequest {
     pub path: String,
+    /// Also cost the KV cache of each cut for this deployment's context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv: Option<LayerOptionsKv>,
+}
+
+/// The deployment settings the KV cache of a cut depends on. The cache types
+/// are this node's installation-wide ones, as in the real launch.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct LayerOptionsKv {
+    pub n_ctx: u32,
+    pub max_sessions: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -645,7 +758,7 @@ pub(super) async fn model_layer_options(
     State(state): State<GatewayState>,
     Json(req): Json<ModelLayerOptionsRequest>,
 ) -> Response {
-    match model_layer_options_local(&state, &req.path).await {
+    match model_layer_options_local(&state, &req.path, req.kv).await {
         Ok(options) => Json(options).into_response(),
         Err(error) => bad_request(error),
     }
@@ -654,6 +767,7 @@ pub(super) async fn model_layer_options(
 pub(crate) async fn model_layer_options_local(
     state: &GatewayState,
     requested: &str,
+    kv: Option<LayerOptionsKv>,
 ) -> Result<ModelLayerOptions, String> {
     let requested_path = std::path::Path::new(requested);
     let canonical = requested_path
@@ -686,6 +800,56 @@ pub(crate) async fn model_layer_options_local(
     if total_layers == 0 {
         return Err("the GGUF declares no layers to slice".to_string());
     }
+    // The KV cache of a range, costed exactly as the capacity preview does.
+    let kv_plan = match kv {
+        Some(kv) => {
+            let (cache_type_k, cache_type_v) = {
+                let config = state.auth.read().await;
+                (config.cache_type_k, config.cache_type_v)
+            };
+            let info_path = canonical.clone();
+            let info = tokio::task::spawn_blocking(move || crate::gguf::read_info(&info_path))
+                .await
+                .map_err(|e| format!("GGUF read failed: {e}"))?
+                .map_err(|e| format!("could not read the KV geometry of the GGUF: {e}"))?;
+            let n_ctx = crate::runtime::total_context_tokens(kv.n_ctx, kv.max_sessions.max(1))
+                .map_err(|e| format!("invalid context: {e}"))?;
+            Some((
+                info,
+                plan::KvPlanParams {
+                    n_ctx,
+                    max_sessions: kv.max_sessions.max(1),
+                    cache_type_k,
+                    cache_type_v,
+                },
+            ))
+        }
+        None => None,
+    };
+    let kv_of = |start: u32, end: u32| -> Option<u64> {
+        let (info, kv) = kv_plan.as_ref()?;
+        plan::range_cost(&layout, Some(info), Some(*kv), start, end, end + 1 >= total_layers)
+            .ok()
+            .map(|(_, kv_bytes, _)| kv_bytes)
+    };
+    let tables_path = canonical.clone();
+    let lazy_table = tokio::task::spawn_blocking(move || {
+        crate::multipart::GgufSource::open(&tables_path)
+            .map(|source| plan::lazy_table_bytes(source.tensors()))
+            .unwrap_or(0)
+    })
+    .await
+    .unwrap_or(0);
+    // A range's serialized bytes minus the lazy table when the range carries it.
+    let resident = |start: u32, end: u32, weights: u64| -> u64 {
+        let layers: u64 = layout
+            .layer_bytes
+            .iter()
+            .skip(start as usize)
+            .take((end + 1 - start) as usize)
+            .sum();
+        plan::resident_weight_bytes(weights, layers, lazy_table)
+    };
     let cuts = layout
         .valid_prefix_end_layers()
         .into_iter()
@@ -698,6 +862,26 @@ pub(crate) async fn model_layer_options_local(
             } else {
                 0
             },
+            kv_bytes: kv_of(0, end_layer),
+            remainder_kv_bytes: if end_layer + 1 < total_layers {
+                kv_of(end_layer + 1, total_layers - 1)
+            } else {
+                Some(0).filter(|_| kv_plan.is_some())
+            },
+            resident_bytes: Some(resident(
+                0,
+                end_layer,
+                layout.slice_bytes(0, end_layer, end_layer + 1 >= total_layers),
+            )),
+            remainder_resident_bytes: Some(if end_layer + 1 < total_layers {
+                resident(
+                    end_layer + 1,
+                    total_layers - 1,
+                    layout.slice_bytes(end_layer + 1, total_layers - 1, true),
+                )
+            } else {
+                0
+            }),
         })
         .collect::<Vec<_>>();
     let valid_starts = std::iter::once(0)
@@ -771,6 +955,74 @@ pub(super) fn seal_single_part(
         .into_owned())
 }
 
+/// Whether this range of the whole model goes to a plugin inference service
+/// that cuts it itself: the deployment names a service, the source is the
+/// whole model (not a slice), and this machine's service lists the model's
+/// architecture in `stage_ranges`.
+async fn plugin_cuts_range(state: &GatewayState, req: &ApplyRequest) -> bool {
+    let Some(service) = req.params.inference_service.as_deref() else {
+        return false;
+    };
+    let source = std::path::PathBuf::from(&req.source_model_path);
+    let info = match tokio::task::spawn_blocking(move || crate::gguf::read_info(&source)).await {
+        Ok(Ok(info)) if info.shard_range.is_none() => info,
+        _ => return false,
+    };
+    crate::plugin_engine::services_of(state, &state.network.node_id)
+        .await
+        .and_then(|services| {
+            services
+                .into_iter()
+                .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference")
+        })
+        .is_some_and(|entry| crate::plugin_engine::runs_ranges(&entry, info.architecture.as_deref()))
+}
+
+/// This peer's range as a header-only virtual slice of the whole model it
+/// holds, when the node opted in and the model allows it; `None` keeps the
+/// real local slicing.
+async fn virtual_shard_for(req: &ApplyRequest, job_id: &str) -> anyhow::Result<Option<String>> {
+    if !plan::virtual_slices_enabled() {
+        info!(
+            "{} is not set: cutting layers {}-{} of {} locally",
+            crate::brand::env_var(plan::VIRTUAL_SLICES_ENV),
+            req.start_layer,
+            req.end_layer,
+            req.source_model_path
+        );
+        return Ok(None);
+    }
+    let source = std::path::PathBuf::from(&req.source_model_path);
+    let probe = source.clone();
+    let refusal = tokio::task::spawn_blocking(move || plan::virtual_slice_refusal(&probe)).await?;
+    if let Some(reason) = refusal {
+        info!(
+            "virtual slice not used for {} ({reason}); slicing locally",
+            source.display()
+        );
+        return Ok(None);
+    }
+    set_job(
+        job_id,
+        "running",
+        "slicing",
+        &format!(
+            "pointing at layers {}-{} of the whole model",
+            req.start_layer, req.end_layer
+        ),
+    )
+    .await;
+    let path = plan::write_virtual_shard(
+        &req.source_model_path,
+        req.start_layer,
+        req.end_layer,
+        req.is_first(),
+        req.is_last(),
+    )
+    .await?;
+    Ok(Some(path))
+}
+
 pub(super) async fn run_apply(
     state: GatewayState,
     req: ApplyRequest,
@@ -837,6 +1089,16 @@ pub(super) async fn run_apply(
     } else if req.skip_split || (req.is_first() && req.is_last() && req.peer_count <= 1) {
         // Nothing to carve out: this peer serves the file as it is.
         req.source_model_path.clone()
+    } else if plugin_cuts_range(&state, &req).await {
+        // The plugin's engine cuts this range from the whole file itself (`range` in `engine.load`): nothing is
+        // written, the file is served as it is.
+        info!(
+            "the inference service cuts layers {}-{} of {} itself; no slice is written",
+            req.start_layer, req.end_layer, req.source_model_path
+        );
+        req.source_model_path.clone()
+    } else if let Some(path) = virtual_shard_for(&req, job_id).await? {
+        path
     } else {
         set_job(
             job_id,
@@ -986,7 +1248,6 @@ pub(super) async fn run_apply(
         peer_index: req.peer_index,
         primary: req.primary,
         tp: req.tp.clone(),
-        inference_mode: req.params.inference_mode,
         inference_port,
         single_peer: req.single_peer(),
         no_embeddings: req.no_embeddings(),

@@ -14,12 +14,8 @@ import {
   ApiError,
   api,
   onAdminSessionLost,
-  getRemoteModelDetails,
-  getRemoteModelProviderStatus,
-  getRemoteModelStorage,
-  getHuggingFaceTokenConfig,
   listDeployments,
-  searchRemoteModels,
+  listRemoteModelDownloads,
   setAdminAccessToken,
   setConnectionKey,
 } from "./api";
@@ -30,8 +26,7 @@ import {
  * `default_password` and the interface enters without asking for it and asks for a change.
  */
 export const DEFAULT_ADMIN_PASSWORD = "admin";
-import { modelDownloadJobs } from "./modelProvider";
-import { getTrendingModels } from "./publicModelDiscovery";
+import { modelDownloadJobs, modelDownloadPollInterval } from "./modelProvider";
 import { fetchPublicPlugin, fetchPublicPluginCatalog, type PublicPluginCatalogQuery } from "./pluginCatalog";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import { isConnecting } from "./connection";
@@ -174,6 +169,10 @@ export function useAdminSurface() {
         await api.get<unknown>("/api/ui/node", { auth: false });
         return "available";
       } catch (error) {
+        // A demonstration visitor waiting for a seat holds a session: the node
+        // answers 423 (`demo_queue`) to everything but the queue itself, and
+        // the shell draws the queue past the gate.
+        if (error instanceof ApiError && error.status === 423) return "available";
         let access: AdminAccessStatus | null = null;
         try {
           access = await api.get<AdminAccessStatus>("/api/access", { auth: false });
@@ -573,7 +572,8 @@ export function useSidecarLinks(enabled = true) {
 export function useImageDeployments() {
   return useQuery({
     queryKey: keys.imageDeployments,
-    enabled: !isUserSession(),
+    // A demonstration visitor sees what the network serves, read-only.
+    enabled: !isUserSession() || isDemoUser(),
     queryFn: () => api.get<{ deployments: ImageDeployment[] }>("/api/ui/image-deployments"),
     refetchInterval: 10_000,
   });
@@ -626,7 +626,8 @@ export function useCacheTypes() {
 export function useJobs(enabled = true) {
   return useQuery({
     queryKey: keys.jobs,
-    enabled,
+    // A signed-in person (a demonstration visitor) runs no jobs: the node refuses the route.
+    enabled: enabled && !isUserSession(),
     queryFn: () =>
       optional(
         api.getConditional<{ jobs: Job[] }>("/api/ui/jobs", { auth: false }),
@@ -675,8 +676,8 @@ export function useTransfers(enabled = true) {
     queryKey: keys.transfers,
     queryFn: () =>
       optional(api.get<{ jobs: TransferJob[] }>("/api/transfer/jobs"), { jobs: [] }),
-    enabled,
-    refetchInterval: enabled ? 2000 : false,
+    enabled: enabled && !isUserSession(),
+    refetchInterval: enabled && !isUserSession() ? 2000 : false,
   });
 }
 
@@ -692,7 +693,7 @@ export function useTransfers(enabled = true) {
 export function useOffers(enabled = true) {
   return useQuery({
     queryKey: keys.offers,
-    enabled,
+    enabled: enabled && !isUserSession(),
     queryFn: () =>
       optional(
         api.getConditional<{ offers: NetworkOffer[] }>("/api/transfer/offers"),
@@ -781,62 +782,10 @@ export function useServableModels(fast = false) {
   });
 }
 
-export function useRemoteModelSearch(options: {
-  query: string;
-  ggufOnly: boolean;
-  page: number;
-  pageSize: number;
-  sort?: "relevance" | "downloads" | "recent";
-  enabled?: boolean;
-}) {
-  return useQuery({
-    queryKey: [
-      ...keys.remoteModels(options.query, options.ggufOnly, options.page),
-      options.sort ?? "relevance",
-    ],
-    queryFn: ({ signal }) => searchRemoteModels(options, signal),
-    enabled: options.enabled !== false && options.query.trim().length > 0,
-    staleTime: 15_000,
-    retry: false,
-  });
-}
 
-export function useTrendingPublicModels() {
-  return useQuery({
-    queryKey: ["public-trending-models", "hugging-face", "gguf"],
-    queryFn: ({ signal }) => getTrendingModels(signal),
-    staleTime: 5 * 60_000,
-    retry: 1,
-  });
-}
 
-export function useRemoteModelDetails(repoId: string | null, revision?: string) {
-  return useQuery({
-    queryKey: keys.remoteModelDetails(repoId ?? "", revision),
-    queryFn: ({ signal }) => getRemoteModelDetails(repoId ?? "", revision, signal),
-    enabled: Boolean(repoId),
-    staleTime: 60_000,
-    retry: false,
-  });
-}
 
-export function useRemoteModelStorage() {
-  return useQuery({
-    queryKey: keys.remoteModelStorage,
-    queryFn: ({ signal }) => getRemoteModelStorage(signal),
-    staleTime: 15_000,
-    retry: false,
-  });
-}
 
-export function useRemoteModelProviderStatus() {
-  return useQuery({
-    queryKey: keys.remoteModelProviderStatus,
-    queryFn: ({ signal }) => getRemoteModelProviderStatus(signal),
-    staleTime: 30_000,
-    retry: false,
-  });
-}
 
 /** This machine's local CA and whether this computer trusts it (`webui/https.rs`). */
 export function useLocalCa() {
@@ -848,14 +797,6 @@ export function useLocalCa() {
   });
 }
 
-export function useHuggingFaceTokenConfig() {
-  return useQuery({
-    queryKey: keys.huggingFaceTokenConfig,
-    queryFn: ({ signal }) => getHuggingFaceTokenConfig(signal),
-    staleTime: 30_000,
-    retry: false,
-  });
-}
 
 export function useModelDownloads() {
   const jobs = useJobs();
@@ -863,6 +804,29 @@ export function useModelDownloads() {
     ...jobs,
     data: modelDownloadJobs(jobs.data?.jobs ?? []),
   };
+}
+
+/**
+ * The machines, other than this one, that may hold models: every live peer
+ * that is not a visitor. Where the admin can start a download.
+ */
+export function useServingMachines() {
+  const cluster = useCluster();
+  const machines = (cluster.data?.peers ?? [])
+    .filter((peer) => !peer.is_self && peer.node?.profile !== "visitor")
+    .map((peer) => ({ nodeId: peer.node_id, name: peer.node?.hostname || peer.short_id }));
+  const seen = new Set<string>();
+  return machines.filter((machine) => !seen.has(machine.nodeId) && seen.add(machine.nodeId));
+}
+
+/** Another machine's model downloads, polled faster while one runs. */
+export function useMachineDownloads(nodeId: string) {
+  return useQuery({
+    queryKey: ["machine-downloads", nodeId] as const,
+    queryFn: ({ signal }) => listRemoteModelDownloads(nodeId, signal).then((answer) => answer.downloads),
+    refetchInterval: (query) => modelDownloadPollInterval(query.state.data ?? []),
+    retry: false,
+  });
 }
 
 /** After an action lands, the screens that could have changed refetch at once. */

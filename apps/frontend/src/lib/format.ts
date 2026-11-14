@@ -109,6 +109,8 @@ export function optionalBasename(path: string | null | undefined): string | null
 export function deployModelDisplayName(name: string): string {
   return name
     .replace(/\.gguf$/i, "")
+    // the part number of a split GGUF (`-00001-of-00004`): the deployment is the whole model
+    .replace(/-\d{5}-of-\d{5}$/i, "")
     .replace(/-[0-9a-f]{8}$/i, "");
 }
 

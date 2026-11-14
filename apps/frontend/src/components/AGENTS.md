@@ -62,7 +62,7 @@ Per-file list:
   full-viewport table screen (the one `Deployments`/`PublicNetworks`/
   `DeploymentLogs` already used before these existed): a fixed edge-to-edge
   header bar and, optionally, a filter strip under it, above a body that
-  scrolls on its own. `WholeModels`, `Shards`, `SliceModels`, `RemoteModels`,
+  scrolls on its own. `WholeModels`, `SliceModels`
   and `Transfers` (`../routes/`) all build on these two instead of
   repeating the bar's markup; `Deployments`/`PublicNetworks` keep
   their own hand-written bar and were not touched, since refactoring a
@@ -194,10 +194,12 @@ Per-file list:
   at the end of the `Topbar` and renders only inside the macOS app.
 ## App chrome
 
-- `nav.ts` - `NAV`: the menu as data. The Deployments section uses `Rocket` (it was
-  `Boxes`, the same icon as Models), the History uses `History` and Logs has separate
+- `nav.ts` - `NAV`: the menu as data. Deploy (`nav.deployments`) is a single entry to
+  `/deploy` with `Rocket`; History (`/deployments`) has no menu entry and opens
+  from the History button beside Deploy on that screen. Logs has separate
   leaves for requests and deployment; Network Chat is its own
-  entry. The submenu does not
+  entry, and Models is one entry with no submenu (the search is the Hugging Face
+  plugin's Search Models; `PLUGIN_ICONS` has `search` for it). The submenu does not
   draw a leaf icon, so `Rocket` in the section and in the `/deploy` leaf do not
   collide. The table itself is an ordered array of `NavSection`
   (icon + `to` or `children: NavLeaf[]`), each leaf with `labelKey`, route and
@@ -314,8 +316,10 @@ Per-file list:
   The steps without a save end by themselves: `DownloadWatcher` (catalog or
   finished download job of `GUIDE_MODEL_REPO`), `DeployWatcher`
   (`ClusterView.active_model`) and `ChatWatcher` (`lastStreamResult`), each
-  mounted only while its step is current. On arriving at the download screen
-  it puts the repository in `?q=` once. It
+  mounted only while its step is current. The download step leads to the
+  Hugging Face plugin's Search Models (`../lib/modelSearch.ts`), or to Plugins
+  without the plugin (`withSearchPath`); on arriving at the search screen it
+  puts the repository in `?q=` once. It
   re-measures the target every 200 ms and on scroll/resize, draws through a
   portal above dialogs, and falls back to a corner card when there is no
   target. `PLAN` maps each step to its path, section and targets; adding a
@@ -395,7 +399,12 @@ Per-file list:
   current-network listing `App.tsx` routes `/config/network` to for a visitor.
   `App.tsx` also moves the first landing on `/` to `/chat`. Plugins, Whole
   models, Slice and Shards hide their actions for a visitor
-  (`isDemoUser()`); the node refuses them anyway.
+  (`isDemoUser()`); the node refuses them anyway. A visit also opens
+  (`lib/session.ts` `DEMO_USER_ROUTES`) Networks with no add, share, join,
+  leave or remove action and a quick setup whose last step cannot save
+  (`NetworkQuickSetup` `readOnly`), the network Chat with text only (no file,
+  no typing signal), and Deploy with the History button hidden and Deploy
+  disabled (`demo.cannotDeploy`).
 - `Topbar.tsx` - Sticky header: `NodeChip` (the network this machine is in,
   from `NodeInfo.network_name` and linking to `/config/network`; then
   `ConnectionBadge` on a member; then hostname,
@@ -662,7 +671,11 @@ Per-file list:
   `POST /api/ui/deploy/node` applies to the target only (no redeploy of the
   cluster). `POST /api/ui/deploy/node/options` is re-read for the selected
   target, so its own slices and whole GGUF are offered instead of a fixed
-  cluster plan. The machine's whole configuration is edited with the same
+  cluster plan. When the target holds the whole file (virtual slices) and the
+  engine runs stages, the dialog does not ask "whole model or slices": it asks
+  which layers the machine serves with a `LayerRangeSlider` that snaps to the
+  valid cuts (`layer_cuts` from the options), plus a "Whole model" button; the
+  range goes as `kind: "whole"` with `start_layer`/`end_layer`. The machine's whole configuration is edited with the same
   `DeploymentInspector` as the deploy screen, starting from the active version of
   the deployment (`listDeployments`); it is sent as the machine's own `overrides.params`
   and the version keeps its parameters. The K/V cache choices come from the target's
@@ -852,7 +865,7 @@ Key logic carriers:
   inline vs block + copy button.
 - `nav.ts:NAV` (nav.ts:40) - the source of truth for the menu, its order and
   its routes; the section that is "its own entry" (`/deploy`, deploy) is a
-  deliberate first-class navigation item, not a leaf under the shards section.
+  deliberate first-class navigation item, not a leaf under the Models section.
 - `networkPeers.pipelinePeers` (networkPeers.ts:13) - execution order: peers
   on the active model sorted by start layer (falls back to all peers);
   `Dashboard`, `PipelineRail` and `ModelNetworkCanvas` derive "the pipeline"
@@ -882,6 +895,21 @@ Key logic carriers:
   machine), never in the machine card. Back to one machine, `DeployModel`'s
   `rows` drops the row's role, so the deployment's role the inspector shows
   is the one deployed.
+- `LayerRangeSlider.tsx` - two thumbs on one track picking a layer range of a
+  whole model: the track is in layers so a thumb moves smoothly, the range it
+  reports snaps to `rangeBounds` (0, each valid cut + 1, the layer count, drawn
+  as ticks) and the thumb settles there on release; the Deploy Studio's
+  Machines tab uses one per range. The mouse goes through one layer over the
+  whole track (a press takes the nearer thumb and drags it with pointer
+  capture); the two range inputs under it serve the keyboard and screen
+  readers only.
+- `ModelPresence.tsx` - `FilePresence` is the generic card foot for a file a machine lacks (`source`, `missing`
+  text); `ModelPresence` wraps it for the model, and the studio uses it for each `mmproj`/`mtp` entry of
+  `DeployPlan.copies` aimed at that machine, with the source from `fileSourceOn` (`lib/wholeModels.ts`).
+  The foot of a machine card (`DeployNetworkCanvas` `cardFooter`) when the
+  machine lacks the selected whole model: its running download from `useMachineDownloads`, or
+  **Download here** (the `WholeModelEntry.source` repository, file and split parts, sent with
+  `nodeId`) and **Rescan** (`rescanModels(nodeId)`, then the cluster catalog refetches).
 - `DeployNetworkCanvas.tsx` - the compact, deploy-time topology view. It
   reuses the visual contract of the `ModelNetworkCanvas`: the dotted background, machine
   cards, `autoLayout`, positions persisted per fingerprint, pointer drag,
@@ -914,9 +942,29 @@ Key logic carriers:
   (`vram_projected_mb / vram_total_mb`), a tick = the use right now, pink when
   the projection goes past the board, with an `AlertTooltip` listing the numbers when
   `!fits`. Without `capacity` and with an assigned range, the bar says "projection after the
-  copy". The hydration of positions keeps the existing cards when a new
-  peer enters without a range, so the topology is not reorganized because of
-  an inclusion not configured yet. On a narrow viewport, the map uses
+  copy". Only a card the operator dragged keeps a stored position, per
+  topology (`layoutKey`: machines and ranges); every other card follows the
+  arrangement, recomputed when a machine or a range changes, so a machine that
+  gets a range moves into its pipeline column without Reset (the old merge kept
+  the spot it had before, and the map stayed tangled). Organize drops the
+  dragged positions too. Test: "moves a card to its pipeline column once it
+  gets a range, without Reset". `deployLayout` spaces columns and replicas
+  wider than the Flow (`DEPLOY_GAP_X`/`DEPLOY_GAP_Y` in `../lib/networkLayout`).
+  It lays out and links the machines as the Flow does: `autoLayout` columns by
+  depth in the layer chain, so the heads (layer 0) share the first column,
+  stacked, and an edge goes from a range to every range starting on the next
+  layer (never head to head); the answer leaves from the machines on the last
+  layer. `machineBounds` is the machine's own first and last layer (it used to
+  clamp the start to 0, which put every machine in the heads' column). The
+  card is the slim deploy card (`DEPLOY_CARD_SIZE`): the name, its ranges next
+  to the X, GPU and RAM - no load, no RTT line. The toolbar, the legend (by
+  starting layer, machines joined by `|`) and the route chips sit on the
+  section, outside the area that scrolls (`deploy-map-scroll`), so they stay
+  put. Shift+click toggles the card's mark (`markedNodeIds`/`onToggleMarked`)
+  instead of inspecting it. Dragging the dotted background scrolls the map like
+  its scrollbars (a gesture that starts on a card, button or field keeps its
+  own); the wheel and the trackpad pinch (a wheel with ctrlKey) zoom around the
+  pointer, 40% to 160%, through a native non-passive wheel listener. On a narrow viewport, the map uses
   internal scrolling to preserve the cards' size and align the curve to the
   endpoints even when the content is wider than the panel. The separation exists because this graph
   represents a deployment that has not been applied yet.
@@ -933,8 +981,8 @@ Key logic carriers:
   a reference link (`deep`) opens that document inside the dialog (loaded on
   demand from `src/docs/`), with "Back to the guide". `GuideHelpButton` is the
   round "?" button a section heading uses.
-- `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in place
-  (Shards) or in a window (Models) and saved on the principal through
+- `SidecarLinkEditor.tsx` - the model's vision / MTP link, edited in a window
+  (Models) and saved on the principal through
   `POST /api/ui/model-sidecar-links`; read-only outside the `admin` profile.
 - `EngineSettings.tsx` - draws the settings an inference service's engine
   publishes (`PluginService.settings`) in the interface's language: one row
@@ -1018,24 +1066,10 @@ Key logic carriers:
   Escape.
 ## Remote models and downloads
 
-- `RemoteModelDetails.tsx` - an on-demand window for a provider's model, with
-  priority for GGUF, quantization, size, license, revision and the
-  installed/downloading states. `RemoteModels.tsx` (`../routes/`) lists the results
-  in a full-width table and opens this window when a row is activated;
-  `RemoteModelCard.tsx`, the card the table replaced, was removed for going unused.
-- `RemoteModelProviderStatus.tsx` - the full presentation of the Hugging Face CLI's
-  structured state. `RemoteModels` uses only the compact login link inside the search
-  bar; the trending discovery is public and does not depend on the CLI.
-- `HuggingFaceSettingsPanel.tsx` - a password field for the optional token. The
-  saved value is never pre-filled nor rendered: the API provides only a mask and
-  the effective source, and the panel invalidates status/config after saving.
-- `DownloadModelDialog.tsx` - the confirmation of a remote download; it calls only the
-  structured API, shows the available space and the model folders resolved by
-  the backend, without accepting a path from the browser.
-- `ModelDownloadsPanel.tsx` - the progress, local destination, cancellation and retry of
-  `model_download` jobs coming from `useModelDownloads`; it is reused in Remote
-  Models and Transfers. The source of truth is the node and the panel creates no
-  local downloader.
+The search, the model details, the download dialog, the downloads panel and the
+Hugging Face token panel left the POM with their screen: they are the Hugging
+Face plugin's (`pom-plugin-hugging-face`). What stays here is the deploy
+screen's **Download here** (`ModelPresence.tsx`, above).
 
 Links to other folders: everything imports `../lib/*` - `api.ts` (HTTP client
 with connection-key auth), `queries.ts` (all React Query hooks: `useNode`,
@@ -1051,6 +1085,13 @@ Backend endpoints touched directly: `POST /api/ui/unload`, `POST /api/ui/leave`,
 `GET/POST /api/ui/release/candidate` + `/api/ui/release`,
 `GET /api/transfer/jobs`, `GET /api/transfer/offers`,
 `POST /api/transfer/offers/:id/accept|reject`; the rest go through the hooks.
+
+## Defects noted
+
+- `PluginScreen.test.tsx` ("opens as soon as the plugin signals it finished
+  rendering") fails now and then in the full parallel `npx vitest run` and
+  passes when the file runs alone (seen twice on 2026-11-08, then 3 of 3 alone
+  each time): a timing assumption that does not hold under load.
 
 ## Maintaining this file
 

@@ -1,21 +1,6 @@
 use super::*;
 // ── Applying a configuration ─────────────────────────────────────────────────
 
-/// Which inference engine the operator asks the runtime to use for a model.
-/// `Dense` is the default and `Auto` remains an explicit choice guided by the
-/// metadata; every variant is persisted with the deployment so that all peers
-/// receive the same choice.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InferenceMode {
-    /// llama.cpp is the product's safe default. Auto remains available when
-    /// the metadata-guided selection is requested explicitly.
-    #[default]
-    Dense,
-    Auto,
-    Moe,
-}
-
 /// What a whole-model machine of a plugin inference service does besides answering its own requests
 /// (`RuntimeParams::inference_role`). Every role answers requests and reads its own prompts. `Prefill` ("prefill
 /// first") also reads, while it is free, the long prompts of the other machines and hands them over as a session
@@ -63,10 +48,6 @@ impl InferenceRole {
 /// checks that a redeploy changed something.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeParams {
-    /// Engine preference. `Dense` selects llama.cpp by default; `Auto`
-    /// lets an explicit request choose by the real GGUF metadata.
-    #[serde(default)]
-    pub inference_mode: InferenceMode,
     /// Who runs the model. `None` is the POM's own engine (llama.cpp, the
     /// distributed pipeline). A plugin code (`"strata"`) is a whole-model
     /// inference service that plugin offers: the target machine asks the
@@ -334,7 +315,6 @@ pub(super) fn d_idle_minutes() -> u32 {
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self {
-            inference_mode: InferenceMode::Dense,
             inference_service: None,
             engine_settings: Default::default(),
             inference_role: Default::default(),
@@ -398,7 +378,6 @@ impl Default for RuntimeParams {
 impl From<&NodeConfig> for RuntimeParams {
     fn from(c: &NodeConfig) -> Self {
         Self {
-            inference_mode: c.inference_mode,
             inference_service: c.inference_service.clone(),
             engine_settings: c.engine_settings.clone(),
             inference_role: c.inference_role,

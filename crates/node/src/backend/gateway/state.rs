@@ -851,6 +851,10 @@ pub(super) struct AdminAccessStatus {
     /// path.
     pub(super) auth_providers: Vec<serde_json::Value>,
     pub(super) demo_mode: bool,
+    /// `DEMO_NO_AUTH`: where the login screen sends a visitor at once for a
+    /// guest session, with no sign-in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) guest_url: Option<String>,
 }
 
 /// Random per process, never persisted: a restart is a new id. It says nothing
@@ -866,6 +870,7 @@ pub(super) async fn admin_access_status(State(state): State<GatewayState>) -> im
     Json(AdminAccessStatus {
         auth_providers,
         demo_mode: crate::user_session::demo_mode(),
+        guest_url: crate::user_session::guest_start_url(),
         admin_exposure: cfg.admin_exposure,
         requires_password: cfg.admin_exposure.requires_password(),
         default_password: cfg.admin_exposure.requires_password() && cfg.admin_password_default,
@@ -1103,7 +1108,14 @@ pub(crate) async fn require_admin_for_surface(
                     Ok(())
                 }
             }
-            issuer => caller_may_ask(&state, scope, issuer).await,
+            issuer => {
+                caller_may_ask(
+                    &state,
+                    crate::webui::node_to_node_scope(&method, &path, scope),
+                    issuer,
+                )
+                .await
+            }
         };
         if let Err(reason) = verdict {
             return (
@@ -1129,7 +1141,9 @@ pub(crate) async fn require_admin_for_surface(
         crate::webui::RouteScope::AnyAdmin => local_authority.is_some(),
         _ => true,
     };
-    let profile_access = crate::webui::profile_can_access(profile, scope) && authority_access;
+    let profile_access = (crate::webui::profile_can_access(profile, scope) && authority_access)
+        || (!internal_node_request
+            && crate::user_session::demo_previews_deploy(profile, &method, &path));
     if !profile_access && !internal_node_request {
         return (
             StatusCode::FORBIDDEN,
@@ -1852,6 +1866,9 @@ impl GatewayState {
                     }
                     if self.network.slot_persist_ready() {
                         caps.push(crate::pipeline::CAP_SLOT_PERSIST.into());
+                    }
+                    if crate::plan::virtual_slices_enabled() {
+                        caps.push(crate::pipeline::CAP_RANGE_LOAD.into());
                     }
                     if self.network.p2p_tunnel_ready() {
                         caps.push("transport/iroh-tunnel-v1".into());

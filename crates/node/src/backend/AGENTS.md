@@ -117,7 +117,15 @@ boundary.
   failed or cancelled job with the new attempt instead of listing both - the failed row had no
   other button and could never be dismissed. `POST .../downloads/:id/dismiss` takes a failed or
   cancelled job off the list without a new attempt, and refuses a running one (409; Cancel is for
-  that). The
+  that). Every download route takes an optional `node_id` (in the start body, as `?node_id=`
+  on `GET .../downloads` and the actions): another machine's id makes `forward_to_node` send the
+  call to that member signed by this node and hand its answer back, so the admin starts and
+  follows downloads on a worker; the worker uses its own token and folder. `forward_to_node`
+  also serves `POST /api/ui/models/rescan` (`webui/catalog.rs`). `extra_files` in the start
+  body runs `start_one` once per extra file after the main one; installed or running extras are
+  `skipped`, others `failed`, and the main download is not undone. The `pom_id` hash of a model
+  is cached by `webui::model_hash_cache` (`jobs_apply.rs`), keyed by every part's path, size
+  and mtime, in memory and in `.<slug>-model-hashes.json` at the project root. The
   storage response exposes the eligible folders. The structured status in
   `GET /api/ui/model-provider/status` lets the UI tell an absent CLI, a required login and an
   authenticated session apart.
@@ -132,8 +140,11 @@ boundary.
   `mod.rs`, `routes/` (common, infer, node and admin), `catalog.rs`, `cluster.rs`, `params.rs`, `jobs.rs`,
   `jobs_apply.rs`, `slicing.rs`, `lifecycle.rs`, `setup.rs`, `trust.rs` and test fragments:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths, thermal policy (`GET/POST /api/ui/thermal`), local auto-discovery
-  preference (`GET/POST /api/ui/network/auto-discovery`), cluster process
+  storage paths, model-file deletion (`POST /api/ui/models/delete`: only
+  catalog-eligible GGUF/image files; 409 warnings cover active model/multipart
+  parts, projector/draft sidecars, in-flight transfers and Ollama blobs), thermal
+  policy (`GET/POST /api/ui/thermal`), local auto-discovery preference
+  (`GET/POST /api/ui/network/auto-discovery`), cluster process
   logs (`GET /api/ui/cluster-logs` answered by the logs plugin, 403
   `logs_plugin_required` without it; `POST /api/ui/network/logs`, any
   admin - a secondary forwards it to the principal, signed - refuses turning collection on unless the logs plugin is active on that
@@ -258,7 +269,9 @@ boundary.
   `ConnectionAuth`) is the deploy-time, per-step, peer-local version: it
   resolves a `NodeConfig`/`EngineConfig` for a locally-present slice, reads
   the GGUF layout and live `SystemLoad.gpus[]`, and returns projected VRAM per
-  GPU. Weight and KV are calculated analytically; the endpoint never calls
+  GPU. The lazy lookup tables (`plan::LAZY_LOOKUP_TABLES`, read row by row
+  from the mapped file) are left out of the resident weights
+  (`plan::resident_weight_bytes`). Weight and KV are calculated analytically; the endpoint never calls
   `llama_backend_init`, `llama_rs_fit_params` or the real-load `fit_plan`.
   `fits` is therefore an estimate. When the raw projection does not fit,
   `degraded` is true only when `fit_memory` is enabled and the requested layer
@@ -441,6 +454,9 @@ boundary.
   paths and it never invents a jump to a later layer. Overlapping loaded
   ranges are allowed when they belong to distinct paths;
   the coverage is validated by the executable path, not by the union of the files.
+  In whole-model mode, a plugin's full-range head may stand beside a complete
+  split route; the route-option edges still connect its split stages even when
+  the full head sorts between them. A partial overlap stays blocked.
   `undeploy` takes a whole pipeline off the air.
 - `webui/https.rs` - the local CA for the interface (`LocalOnly`):
   `GET /api/ui/tls/ca` (fingerprint, trust state, a past refusal, whether this
@@ -499,16 +515,30 @@ boundary.
   answers with its own, and `spawn_revocation_keeper` trades lists with one
   admin per tick. `on_revoked` makes the principal forget the member and
   rotate the key.
+- `webui/gpu_metrics.rs` - the GPU energy and temperature feed of the logs
+  plugin's Metrics screen: `spawn_gpu_metrics_sampler` (started with the
+  gateway companions) runs once a minute and, only on a node that may see the
+  network's peers and runs the logs plugin, reads every member's
+  `/api/ui/node` (its own through `node_info`), keeps each GPU's power,
+  temperature, utilization and VRAM plus the served model, and ingests one
+  `{"type": "gpu_samples", "at", "machines"}` event into that plugin. A card
+  two nodes of one machine report is counted once (hostname + index). Nothing
+  is stored here; the plugin keeps the hour and writes it.
 - `webui/kv_cache.rs` - this machine's KV cache for the dashboard:
   `kv_cache_disk` measures the snapshot directory (`NodeInfo.kv_cache`) and
   `POST /api/ui/kv-cache/clear` (PrincipalOnly, also empties the `strata-sessions/` subfolder, forwarded by `node_id` like
   `/api/ui/leave`) deletes its `.bin`/`.json` files, resets
   `GatewayState.prefix_disk` and clears the inference server's host-memory
   cache. See `http-api.md`.
-- `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
+- `transfer.rs` (1542) - **deprecated**: `routes()` adds `Deprecation: true` to every answer;
+  served one more release for older admins, then removed (deploys no longer copy:
+  `deploy::planning::copies_refusal`). Slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
-  accept only a catalog basename in `filename`, resolve it server-side and
-  require `.gguf` or no extension. Manifest v1 are merged by `pom_id` on the receiving peer,
+  accept only a catalog basename in `filename` (models, sidecars, image
+  files), resolve it server-side and require `.gguf`, `.safetensors` or no
+  extension (`ensure_transferable`). A whole file received lands in a
+  whole-model folder (`receive_dir`: the accept body's `dest_dir` or the
+  first); only slice parts still go under `shard_dir`. Manifest v1 are merged by `pom_id` on the receiving peer,
   preserving the local `parts` and `tp_parts`. **The verdict goes back to whoever
   offered** (`receive_answer`), and every outcome passes through
   `TransferState::finish`, which stamps `finished_at`. A job carries the slice's label
@@ -630,9 +660,13 @@ boundary.
   `/api/access.auth_providers`), the public `/auth/<code>/*` forwarder
   (`auth_http`), the operator path and its throttle (`before_gate`), the user
   surface allowlist, redaction and session chat tokens (`after_gate`, called
-  by `gateway::require_admin_for_surface`), `DEMO_MODE`, a person's quota
+  by `gateway::require_admin_for_surface`), `DEMO_MODE` (with the demo's
+  network Chat post, `demo_network_chat_post`, the deploy survey a worker lets
+  through, `demo_previews_deploy`, and `unalias_node` for the Chat's head
+  choice, called by `openai.rs`), a person's quota
   (`user_quota`) and workspace folder (`user_workspace`). `demo_slots.rs` is the
-  demo seats and queue (`DEMO_MAX_SESSIONS`, `DEMO_SESSION_TIME`), consulted by
+  demo seats and queue (`DEMO_MAX_SESSIONS`, `DEMO_SESSION_TIME`) and the guest
+  cool-down of `DEMO_NO_AUTH` (`note_expired`, `cooldown_left`), consulted by
   `after_gate`. `user_keys.rs` serves a person's own `/api/ui/my-keys`. See
   `security-model.md`.
 - `quota.rs` - token budgets before the pipeline: `admit` asks the local logs
@@ -845,10 +879,10 @@ change lands in the right place.
   pipeline telemetry. `RuntimeParams.fit_memory` stays on by default in shards and whole models so
   llama.cpp can fit the layers to free memory; `effective_params_for_kind` turns it off in tensor
   parallelism, which does not support the automatic fit in `split-mode tensor` - that is the only
-  structural rule it applies. `RuntimeParams.inference_mode` travels with the request in all three
-  kinds independently of `POM_DEV_MODE`; an absent mode is `dense`, `auto` only enters when
-  explicitly asked. The survey carries `is_moe` from the GGUF catalog (only expert metadata
-  identifies MoE) and the plan exposes `inference_mode_supported` / `inference_mode_reason`.
+  structural rule it applies. There is no engine choice in `RuntimeParams` (llama.cpp runs every
+  model; an old record's `inference_mode` is ignored). The survey carries `is_moe` from the GGUF
+  catalog (only expert metadata identifies MoE) and the plan exposes `inference_mode_supported` /
+  `inference_mode_reason`, which refuse Tensor Parallelism of a MoE model.
   `overlapping_layers`, `split_position`, `resolve_group` (empty picks the only pipeline in the
   air; two pipelines is a 400 - never guess), `undeploy_endpoint` and `deployment_authority` are
   the deploy and undeploy surface; the rules they enforce are `docs/subsystems/deployment.md`.
@@ -1040,6 +1074,16 @@ the deploy screen offer it a projector; `openai::ChatRequest.thinking_enabled`
 travelling in `GenerationInput` and the prefill metadata, with the head applying the global
 kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and
 `docs/subsystems/inference.md`.
+
+## Defects noted
+
+- `webui::leave_tests::leaving_for_a_peer_is_forwarded_to_that_peer` (`webui/tests/early.rs`)
+  passes alone and in the full `cargo test -p node --bin pom`, but failed twice in a row
+  (2026-11-08) when run filtered to `deploy:: webui::` together: it depends on test order or
+  shared state, not yet traced.
+- In the dev container ten tests fail at this branch's head, outside this folder: two
+  `splitter` tests expect English error text the pinned `llama-engine` gives in Portuguese, and
+  eight inference lab, relay, server reload and machine-address tests not investigated.
 
 ## Maintaining this file
 

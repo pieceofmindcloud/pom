@@ -217,6 +217,14 @@ pub const CAP_REMOTE_TOKEN_STREAM: &str = "inference/remote-token-stream-v1";
 /// refuses unless every hop advertises this.
 pub const CAP_SLOT_PERSIST: &str = "inference/slot-persist-v1";
 
+/// Advertised when this peer serves a range of a whole model it holds through
+/// a header-only virtual slice (`plan::write_virtual_shard`) instead of
+/// cutting a real one, so a deploy charges it no disk for the range. It
+/// follows the operator's `POM_VIRTUAL_SLICES=1`, set only on a build whose
+/// llama.cpp fork loads external tensor data: a node cannot tell that from its
+/// own build.
+pub const CAP_RANGE_LOAD: &str = "model/range-load-v1";
+
 /// A handoff chosen by the planner between two consecutive pipeline steps.
 ///
 /// The layer boundaries let observers attach the edge to the exact advertised

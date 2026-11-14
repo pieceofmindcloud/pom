@@ -184,12 +184,10 @@ the boundary.
 
 `src/components/nav.ts` holds the menu as data (`NAV`: sections and leaves with
 `labelKey`, route and `end`), consumed by the Sidebar and by the router in
-`src/App.tsx`. `Deployments` uses the rocket (`Rocket`) and `History` the clock
-(`History`): both sections used to use `Boxes`, the same icon as `Models`, and
-two sections with the same drawing cannot be told apart at a glance. The
-`/deploy` leaf keeps `Rocket` without clashing with the section, because the
-Sidebar draws no leaf icons. Inside `Models`, the order is `Find HF models`,
-`Full models`, `Slice models`, `Shards`. The side menu can be minimized: in
+`src/App.tsx`. `Deploy` (`nav.deployments`) is a single entry to `/deploy` with the rocket
+(`Rocket`). The History (`/deployments`) has no menu entry: the deploy screen
+opens it from the History button to the left of Deploy. `Models` is one entry with no submenu; the
+search is the Hugging Face plugin's own `Search Models` entry. The side menu can be minimized: in
 that state it only shows icons, with a 64px brand header to line up with the
 toolbar. Sections with leaves show a submenu on hover, focus or click; picking a
 leaf navigates to its route. In the minimized state, navigation uses
@@ -218,23 +216,31 @@ local-only notice. Routes:
   clears the badge. On a mobile viewport, online users start hidden and show up
   through the `See online` button. The AI/NETWORK tabs are the first strip of
   the content on both chat screens, above the header and the conversation.
-- `/models` -> WholeModels; `/models/remote` -> RemoteModels; and
-  `/models/slice` -> SliceModels, with the jobs panel and slicing progress
-  embedded
-- `/shards` -> Shards; `/shards/deploy` -> redirects to `/deploy` (old
-  link)
-- Those four routes, plus `/transfers`, are
+- `/models` -> WholeModels; `/models/remote` redirects to the Hugging Face
+  plugin's Search Models, or to `/models` without the plugin; and
+  `/models/slice` -> SliceModels (tensor parallel shards, development mode,
+  off the menu and no longer linked from WholeModels), with the jobs panel embedded
+- `/shards` and `/shards/deploy` -> redirect to `/models` and `/deploy` (old
+  links; the Shards screen was removed)
+- `/models`, `/models/slice` and `/transfers` are
   full screen (`isFullBleed` in `App.tsx`), under the same contract as
   `/deployments`/`/deployments/logs`: a fixed header
   (`FullBleedHeader`/`FullBleedToolbar`, `components/ui.tsx`) and a table or
   its own content scrolling inside, instead of the central column with
-  `max-w-[1400px]`. `WholeModels`, `Shards` and the `RemoteModels` search became
-  full-width tables; `RemoteModelCard`, the card the search used before, was
-  removed. `Shards` shows, for each slice set, the vision / MTP link editor
+  `max-w-[1400px]`. `WholeModels` is a full-width table. The vision / MTP link editor
   (`SidecarLinkEditor`): two pickers over the compatible sidecars of every
   machine, each option naming its machines and the full path on each, saved on
   the principal. `WholeModels` keeps the catalog's projector column and opens
-  the same editor in a window. The deploy inspector offers the same pickers
+  the same editor in a window. The model table keeps a multipart GGUF as one
+  logical row and expands it into its physical `multipart_parts`, showing each
+  one-based part number, full path and byte size with an individual delete
+  action. The Image tab lists discovered image-model files; the separate
+  `Vision (mmproj)` and `MTP drafts` tabs list the local catalog's `sidecars`
+  by kind, including path, GGUF metadata, size and individual deletion. File
+  deletion begins in the shared in-app `Confirm` dialog; if the node returns
+  409 warnings for an active model/multipart part, projector/draft, transfer or
+  Ollama blob, a second dialog lists the reason and requires explicit
+  destructive confirmation. The deploy inspector offers the same pickers
   (head projector, tail MTP draft) prefilled from the link, and says whether
   the target already has the file or will copy it. With a plugin's inference
   service, the draft picker only shows for a model of its
@@ -451,9 +457,10 @@ local-only notice. Routes:
   container, a download that still needs an invitation); it also shows the catalog of everything a build ships (frontend packages and Rust crates, transitive ones included, plus the native libraries in `NATIVE` of `scripts/build-licenses.mjs`) grouped by license;
   `/config/trust` gathers this machine, sharing and connection keys;
   `/config/keys/api` -> TokenKeys; `/config/storage` -> ModelPaths
-  (`/config/folders` remains an alias). When `POM_MODEL_DIRS` or `POM_SHARD_DIR`
-  sets a folder (`model_dirs_env`/`shard_dir_env` in `/api/ui/paths`), the
-  matching field is locked, with the variable's name in a badge and a note:
+  (`/config/folders` remains an alias). The slice folder is not on the screen
+  any more (virtual slices serve ranges from the whole model; a received file
+  lands in a model folder). When `POM_MODEL_DIRS` sets the folders
+  (`model_dirs_env` in `/api/ui/paths`), the field is locked, with the variable's name in a badge and a note:
   editing there would have no effect. Saving a folder that does not exist yet
   creates it (absolute paths only); a path to a file is refused. The setup wizard does not show up in the
   menu, although its test route stays available.
@@ -546,30 +553,24 @@ administration, they are persisted in the trust document.
 `routes/SetupWizard.tsx` and `components/setup-wizard/*` are still only the
 visual reference mock. They are not used by the real first access.
 
-### Remote models
+### Searching and downloading models (the Hugging Face plugin)
 
-`RemoteModels` loads, on opening, the trending GGUF models from the public
-Hugging Face API (`/api/models?sort=trendingScore&limit=20&filter=gguf`),
-without sending credentials. The provider search still uses the authenticated
-node; the login status stays compact inside the bar, next to the Search button.
-After the search, the detail resolves the license through the provider and
-shows the gated model marker before the download confirmation; so the screen
-neither assumes a license nor starts a protected operation without explaining
-the required authentication.
+Searching Hugging Face, the downloads and the token are not POM screens: they
+are the Search Models screen of the Hugging Face plugin
+(`pom-plugin-hugging-face`, `plugin_code` `huggingface`, route
+`/huggingface/models`), a menu entry that only exists while the plugin is
+installed. Its three tabs (Search, Downloads, Settings) call the node's own
+routes with the panel's session through the host SDK: `api.get` for
+`/api/ui/model-provider/*` and `/api/ui/jobs`, and `api.post` (host version 8)
+to start, cancel, retry or dismiss a download and to save the token. The
+backend did not move: the provider, the downloads persisted as jobs, the
+remote machines (`node_id`) and the token stay in the node, and the deploy
+screen's **Download here** keeps using them without the plugin.
 
-The screen title is "Find models on Hugging Face". The detail queries
-`GET /api/ui/model-provider/storage` and shows the model folders resolved from
-the configuration before starting. The download picks one of those folders; the
-job persisted in `GET /api/ui/jobs` records the final path and
-`ModelDownloadsPanel` shows progress, cancellation and retry. That panel also
-shows up in `/transfers`, next to file transfers.
-
-In `/config/preferences`, `HuggingFaceSettingsPanel` offers the optional token
-for private and gated models. The field is `password`, starts empty and only
-shows the mask returned by the backend. Saving or removing calls
-`/api/ui/model-provider/config`, invalidates the status and makes the provider
-reread the credential without restarting the process; the precedence follows
-what is documented in `http-api.md`.
+Without the plugin, `/models/remote` (an old link) lands on Models, the Chat's
+"download a model" step and the first run guide's download step point at
+Plugins (`lib/modelSearch.ts`, `modelSearchRoute()`), and `/transfers` is out
+of the menu, kept for an older admin's file transfers.
 
 ### Profiles: what each one sees
 
@@ -581,13 +582,11 @@ Any of the three can activate and install plugins on its own machine.
 `GET /api/ui/node` is the source the browser uses and the toolbar shows the
 label through i18n. The same snapshot carries `pom_dev_mode`, true only when the
 process was started with exactly `POM_DEV_MODE=1`. `DeployModel` and History
-completely hide `Configurações POM (DESENV)` ("POM settings (DEV)", the
-inference engine and idle unloading) when the flag is false; the whole sampler
+completely hide `Configurações POM (DESENV)` ("POM settings (DEV)", idle
+unloading) when the flag is false; the whole sampler
 (min-p, frequency, DRY), the seed and where MTP runs are default settings
 shown to everyone, in the deploy inspector and in History's redeploy panel
-(the same inspector, editable, on the right side of the list). On the `/deploy` screen, Tensor, the
-Simple/Complete strategies and the "Back to the node's plan" button are also
-hidden when `pom_dev_mode` is false. This is only local visibility: the UI and the
+(the same inspector, editable, on the right side of the list). This is only local visibility: the UI and the
 backend keep the deployment values received over the network, even when the
 node cannot edit them.
 
@@ -1096,8 +1095,8 @@ close. The announced one stays in the row's `title`. See `p2p-network.md`,
 "Diagnosis".
 
 `/config/trust` gathers this machine, network sharing and connection keys.
-`/config/preferences` holds the administrative exposure, the `ThermalPanel`,
-the `HuggingFaceSettingsPanel` and the link to storage.
+`/config/preferences` holds the administrative exposure, the `ThermalPanel`
+and the link to storage (the Hugging Face token is the plugin's Settings tab).
 `/config/preferences/admin` keeps the administrative preferences for TLS,
 QUIC, process logs between nodes, network chat and local discovery. The split
 reorganizes the same operations and keeps the existing authorization.
@@ -1109,8 +1108,7 @@ Switching to localhost clears the password. An old token is migrated to
 Argon2id on the first load, keeping its value as the password. The port is
 validated before saving and a collision is reported without starting on another
 port. The `ThermalPanel` reads and writes the policy at
-`GET/POST /api/ui/thermal`; the Hugging Face panel uses
-`/api/ui/model-provider/config`.
+`GET/POST /api/ui/thermal`.
 
 ## Settings / Preferences: no TLS switch
 
@@ -1514,52 +1512,62 @@ machine restarted. Today the fingerprint is only model + set of ranges.
 
 ## Slicing, deploying and transferring on screen
 
-- **Slice** (`SliceModels`): Pipeline and Tensor Parallelism are a pair of tabs
-  (`role="tablist"`) at the top of the source panel, not a checkbox - each mode
-  has its own controls below. The Tensor Parallelism tab only exists when
-  `useNode().data.pom_dev_mode === true` (`NodeInfo.pom_dev_mode`, the same
-  `POM_DEV_MODE=1` that already hides the DEV sections of `DeploymentInspector`);
-  without the flag the screen never offers nor sends
-  `mode: "tensor_parallel"` - the only possible mode is pipeline, and a `mode`
-  already set to `tensor_parallel` when the `/api/ui/node` answer arrives later
-  is reverted. Pipeline offers a plan by size (target in GB per slice, empty =
-  "the rest") or a specific range by start/end layer; the specific range uses
-  the GGUF's architectural options, sends `range: { start_layer, end_layer }`
-  and adds the part to the manifest by hash, without replacing or deleting
-  earlier slices. In TP mode, the operator picks 2..64 ranks and the preview
-  shows one full range per rank with the identifier `1of2`, `2of2`, `1of4`
-  etc. Each change posts `POST /api/ui/slice/plan` (260 ms debounce); TP carries
-  `mode: "tensor_parallel"` and `tp_size`, while pipeline carries `slices` or
-  `range`. `POST /api/ui/slice` runs the job. The activity panel stays visible
-  also for finished jobs and shows the named phase, bytes, rate, ETA when
-  reliable, current file and partial outputs on failure. The preview checks the
-  free space at the real configured destination, with a concrete number and a
-  warning before starting. The Shards screen separates `parts` and `tp_parts`,
-  groups TP by size and sorts the ranks inside each group. The transfer
-  considers both lists. When the catalog confirms a multipart GGUF, this screen
-  shows the real sum of bytes, the MULTIPART label and the list of physical
-  parts. While the header is still being enriched, it does not show the first
-  part's size. If the source is incomplete, the reason coming from
-  `split.count`, `split.no` or the missing part shows up in the panel and the
-  slice button is disabled; the operator needs to put the full set together and
-  let POM produce the slices. The preview and the job start repeat the GGUF
+- **Tensor parallel shards** (`SliceModels`, `/models/slice`): the Shards
+  screen and pipeline slicing were removed once every pipeline deploy serves
+  ranges straight from the whole model; slices already on disk keep serving
+  and show as a legacy deployment. The screen is out of the menu and is
+  reachable through its route only, drawn only with `NodeInfo.pom_dev_mode`;
+  WholeModels no longer offers a Slice button. Without development mode the
+  screen says tensor parallel needs development mode and plans nothing. It
+  picks a whole model and 2..64 ranks,
+  previews one full range per rank (`1of2`, `2of2`), posts
+  `POST /api/ui/slice/plan` with `mode: "tensor_parallel"` and `tp_size` (260
+  ms debounce) and starts with `POST /api/ui/slice`. The activity panel keeps
+  finished and failed jobs with phase, bytes and partial outputs. An
+  incomplete multipart source shows its reason and the start stays disabled. The preview and the job start repeat the GGUF
   preflight for the head the loader requires. In `deepseek4`, an intermediate
   range copies the real head weights the loader requires, and the preview shows
   the additional payload repeated in each one; if the tensor table does not
   allow the copy, the refusal lists the concrete reason. The final range is only
   offered when the table contains the full head.
-- **Deploy** (`DeployModel`): opens the Deploy Studio on a wide screen, with
-  Shards/Whole model/Tensor tabs, separate technical model and operational name,
-  Simple/Complete strategies, a central map and a compact property inspector.
-  Every peer shows up in the bottom strip and can be dragged onto the map; in
-  the Globals tab, the inspector also lets you pick `cache_type_k` and
+- **Deploy** (`DeployModel`): opens the Deploy Studio on a wide screen. The
+  mode bar offers **Pipeline** (a whole model, served in ranges from each
+  machine's own copy through virtual slices) and **Image model** only: slice
+  sets, Whole model and Tensor are not modes any more, and the Simple/Complete
+  strategies and "Back to the node's plan" are gone. Beside it: the engine, the
+  technical model, the operational name and Deploy. **The plan is surveyed once
+  per model** (`POST /api/ui/deploy/plan` with `whole_ranges: []`, which asks for
+  the machines, the valid cuts in `layer_options`, the default settings and the
+  capabilities without naming a range); map edits never query the node, so the
+  map does not redraw or re-validate while the operator works. The map draws
+  the rows on screen (`canvasPlan` builds its steps from them). **Deploy
+  validates the map once** (`checkAndDeploy`): it posts the plan with the rows,
+  and a `blocked` plan, a step `problem`, a machine without the model (a
+  `slice` copy) or an unsupported engine open a window listing every reason,
+  with nothing deployed; a plan that leaves layers without a machine asks
+  before going ahead, then the machines already in service are named
+  (`inServiceAsked`), then `POST /api/ui/deploy`, which re-surveys the cluster
+  itself. There is no capacity projection on the cards: the analytic preview
+  did not count that the model a machine serves now is released by the deploy.
+  The map opens on the remembered deployment, or on the machines that hold the
+  model with the layers split over them; the hops between stages show the RTT
+  measured between the machines (`useNetworkRtt`), and a machine serving layer 0
+  carries the Head badge. Every other peer shows up in the bottom strip and can
+  be dragged onto the map, joining without a range. Split the layers works on
+  the marked machines (a box per machine, or Shift+click on a card). In the
+  Globals tab, the inspector also lets you pick `cache_type_k` and
   `cache_type_v` for the installation; each change of the combos is applied
   through `POST /api/ui/cache-types`, with no save button, subtitle or `global`
-  badge; the planner recomputes the suggestion considering existing cuts,
-  memory, RTT and load. The coverage bar shows missing and overlapping layers;
-  the map shows hops, capacity and known latency, plus alternative routes and
-  the projected load distribution. Each card separates the loaded physical range
-  from the sub-range actually executed. The inspector is its own component
+  badge. The **Machines** tab lists every machine on the map in pipeline order
+  (`MachinesTab`), without GPU/RAM/disk/RTT, with what the operator edits: each
+  range on a `LayerRangeSlider` (two thumbs that stop only at the valid cuts,
+  `rangeBounds`), **Whole model**, **+ Range** (the first stretch no machine
+  serves) so one machine can serve several ranges, a per-range remove,
+  **Split the layers over N machines** (`evenSplit`) and the per-machine GPU
+  layers and KV-on-GPU (llama.cpp only). When every row's machine holds the
+  whole model and a row is partial, the plan and the deploy send the rows as
+  `whole_ranges`. The coverage bar in the footer shows missing and overlapping
+  layers. The inspector is its own component
   (`components/DeploymentInspector.tsx`), and it is **the same** one History
   uses read-only: a single property list, not two copies that diverge on the
   first new field. It has three categories, and the boundary between them is
@@ -1570,7 +1578,7 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   (fit to memory, chunks in flight, the automatic prefill chunk, merging
   neighboring slices and hidden-state precision; its *Beta* group for settings
   still being measured is commented out while it has none) and *POM settings
-  (DEV)* (inference engine and per-peer idle unloading). Default settings and
+  (DEV)* (per-peer idle unloading). Default settings and
   POM settings each carry a help button by their title that opens their guide
   from Documentation in a dialog (`components/GuideDialog.tsx`, guides
   `default-settings` and `pom-settings`, written in `docs/guides/settings/` and
@@ -1582,124 +1590,49 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   of the panel. The engine combo does not offer "Automatic" and assumes
   `llama.cpp` on mount - a presentation choice; the backend still accepts
   `auto` only when the request states it explicitly. Without a value, the
-  default is `llama.cpp` (`dense`). The cards are a **preview of how the system
-  will look after deployment**, not of the current state: each GPU of each
-  machine gets a projected VRAM bar (expected usage against the total, with the
-  current usage as a tick) that is recomputed on every change of context, batch
-  or simultaneous requests. The projection comes from
-  `POST /api/ui/deploy/capacity-preview`, an analytical estimate from GGUF
-  metadata and free VRAM on the peer, without loading weights or calling the
-  native fit (see `deployment.md` §3.1). The card turns amber when it only fits
-  because "Fit to memory" would trim the context or the GPU layers, and pink
-  when it does not fit even at the floor; both cases ask for a confirmation
-  naming the machines on `Deploy` - it is a warning, not a block, so the
-  operator can lower or raise the context as they like. Each parameter of the
+  default is `llama.cpp` (`dense`). Each parameter of the
   right panel has an `[i]` that opens on hover/focus/touch with what it means
   and how it affects inference; when the node reports a doubtful or limited
   capability, the same spot in the column shows the amber triangle with the
-  reason. The edges come from the planner's execution graph: they only connect
-  contiguous sub-ranges, keep equivalent entry branches and show the
-  directional RTT used to choose between them. The canvas does not invent
-  bridges from the card order, which keeps a fast entry when another loaded
-  range overlaps. Tensor uses the whole model on every rank and does not show
-  the old slice selection. The global properties (context, batch, sampling,
-  sessions) stay separate from the per-machine properties (`n_gpu_layers`, the
-  KV-on-GPU boolean and local capacity, on the same property line as the
-  globals - `[i]`, name, control); when a machine is selected, the inspector also
-  shows the layers it will run. The hidden-state precision
+  reason. The hidden-state precision
   (f32/f16/f8/i4g64/i4g128) only shows up when the state crosses a peer boundary
-  - a pipeline with distinct adjacent ranges, of slices or of a whole model spread
-  over its own slices; for a whole model on one range, Tensor or
-  slices on a single machine, the state is never serialized and the selector
-  would be inert. f16 is still the default; f32 is a lossless option with four
-  bytes per value, while f8 and i4 are lossy. In the globals, the whole model
-  facts section and its machine selector are not shown: the machine chosen on
-  the map is the only one that counts for the deployment. In the globals, the
+  - two distinct ranges on the map; for a whole model on one range the state is
+  never serialized and the selector would be inert. f16 is still the default;
+  f32 is a lossless option with four
+  bytes per value, while f8 and i4 are lossy. In the globals, the
   execution section has one **Speculation** choice - None, MTP or lookup -
   because the gateway never runs both in the same round (with both stored, MTP
   wins); MTP's numbers and where it runs only show with MTP chosen. A new
   deployment starts with MTP on (`RuntimeParams` default, used only when the
   plan supports it) and the minimum probability at `0.75`, a field the operator
   can still edit. The vision projector and the MTP draft show one summary line;
-  the path on every machine opens in a "More info" window. The **Inference engine**
-  section only shows up when the GGUF's real metadata reports more than one
-  expert. The UI presents `dense` (llama.cpp) and `moe`, and sends the choice in
-  whole model, sliced pipeline and Tensor Parallelism modes. The backend also
-  accepts `auto` only when it arrives as an explicit choice from an API or a
-  persisted deployment. For a dense model the section stays hidden. If the chosen
-  combination is not supported, the selector stays visible with the explicit
-  reason and the deploy is blocked; telemetry is the source of truth about the
-  engine that ran. The other conditional options get `DeployPlan.capabilities`
+  the path on every machine opens in a "More info" window; while the survey
+  names no head, the projector list comes from the catalog. There is no
+  inference engine selector: llama.cpp runs every model. Tensor Parallelism of a
+  model whose GGUF reports more than one expert is not supported; the reason
+  stays visible and Deploy names it in its window. The conditional options get `DeployPlan.capabilities`
   from the backend: `no_thinking` uses `tokenizer.chat_template` and the GGUF
-  vocabulary, MTP uses the selected file's `nextn` metadata/tensors and only uses
-  the final peer's runtime as a limitation, and lookup uses the runtime
-  capabilities of every target. Proven absence in the model hides the option;
-  `unknown` keeps it visible and actionable, with source, reason and risk. A
-  runtime limitation is also an actionable warning. The `no_embeddings` switch
-  stays visible: on, provably unsafe peers refuse the deployment by name and
-  atomically; an undetermined topology can only proceed with an explicit
-  warning. **Shards** carries the "Merge neighboring shards on the same
-  machine" switch (`merge`), which is what lets a machine hold two adjacent
-  ranges: the node merges them into a single file (`splitter::merge`) before
-  starting, because `split` renames the blocks of every slice to `blk.0..` and
-  two cannot load side by side. Without it the planner refuses the pair, and the
-  refusal says to "merge the neighboring slices on screen" - the switch exists so
-  that sentence has a destination. It shows up under the same condition that
-  decides whether `merge` goes in the request (`!isWhole`): a control without a
-  send, or a send without a control, was exactly how it got lost once. There is
-  no second legacy table below the canvas: the map and the bottom strip hold the
-  topology, the directional RTTs and adding peers. Each edit goes back to the
-  node for validation; the deploy (`POST /api/ui/deploy`) **rescans the
-  cluster** instead of trusting the preview, and progress comes from
-  `GET /api/ui/jobs`. The map uses the same primitives as the Dashboard canvas:
-  dots in the background, draggable cards, zoom, Fit, Arrange and Reset, with
-  positions persisted per deployment. The inspector is 19rem wide, can be
-  collapsed from its left edge, starts directly with the Globals and Machine
-  tabs, with no title of its own and no outer `p-3` padding, and visually
-  separates global properties from the selected machine's. Capacity warnings sit
-  as amber icons next to the control: the full text, including source and
-  reason, opens on hover, focus or click in a fixed portal that breaks words and
-  identifiers without spaces without creating horizontal overflow. The set of
-  alerts stays spread next to the respective controls, instead of forming a row
-  of cards. The inspector lets you assign to a peer a range it already holds by
-  switching that peer's active range without moving another machine. The same
-  range on two peers is a valid parallel route, not a swap. Clicking an already
-  assigned range again removes the selection - the same button is the way there
-  and back. Leaving only removes that range on that machine: replicas of the
-  same range on other peers stay where they are, and the peer stays on the map
-  even without any range, because removing a layer is not the same gesture as
-  "Remove from deployment". Peers already on the map no longer show up in the
-  bottom bar; dragging or double-clicking an available peer adds the card
-  without redrawing the topology until a range is assigned. For a whole model,
-  the map is left empty when switching from slices, so the operator picks the
-  machine, which takes the whole file. More machines can be added: each gets a
-  range it holds in the Machine tab (the whole file as a replica, or a slice of
-  the same model), the coverage ribbon appears, and the node accepts the map
-  while the ranges cover every layer. Under an inference service the whole
-  model stays on one machine and a second one is refused with a warning. In Tensor, only
-  peers on the map enter as primary/worker, even if others have the model.
+  vocabulary, MTP uses the selected file's `nextn` metadata/tensors, and lookup
+  uses the runtime capabilities of every target. Proven absence in the model hides the option;
+  `unknown` keeps it visible and actionable, with source, reason and risk. The
+  `no_embeddings` switch stays visible: on, provably unsafe peers refuse the
+  deployment by name and atomically. The map uses the same primitives as the
+  Dashboard canvas: dots in the background, draggable cards, zoom, Fit,
+  Organize and Reset. Only a card the operator dragged keeps a stored position,
+  per topology (machines and ranges); every other card follows the
+  arrangement, recomputed when a machine or a range changes, so a machine that
+  gets a range moves into the pipeline without Reset; Organize drops the
+  dragged positions too. The inspector is 19rem wide and can be collapsed from
+  its left edge. Peers already on the map no longer show up in the bottom bar.
+  Under an inference service the whole model stays on one machine (unless it
+  declares the prefill/decode role) and a second one is refused with a warning.
   GPU, RAM and load are updated by the cluster view every 5 seconds; the
   Dashboard map shows the last effective RTT and transport observed in the
   inference run for each edge and, at the Gateway, every complete route of the
-  model with the aggregated RTT of each leg, including the return; when there is
-  a recent trace, the run's wire RTT beats the tunnel fallback probe. Routes are
-  listed from lowest to highest cost, with the node ids as a tie-break; a whole
-  model deployment with a single head is also queried, even with no edge in the
-  graph. The planner's directional survey stays reserved for route choice and
-  is not shown as if it were the run. A missing GPU shows as `no GPU`, without
-  an indeterminate bar. In Complete, every peer enters the canvas and the
-  candidate list in slice and Tensor modes; whole model keeps the one-machine
-  restriction. Coverage is reduced to the footer next to the peer bar. The last
+  model. A missing GPU shows as `no GPU`, without an indeterminate bar.
+  Coverage is reduced to the footer next to the peer bar. The last
   deployment of each model stays in `localStorage` (`deployMemory`) and comes
-  back filled in after the first plan, pruned against what still exists.
-  Topology changes are validated by `POST /api/ui/deploy/plan` after the 260 ms
-  debounce. Runtime parameters, per-machine GPU/KV overrides and the
-  operational name do not change machines or ranges, so they stay local during
-  editing and do not restart the distributed survey. The query key only
-  contains ranges and machines; the deploy carries the current overrides. If
-  any of them changes, the old capacity projection is hidden;
-  `POST /api/ui/deploy` runs the full preflight with the current values before
-  starting the deployment. The catalog's initial answer may only contain name,
+  back filled in after the first plan, pruned against what still exists. The catalog's initial answer may only contain name,
   path, size and manifest data, while the node reads the GGUF headers in the
   background. The screen shows the inventory right away. The catalog only reads
   the KV header and `stat` of the parts in the fast scan: it does not walk the
@@ -1721,15 +1654,10 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   reconciles the result by `path + size + mtime` and keeps the models already
   read; only a new or changed file goes back to the header. A new attempt only
   happens on a TTL refresh or invalidation, and dropped tasks are logged.
-  **The grey button always says why.** The comparison between the node's plan
-  and the screen's rows (`sameRows`) sorts both sides by layer, because the
-  screen keeps the rows in that order and the node builds the answer its own
-  way; and the explanation panels render under `answered` (the node answered
-  about *these* rows), never under `validated`. The planner accepts several
-  ranges on the same machine, but keeps `blocked` for global gaps, overlap and
-  other real problems; `whyNot` puts the reason in one line next to the button,
-  including the two cases without a panel (nothing selected, answer in
-  flight). The map shows consecutive hops only forward, adds a virtual Gateway
+  **Deploy is grey only while the map is empty**, and `whyNot` says so next to
+  it; every other refusal comes from the one validation Deploy runs. The
+  planner accepts several ranges on the same machine, but keeps `blocked` for
+  global gaps, overlap and other real problems. The map shows consecutive hops only forward, adds a virtual Gateway
   at the end with the return leg when the tail is not the gateway yet and shows
   every candidate route, highlighting in the total the one with the lowest RTT.
   Internal scrolling on a narrow viewport neither cuts cards nor creates page
@@ -1744,18 +1672,13 @@ machine restarted. Today the fingerprint is only model + set of ranges.
   Redeploying the same shape from the Deploy Studio (same proven model, same
   machines and ranges) also lands on the same `deploy_id`; changing machine or
   range mints a new id. See `deployment.md` §7.1.
-- **Transfer** (`Transfers` with its `SendFilePanel`, `Notifications`): remote model downloads
-  with progress and cancellation, pending offers (accept/refuse straight from
-  the bell), active transfers (bytes, speed, ETA, cancel) and finished ones.
-  Sending ("send a file from this machine") offers a file from the local
-  catalog through `POST /api/transfer/send`; the receiver only sees an opaque
-  grant (`grant`), so "send anything" never becomes "read anything". Progress
-  comes from the nodes, so reloading the tab loses nothing.
-  `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` (a variable of the receiving process, read
-  at startup) accepts every offer without a click - dev only. Peers on the same
-  machine share the hostname, so the destination and the availability label
-  carry the start of the `node_id` when the name repeats (`uniquePeerName` in
-  `lib/peerName.ts`, used by `routes/Shards.tsx`). Offers, active and finished transfers in `Transfers`
+- **Transfers** (`Transfers`, off the menu, and `Notifications`): the model downloads
+  moved to the Hugging Face plugin's Downloads tab; what stays is pending offers
+  from an older admin (accept/refuse straight from the bell), active transfers (bytes, speed,
+  ETA, cancel) and finished ones. Nothing offers sending any more: the send panel, the
+  slices screen's "Send to..." and the full models screen's Send were removed with deploy
+  copies. `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` still accepts every offer without a click (dev
+  only). Offers, active and finished transfers in `Transfers`
   are each a full-width table (it used to be a list of cards), with the
   accept/refuse/cancel action in the last column.
 
@@ -1857,8 +1780,9 @@ The first three have no save to report them, so the guide watches the node for
 their outcome while each is the current step (`DownloadWatcher`,
 `DeployWatcher`, `ChatWatcher`). A machine that already has the model, a
 deployment or an answer passes the step at once. The download needs the
-Hugging Face CLI on the node, like every download on that screen; without it
-the search does not run and the step can only be skipped.
+Hugging Face plugin: with it the step leads to its Search Models screen (which
+reads `?q=` and carries the same `data-guide` marks the native screen had);
+without it the step points at Plugins, where the plugin is installed.
 
 Each hint is a balloon that floats beside its target, with a ring around the
 target. While the operator is on another screen it points at the menu entry
@@ -1891,7 +1815,7 @@ on the My machine screen ("Machine name", `POST /api/ui/network/node-name`),
 with no restart: the next announce carries it. The first run wizard asks for
 it through the same route. Without a `node_name` the machine goes by the system hostname. Every
 screen reads that
-name; the "Send to..." selector of `/shards` used to read `sysmon`, the
+name; the "Send to..." selector of the removed Shards screen used to read `sysmon`, the
 operating system's raw hostname, and was the only place in the app that called
 the machine by another name. On a machine with two nodes it was worse: both
 reported the same OS hostname, the list saw a collision and broke the tie with

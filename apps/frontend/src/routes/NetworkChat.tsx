@@ -10,6 +10,7 @@ import { randomId } from "../lib/id";
 import { useCluster, useNetworkChat, useNode } from "../lib/queries";
 import { markLobbyRead, markNetworkChatRead } from "../lib/networkChatUnread";
 import { useToast } from "../lib/toast";
+import { isDemoUser } from "../lib/session";
 import { useI18n } from "../i18n/provider";
 import type {
   LobbyGuest,
@@ -306,8 +307,9 @@ export function NetworkChat() {
   }, [refresh, t, toast]);
 
   const notifyTyping = useCallback((isTyping: boolean) => {
-    // Typing is a signal of the members' room; the lobby does not carry it.
-    if (!localNodeId || inLobby) return;
+    // Typing is a signal of the members' room; the lobby does not carry it,
+    // nor does a demonstration visit, which sends text only.
+    if (!localNodeId || inLobby || isDemoUser()) return;
     if (typingTimer.current !== undefined) window.clearTimeout(typingTimer.current);
     if (isTyping && typingActive.current) {
       typingTimer.current = window.setTimeout(() => {
@@ -489,7 +491,7 @@ export function NetworkChat() {
           </div>
           <div className="border-t border-line bg-ink/40 p-3 sm:p-4">
             <div className="flex items-end gap-2">
-              {!inLobby && (
+              {!inLobby && !isDemoUser() && (
                 <button type="button" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-line bg-raised text-muted transition-colors hover:border-line-strong hover:text-fg" onClick={() => fileInput.current?.click()} aria-label={t("networkChat.attach")}>
                   <FileUp className="h-4 w-4" />
                 </button>

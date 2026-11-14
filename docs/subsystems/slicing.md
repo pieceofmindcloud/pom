@@ -411,9 +411,14 @@ Python `split_model.py`:
    `attention.indexer.source_layers` and `ple.layers` are filtered to the range
    and rebased, and `attention.indexer.candidate_source_layer` is rebased or
    left out when its layer is outside the range. `ple.layer_multipliers`,
-   `ple.head_offsets`, `ple.head_vocab_sizes` and `engram.token_map` are copied
-   whole: the last three can be longer than the block count, which the generic
-   rule would cut by layer without any error. `per_layer_token_embd.weight` only
+   `ple.head_offsets` and `ple.head_vocab_sizes` hold one set of hash
+   constants per Engram layer, back to back (`ple.ngram_size` multipliers and
+   `(ple.ngram_size - 1) * ple.heads_per_ngram` heads each), and llama.cpp
+   checks that count against `ple.layers`: a slice keeps the sets of its own
+   Engram layers, with the head offsets unchanged because they index the
+   whole table the slice carries. `engram.token_map` is copied whole. The
+   generic rule would cut these arrays by layer without any error, since they
+   can be longer than the block count. `per_layer_token_embd.weight` only
    enters the slice with Engram layers. `merge` refuses `deepseek41`, because
    the merged header would inherit the first slice's source lists, and
    `validate_tensor_parallel` refuses it by name.
@@ -580,6 +585,17 @@ and dimensions that do not divide land here.
 `plan::extract_tp_shard` wraps this for the `apply` path (webui): it runs in a
 `spawn_blocking`, reuses an already complete file and writes the
 content-addressed part, like any other.
+
+### Virtual slices (header only)
+
+`splitter::write_virtual_slice` writes the header `split` would write and no
+weights: three `general.external_data.*` keys give, per tensor, the source file
+and the absolute offset of its bytes, and only the injected identity
+`output_norm` keeps its data in the file. A llama.cpp build with the fork's
+external tensor data loads it as the same model as the real slice. A node
+uses it at apply time behind `POM_VIRTUAL_SLICES=1` (`deployment.md` section
+8); see
+`docs/superpowers/specs/2026-11-07-layer-range-deployment-design.md`.
 
 ## 5. Merge
 

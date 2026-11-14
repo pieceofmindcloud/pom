@@ -215,25 +215,6 @@ describe("DeployModel · plugin inference service", () => {
     cluster = CLUSTER;
   });
 
-  it("with the engine that runs slices, offers only the slices of its architecture", async () => {
-    cluster = {
-      peers: CLUSTER.peers.map((peer) => ({
-        ...peer,
-        node: {
-          plugin_services: peer.node.plugin_services.map((service) => ({ ...service, stages: true })),
-        },
-      })),
-    };
-    mount([sliceSet("llama-3-70b", "llama"), sliceSet("qwen3.8-flash-next", "qwen4exp")]);
-    const model = (await screen.findByRole("combobox", { name: "Modelo técnico" })) as HTMLSelectElement;
-    await waitFor(() => expect(model.options.length).toBe(2));
-
-    fireEvent.change(screen.getByRole("combobox", { name: "Serviço de inferência" }), { target: { value: "strata" } });
-    await waitFor(() =>
-      expect([...model.options].map((option) => option.value)).toEqual(["qwen3.8-flash-next"]),
-    );
-    expect(screen.getByRole("radio", { name: "Fatias" }).getAttribute("aria-checked")).toBe("true");
-  });
 
   it("without a plugin inference service, there is no engine choice", async () => {
     cluster = { peers: [{ node_id: "ksia", node: { plugin_services: [] } }] };
@@ -252,7 +233,10 @@ describe("DeployModel · plugin inference service", () => {
     await waitFor(() =>
       expect([...model.options].map((option) => option.value)).toEqual(["qwen3.8-flash-next"]),
     );
-    expect((screen.getByRole("radio", { name: "Fatias" }) as HTMLButtonElement).disabled).toBe(true);
+    // Slices are offered only for a staged service or old slice sets, and then
+    // not to an engine that runs only whole models.
+    const slices = screen.queryByRole("radio", { name: "Fatias (legado)" }) as HTMLButtonElement | null;
+    expect(slices === null || slices.disabled).toBe(true);
 
     await waitFor(() => {
       const plan = post.mock.calls.filter(([url]) => url === "/api/ui/deploy/plan").at(-1);
@@ -263,8 +247,12 @@ describe("DeployModel · plugin inference service", () => {
       });
     });
 
-    const add = await screen.findByRole("button", { name: /ksia RTT/ });
-    fireEvent.click(add);
+    // the map opens on the machine that runs the engine and holds the model
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /Remover ksia da implantação/ })
+        ?? screen.queryByRole("button", { name: /ksia RTT/ })).toBeTruthy());
+    const add = screen.queryByRole("button", { name: /ksia RTT/ });
+    if (add) fireEvent.click(add);
     expect(screen.queryByRole("button", { name: /salem RTT/ })).toBeNull();
     // GPU layers and the KV cache on the GPU are llama.cpp's: not offered for the plugin's engine.
     await screen.findByRole("button", { name: /Remover ksia da implantação/ });

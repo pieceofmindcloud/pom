@@ -2,30 +2,25 @@ import { describe, expect, it } from "vitest";
 import { NAV, navFooterForProfile, navForProfile } from "./nav";
 
 describe("navigation structure", () => {
-  it("puts Hugging Face model search first under Models", () => {
+  it("makes Models one entry, the search being the Hugging Face plugin's", () => {
     const models = NAV.find((section) => section.labelKey === "nav.models");
 
-    expect(models?.children?.map((child) => child.to)).toEqual([
+    expect(models?.to).toBe("/models");
+    expect(models?.children).toBeUndefined();
+    expect(NAV.flatMap((section) => [section.to, ...(section.children ?? []).map((child) => child.to)])).not.toContain(
       "/models/remote",
-      "/models",
-      "/models/slice",
-      "/shards",
-    ]);
-    expect(models?.children?.[0]?.labelKey).toBe("nav.remoteModels");
+    );
     expect(NAV.some((section) => section.labelKey === "nav.shardedModels")).toBe(false);
     expect(NAV.flatMap((section) => section.children ?? []).some(
       (child) => child.to === "/shards/progress",
     )).toBe(false);
   });
 
-  it("nests network deployment and history under Deployments", () => {
+  it("shows Deploy as a single entry that opens the deploy screen", () => {
     const deployments = NAV.find((section) => section.labelKey === "nav.deployments");
 
-    expect(deployments?.to).toBeUndefined();
-    expect(deployments?.children?.map((child) => [child.labelKey, child.to])).toEqual([
-      ["nav.deploy", "/deploy"],
-      ["nav.history", "/deployments"],
-    ]);
+    expect(deployments?.to).toBe("/deploy");
+    expect(deployments?.children).toBeUndefined();
     expect(NAV.some((section) => section.labelKey === "nav.deploy")).toBe(false);
   });
 
@@ -127,13 +122,7 @@ describe("navForProfile", () => {
     expect(labels).toContain("nav.chat");
     expect(labels).toContain("nav.models");
     expect(labels).toContain("nav.settings");
-    const models = sections.find((s) => s.labelKey === "nav.models");
-    expect(models?.children?.map((c) => c.to)).toEqual([
-      "/models/remote",
-      "/models",
-      "/models/slice",
-      "/shards",
-    ]);
+    expect(sections.find((s) => s.labelKey === "nav.models")?.to).toBe("/models");
   });
 
   it("keeps Network and Settings as main menus", () => {

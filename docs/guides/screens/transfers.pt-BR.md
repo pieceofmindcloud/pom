@@ -1,37 +1,27 @@
 ---
 id: screen-transfers
 label: Transferências
-summary: Ofereça um arquivo a outra máquina e acompanhe o que está andando
+summary: Um arquivo que um admin mais antigo envia para esta máquina
 title: Transferências
 route: /transfers
 order: 90
 ---
 
 :::lead
-Transferências é onde um arquivo vai de uma máquina para outra de propósito: você oferece um GGUF a outra máquina, ela aceita, e o arquivo passa com retomada e verificação de integridade. Os downloads de modelos do Hugging Face aparecem aqui também.
-:::
-
-![Transferências: o painel de oferecer um arquivo à esquerda, como funciona à direita e a lista de transferências embaixo.](../images/pt-BR/transfers.webp)
-
-:::video https://www.youtube.com/watch?v=lCYW3TJ70M8
-Vídeo: as telas de Modelos - modelos inteiros, fatias e transferências - explicadas.
+Transferências mostra um arquivo que um admin ainda numa versão mais antiga oferece a esta máquina, e o progresso dele. Ela não está no menu: o sino leva até ela quando chega uma oferta. Arquivos não são mais enviados entre máquinas - cada máquina serve a partir da própria cópia do modelo - e os downloads de modelos foram para a aba Downloads de Procurar Modelos, a tela do plugin do Hugging Face.
 :::
 
 :::steps
-### Escolher o arquivo e o destino
-Só arquivos GGUF do catálogo desta máquina podem ser enviados.
-### Oferecer
-**Oferecer o arquivo** cria uma oferta. Nada é escrito no disco da outra máquina sem o consentimento dela: ela vê a oferta no sino e aceita ou recusa.
+### Aceitar ou recusar
+Uma oferta diz o modelo e a faixa de camadas que carrega. **Aceitar** começa; **Recusar** declina, e quem enviou vê como recusada, não como falha.
 ### Acompanhar
-Uma transferência ativa mostra bytes, velocidade e tempo restante, e pode ser cancelada. Uma oferta recusada aparece em âmbar: foi uma decisão, não um erro.
-### O arquivo chega
-O destino busca o arquivo para a pasta `received/` da pasta de fatias dele. Retoma de onde parou, e o MD5 é conferido antes de o arquivo ganhar o nome final; um arquivo que não bate é apagado.
+Uma transferência em andamento mostra bytes, velocidade e o tempo restante; **Cancelar** para. As concluídas ficam listadas abaixo.
 :::
 
-:::warn Um arquivo nunca atravessa um relé público
-Os arquivos vão direto, por uma conexão com hole punching, ou por um relé que é membro da sua própria rede. Uma transferência nunca passa por um relé público.
+:::note Mais uma versão
+Essas transferências são servidas por mais uma versão, para admins que ainda não atualizaram, e um arquivo continua nunca passando por um relé público.
 :::
 
 :::deep docs/subsystems/file-transfer.md
-Ofertas, retomada, MD5 e as rotas de uma transferência
+As transferências aposentadas e o que entrou no lugar
 :::

@@ -292,6 +292,10 @@ pub(crate) fn load_params(
     if let Some(link) = link {
         params["link"] = link.clone();
     }
+    // A stage served from the whole model (the file is not a slice): the engine cuts the range itself.
+    if crate::plugin_stage_link::is_stage(cfg) && file_is_whole_model(&cfg.model_path) {
+        params["range"] = json!({ "start_layer": cfg.start_layer, "end_layer": cfg.end_layer });
+    }
     // The drafter the deployment chose, on the stage that runs it (`draft_architectures`).
     if let Some(draft) = cfg.mtp_draft_path.as_deref().filter(|path| !path.trim().is_empty()) {
         params["mtp_draft_path"] = json!(draft);
@@ -308,6 +312,12 @@ pub(crate) fn load_params(
             .to_string());
     }
     params
+}
+
+/// Whether the GGUF at `path` is a whole model rather than a POM slice (its header has no slice range). An unreadable
+/// file is not taken for a whole model.
+pub(crate) fn file_is_whole_model(path: &str) -> bool {
+    crate::gguf::read_info(std::path::Path::new(path)).is_ok_and(|info| info.shard_range.is_none())
 }
 
 /// The `/health` this node answers while a plugin engine serves its model:
@@ -1572,6 +1582,7 @@ pub(crate) async fn deploy_block(
     state: &GatewayState,
     service: &str,
     whole: bool,
+    ranges: bool,
     targets: &[String],
     roles: &[crate::webui::InferenceRole],
     architecture: Option<&str>,
@@ -1644,7 +1655,15 @@ pub(crate) async fn deploy_block(
                     "the inference service {service} runs the whole model on a single machine: choose one machine"
                 ))
             }
-            Some(entry) if !whole && !prefill_only(target) && !runs_slices(entry, architecture) => {
+            // ranges of the whole model, one stage per machine, each cut from that machine's own whole file
+            Some(entry) if ranges && !runs_ranges(entry, architecture) => {
+                return Some(format!(
+                    "the inference service {service} of machine {target} cannot serve a range of {} from the whole \
+                     model",
+                    architecture.unwrap_or("this model")
+                ))
+            }
+            Some(entry) if !whole && !ranges && !prefill_only(target) && !runs_slices(entry, architecture) => {
                 return Some(match architecture {
                     Some(architecture) if entry["stages"] == true => format!(
                         "the inference service {service} runs {architecture} models as the whole model only: choose \"whole model\""
@@ -1661,6 +1680,18 @@ pub(crate) async fn deploy_block(
 /// Whether a machine's inference service (an entry of its `plugin_services`) runs a model of `architecture` as
 /// layer slices: it publishes `stages`, and its `stage_architectures`, when it lists any, name that architecture. An
 /// architecture the catalog could not read is left to the engine, which refuses a model it cannot run.
+/// Whether a machine's inference service cuts a stage of a model of `architecture` from the whole model at run time
+/// (its `stage_ranges` names it): then a range of the whole model is served from the machine's own whole file, with
+/// no slice written. Unlike [`runs_slices`], an architecture the catalog could not read does not qualify.
+pub(crate) fn runs_ranges(entry: &Value, architecture: Option<&str>) -> bool {
+    entry["stages"] == true
+        && architecture.is_some_and(|architecture| {
+            entry["stage_ranges"]
+                .as_array()
+                .is_some_and(|list| list.iter().any(|candidate| candidate.as_str() == Some(architecture)))
+        })
+}
+
 pub(crate) fn runs_slices(entry: &Value, architecture: Option<&str>) -> bool {
     if entry["stages"] != true {
         return false;
@@ -1850,7 +1881,7 @@ mod tests {
         // the only refusal left)
         for roles in [vec![InferenceRole::Prefill], vec![InferenceRole::Prefill, InferenceRole::Prefill]] {
             let targets: Vec<String> = ["a", "b"][..roles.len()].iter().map(|id| id.to_string()).collect();
-            let reason = deploy_block(&state, "strata", true, &targets, &roles, None).await.expect("unknown machines");
+            let reason = deploy_block(&state, "strata", true, false, &targets, &roles, None).await.expect("unknown machines");
             assert!(reason.contains("did not answer which services"), "{reason}");
         }
         // two machines with the whole model and no role are a deployment too (the deploy gives them `Shared`)
@@ -1858,6 +1889,7 @@ mod tests {
             &state,
             "strata",
             true,
+            false,
             &["a".into(), "b".into()],
             &[InferenceRole::Both, InferenceRole::Both],
             None,
@@ -2126,6 +2158,44 @@ mod tests {
             load_params(&cfg, &[0], &[], Some(&link))["link"]["prev_port"],
             4100
         );
+    }
+
+    /// A stage whose file is the whole model asks the engine to cut its range; a slice file, an unreadable path or
+    /// the whole model on one machine sends no range.
+    #[test]
+    fn a_stage_from_the_whole_model_sends_its_range() {
+        let dir = std::env::temp_dir().join(format!("pom-plugin-range-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, crate::splitter::test_gguf_bytes(4)).unwrap();
+        let slice = dir.join("slice.gguf");
+        crate::splitter::write_virtual_slice(&whole, &slice, 2, 3, false, true).unwrap();
+
+        let mut cfg =
+            crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
+        (cfg.start_layer, cfg.end_layer, cfg.total_layers) = (2, 3, 4);
+        cfg.model_path = whole.display().to_string();
+        let params = load_params(&cfg, &[0], &[], None);
+        assert_eq!(params["range"], json!({"start_layer": 2, "end_layer": 3}));
+
+        cfg.model_path = slice.display().to_string();
+        assert!(load_params(&cfg, &[0], &[], None).get("range").is_none());
+        cfg.model_path = dir.join("missing.gguf").display().to_string();
+        assert!(load_params(&cfg, &[0], &[], None).get("range").is_none());
+        cfg.model_path = whole.display().to_string();
+        (cfg.start_layer, cfg.end_layer) = (0, 3);
+        assert!(load_params(&cfg, &[0], &[], None).get("range").is_none());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_service_cuts_ranges_only_of_the_architectures_it_names() {
+        let strata = json!({"stages": true, "stage_ranges": ["qwen4exp"]});
+        assert!(runs_ranges(&strata, Some("qwen4exp")));
+        assert!(!runs_ranges(&strata, Some("deepseek4")));
+        assert!(!runs_ranges(&strata, None), "an unread architecture does not qualify");
+        assert!(!runs_ranges(&json!({"stages": true}), Some("qwen4exp")));
+        assert!(!runs_ranges(&json!({"stages": false, "stage_ranges": ["qwen4exp"]}), Some("qwen4exp")));
     }
 
     #[test]

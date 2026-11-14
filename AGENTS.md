@@ -126,15 +126,17 @@ the private repository `pom-plugin-llama.cpp`, pinned by `rev` in `Cargo.toml`
 with the `git` client (`[net] git-fetch-with-cli` in `.cargo/config.toml`).
 
 The Cargo builds and the Docker `source` mode need the `llama.cpp` fork on the
-`pom-tensor-parallel` branch. `.cargo/config.toml` sets `LLAMA_SOURCE=llama.cpp`
+branch the pinned `pom-plugin-llama.cpp` revision builds against (its
+`llama-cpp.lock`): today the fork's `pom` branch, which carries the external
+tensor data loader that virtual slices need (`slicing.md`). `.cargo/config.toml` sets `LLAMA_SOURCE=llama.cpp`
 relative to this root: leave a checkout or a symlink of the fork there (gitignored).
 An `LLAMA_SOURCE` already set in the environment (CI, Docker) prevails. The
 binding's build accepts a checkout with `ggml`; with none, the preparation error
 shows the manual clone command.
 
-If `llama_moe_ffn_descriptor`, `llama_set_moe_ffn_callback` or the
-`moe_external_executor*` fields of `llama_model_params` are missing, the fork's
-checkout is out of date - it is not a preexisting defect of the project. In a new
+If the build complains about the fork's API (a missing `llama_*` function or
+field the binding uses), the fork's checkout is out of date - it is not a
+preexisting defect of the project. In a new
 copy, the first `cargo build` prepares the ignored content; do not create an
 additional symlink nor change files inside an existing checkout of the fork. See
 `docs/subsystems/build-and-run.md`, section "Preparing a local worktree".
@@ -304,9 +306,10 @@ breaks the whole product.
   which applies to every model served, not an eligibility criterion. Retention is
   the peer's local act at EOS; `/v1/session/rewind` only confirms. → `inference.md`
 - **The pipeline's order is the layers' order**, and one node may serve several
-  ranges. `merge` only joins adjacent ranges on the same node. Overlap and a
-  global hole are refusal. Whoever holds layer 0 processes the whole prompt of
-  every request. → `deployment.md`
+  ranges. `merge` only joins adjacent ranges on the same node. A global hole,
+  or a range on no chain of contiguous ranges from layer 0 to the last, is a
+  refusal; two such chains (two heads) are parallel routes. Whoever holds
+  layer 0 processes the whole prompt of every request. → `deployment.md`
 - **How many layers the model has is an `Option`, not a number.** A slice without
   `pom.*` metadata does not know the total; inventing zero was a real bug. →
   `slicing.md`
@@ -321,14 +324,15 @@ breaks the whole product.
   event until all answer `ready` and replanning afterwards. There is no new timer
   or `sleep` in the inference: the wait only exists while an idle pipeline wakes
   up. → `deployment.md`, `p2p-network.md`
-- **No weight travels the network because of slicing**: each peer extracts
-  its own range from its own copy. A file transfer is an explicit act of the
-  operator (a deploy that copies anything is refused without
-  `allow_transfers`, which the screen sends only after listing the copies), and **a file never crosses a public relay** (n0's, one in
-  `relay_peers`, or one that is not a member of the cluster): it goes direct, over a hole
-  punched connection, or through a relay of the cluster itself. A node the
+- **No weight travels between nodes**: each machine serves its range from
+  its own copy of the model, downloaded there (`model_provider_backend`, an
+  admin may start it on a worker) or placed by hand and rescanned. A deploy
+  plan that would copy a file is refused by name (`machine_lacks_files`).
+  `/api/transfer/*` is deprecated and served one more release only for older
+  admins; while it lives, **a file never crosses a public relay** (n0's, one in
+  `relay_peers`, or one that is not a member of the cluster). A node the
   internet reaches relays for its own cluster by default; relaying for everyone
-  is an option. → `slicing.md`, `file-transfer.md`, `p2p-network.md`
+  is an option. → `deployment.md`, `file-transfer.md`, `p2p-network.md`
 - **The product's name is not literal anywhere.** Config, env, keys, GGUF
   metadata and the pkarr record derive from `brand.json`'s `slug`
   (`brand::config_filename()`, `brand::env_var()`, `brand::gguf_key()`,

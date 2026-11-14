@@ -417,11 +417,6 @@ export interface PhaseTrace {
   executed_engines?: ExecutionEngine[];
   engine_mismatch?: boolean;
   mixed_execution?: boolean;
-  /** MoE executor and reason observed in this phase, when the node published them. */
-  moe_executor?: string;
-  moe_executors?: string[];
-  moe_executor_dtypes?: number[];
-  moe_executor_reason?: string;
   tp?: TpTelemetry | null;
 }
 
@@ -473,10 +468,6 @@ export interface LegacyHopTrace {
   executed_engines?: ExecutionEngine[];
   engine_mismatch?: boolean;
   mixed_execution?: boolean;
-  moe_executor?: string;
-  moe_executors?: string[];
-  moe_executor_dtypes?: number[];
-  moe_executor_reason?: string;
 }
 
 export type HopTrace = PhasedHopTrace | LegacyHopTrace;

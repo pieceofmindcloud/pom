@@ -450,7 +450,7 @@ origin allowed to promote, resign and demote. There is no route that changes a n
 set when the network admits the machine, and changing it means leaving and
 asking for admission again. The authority offer states
 share `GET /api/transfer/offers` and its answers
-`POST /api/transfer/offers/{id}/accept|reject`, so the UI uses the same bell as
+`POST /api/transfer/offers/{id}/accept|reject` (an accept may carry `{ "dest_dir": <one of this node's model folders> }` for where a whole file lands; without it, the first folder), so the UI uses the same bell as
 slice offers. For a succession offer, `accept` requires the successor's signed
 acceptance; `reject` is refused because the offer only ends with a signed
 acceptance or an epoch advance. These endpoints are presentation contracts and
@@ -1017,7 +1017,9 @@ component on this node (`release` takes an optional `component`).
 `{deploy_id, job_id}` and runs a `deploy` job),
 `POST /api/ui/image-deploy/:deploy_id/{add,remove,redeploy}`,
 `GET /api/ui/image-deployments` and `POST /api/ui/image-undeploy`
-(`AnyAdmin`) plan, deploy, change, list and undeploy an image model as a
+(`AnyAdmin`, except the list's GET, `ServingMember`: a worker's Dashboard
+shows the image models without any image plugin on it, since the view asks
+every peer) plan, deploy, change, list and undeploy an image model as a
 pipeline of stages with replicas; undeploy and the list work from any admin
 node. The contracts are
 `deployment.md`, section 1.7. A plugin reaches the same list, survey, deploy
@@ -1361,8 +1363,8 @@ other text leave the flag false. The flag only controls the visibility of the
 controls in the browser: the plan, deploy, apply, reconfigure and redeploy
 handlers keep the fields of the `Configurações POM (DESENV)` ("POM settings
 (DEV)") section received in the request, even for clients that do not see those
-controls. When `inference_mode` does not exist, `RuntimeParams` uses `dense`
-(`llama.cpp`) by default; `auto` is an explicit choice.
+controls. There is no engine field: llama.cpp runs every model, and an old
+record's `inference_mode` is ignored.
 
 `GET /api/ui/infer/heads?model=<id>` is the dedicated read of the inference
 heads, allowed for the `visitor` and `admin` profiles: it returns only the live
@@ -1384,7 +1386,9 @@ started at that head. A missing, invalid or vanished choice fails closed,
 without silently switching nodes.
 
 The same endpoint accepts `thinking_enabled: boolean` for that inference's
-choice. A missing field keeps the default on; `false` reaches the prefill
+choice. Without it the gateway reads the client's
+`chat_template_kwargs.enable_thinking`, then `reasoning_effort: "none"` as off
+(`openai::client_thinking`), and only then keeps the default on; `false` reaches the prefill
 metadata up to the deployment's head, which combines it with the global
 `no_thinking` before applying the template. The hub, ring and direct reply
 relays keep the field together with the existing metadata.
@@ -1407,7 +1411,11 @@ persisted catalog.
 
 `POST /api/ui/deploy/node/options` queries the catalog and configuration of the
 machine given in `target_node_id`. It returns the slice and whole-model options
-available on that machine, plus GPU/KV defaults and the accepted cache types.
+available on that machine, plus GPU/KV defaults and the accepted cache types,
+and `layer_cuts` (the valid layer boundaries of the whole file, `null` when the
+machine has none). `POST /api/ui/deploy/node` accepts `kind: "whole"` with a
+partial `start_layer`/`end_layer`: the machine serves that range of the whole
+GGUF through a virtual slice instead of the whole model.
 The screen calls the route again when the operator changes the dropdown,
 avoiding reusing another peer's plan.
 
@@ -1431,6 +1439,28 @@ provider's commands or tokens. `/storage` reports the model folders resolved
 from the configuration. A download picks the first eligible folder, records the
 path in `Job.local_path` and shows up in `GET /api/ui/jobs`, which is the UI's
 source of progress, cancellation and retry.
+
+**Downloads on another machine.** `POST /api/ui/model-provider/downloads`
+takes an optional `node_id`; `GET .../downloads` (this machine's model
+downloads, newest first, `{ node_id, downloads }`) and the `cancel`, `retry`
+and `dismiss` actions take `?node_id=`. When the id names another member, the
+node forwards the call to it signed by itself
+(`model_provider_backend::forward_to_node`, over the tunnel when no address
+answers) and returns its answer unchanged; an unknown id is 404
+`node_not_found`, an unreachable one 502 `node_unreachable` (`{ error: { code,
+message } }`, as the other download errors). The worker
+authorizes the signature by its own route policy (`ServingMember`: an admin,
+or an attested worker; never a visitor) and downloads with its own Hugging
+Face token into its own models folder: only the call crosses, never a file.
+From another node the writes take an admin's signature (`node_to_node_scope`,
+see `security-model.md`). The start body also takes `extra_files`, other files
+of the same repository (split parts, a projector, an MTP draft) started as
+their own rows; the answer adds `extra_download_ids`, `skipped` (already
+installed or downloading) and `failed` (`{ filename, code }`).
+**`POST /api/ui/models/rescan`** (`ServingMember`, body optional
+`{ node_id }`) walks the models folders again at once, for a file placed by
+hand, and answers `{ node_id, rescanning: true }` before the walk ends; with
+another machine's id it is forwarded the same way.
 **`GET /api/ui/model-provider/status`** requires `ConnectionAuth` and returns
 `{ cli: { installed, version, authenticated, username } }`: a missing CLI is a
 structured state, while login required and an authenticated session stay
@@ -1485,20 +1515,41 @@ the JSON representation of the accepted fields, without headers. The retention
 policy for full prompts still needs a product decision: `needs-decision:
 define retention and possible purge by age or volume`.
 
-The `POST /api/ui/deploy/plan` and `POST /api/ui/deploy` routes carry
-`params.inference_mode` (`auto`, `dense` or `moe`) in the development section,
-for the three execution modes: whole model, sliced pipeline and Tensor
-Parallelism. The planner also returns `is_moe`, `inference_mode_supported` and
-`inference_mode_reason`. `is_moe` comes from the GGUF's real expert metadata,
-never from the file name. For a dense model the UI hides the choice; when a
-combination is not supported yet, the reason stays visible and the deploy is
-refused so a preference that will not be honored is not presented.
+The `POST /api/ui/deploy/plan` planner returns `is_moe`,
+`inference_mode_supported` and `inference_mode_reason` for the three execution
+modes: whole model, sliced pipeline and Tensor Parallelism. `is_moe` comes from
+the GGUF's real expert metadata, never from the file name. Tensor Parallelism of
+a MoE model is not supported: the reason stays visible and the deploy is
+refused.
+
+**Ranges of a whole model.** `DeployRequest.whole_ranges` (optional, on
+`/api/ui/deploy/plan` and `/api/ui/deploy`) is a list of
+`{ node_id, start_layer, end_layer }`, each machine holding the whole file
+itself; it becomes the selection when `selection` is absent, and each machine
+is applied with its own file and its range (`deployment.md`). A range refused
+for the model (a cut the GGUF does not allow) comes back as a `blocked` plan
+with `auto: false` and `layer_options`, the real cuts, so the screen can
+redo the split. Each step may carry a `note` (for example that the machine
+will write its range to disk because it does not announce
+`model/range-load-v1`) and `capacity.gpu_layers_fit`, `capacity.cpu_layers`
+and `capacity.cpu_ram_bytes` when the range overflows the VRAM, and `capacity.weights_bytes`,
+`capacity.kv_bytes` and `capacity.kv_in_vram` (the GPU layers' cost apart; compute buffers are not
+estimated); a CPU part
+beyond the machine's free RAM blocks the plan by name.
+**`POST /api/ui/model-layer-options`** (`ServingMember`, body
+`{ path, kv?: { n_ctx, max_sessions } }`) reads the valid cuts of a GGUF on
+that machine: `{ total_layers, cuts: [{ end_layer, layers, size_bytes,
+remainder_bytes, kv_bytes?, remainder_kv_bytes? }], granularity, rule }`;
+`kv` adds each cut's KV cache at that context with this node's cache types.
 
 `DeployPlan.copies` lists every file the deploy would copy between machines
 (`kind` `slice`/`mmproj`/`mtp`, `name`, `size_bytes`, `layers`, source and
-target node and host). `POST /api/ui/deploy` with copies and without
-`allow_transfers: true` answers 409 `{error, code: "transfers_not_authorized",
-copies}` before touching any peer. The deploy job carries `deploy_id`, and
+target node and host). The preview of a plan with copies is `blocked` with a
+reason naming each machine and what it lacks, and `POST /api/ui/deploy` answers
+409 `{error, code: "machine_lacks_files", copies}` before touching any peer;
+`allow_transfers` is accepted and ignored. Every `/api/transfer/*` answer
+carries `Deprecation: true`: the routes stay one release for older admins and
+are then removed. The deploy job carries `deploy_id`, and
 `POST /api/ui/undeploy` stops a deploy of that id still in flight (task
 aborted, copies cancelled on the targets), answering `cancelled: true`.
 
@@ -1531,7 +1582,7 @@ with every holder and its path), the resolved `vision` (head) and `mtp` (tail)
 slots and whether each is already there or will be copied. `DeployRequest.keep_existing`
 (default `false`) keeps in service the machines outside the plan that already
 serve the same model (`deployment.md`, section 1).
-`/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine. `POST /api/ui/models/delete` deletes a GGUF, or a file with an image model extension (`.safetensors`, `.sft`, `.ckpt`, `.pt`, `.pth`, `.bin`) that is inside one of the whole-model folders, unreadable ones included; anything else is 400 (`webui::setup::ensure_deletable_model`). `GET /api/ui/models` also carries `image_files`: the image model files (safetensors and the other formats ComfyUI loads) of the whole-model folders, each with `name`, `path`, `size_bytes`, `source`, `format`, `category` (`diffusion`, `text_encoder`, `vae`, `checkpoint`, `lora`, `controlnet`, `clip_vision`, `upscale` or `other`), `family`, `dtype` and `metadata_error` (`models/image_catalog.rs`).
+`/api/ui/models` and `/api/ui/cluster/models` carry `sidecars` per machine, and `hf_sources`: `{ path, repo_id, revision, filename }` for each file the machine downloaded through POM (read from `<models folder>/.pom-hf/`), empty from an older node. `POST /api/ui/models/delete` deletes a GGUF, or a file with an image model extension (`.safetensors`, `.sft`, `.ckpt`, `.pt`, `.pth`, `.bin`) that is inside one of the whole-model folders, unreadable ones included; anything else is 400 (`webui::setup::ensure_deletable_model`). `GET /api/ui/models` also carries `image_files`: the image model files (safetensors and the other formats ComfyUI loads) of the whole-model folders, each with `name`, `path`, `size_bytes`, `source`, `format`, `category` (`diffusion`, `text_encoder`, `vae`, `checkpoint`, `lora`, `controlnet`, `clip_vision`, `upscale` or `other`), `family`, `dtype` and `metadata_error` (`models/image_catalog.rs`).
 
 **`GET` and `POST /api/ui/model-provider/config`** require `ConnectionAuth` and
 control the optional Hugging Face token. GET only returns
@@ -1547,6 +1598,15 @@ TLS between nodes has no switch: it is always on (`p2p-network.md`, section
 5). `GET /api/ui/node` returns `addr_candidates`, `endpoint_id` and
 `inference_frame_capabilities` so a deployment plan can rebuild the tunnel on
 the rank that will run the call.
+
+**`POST /api/ui/network/relay-policy`** - body `{ relay_policy: "all" |
+"members" | "none" }`, `PrincipalOnly`: which iroh relays every machine may
+use (`p2p-network.md`, "The network's relay policy"). It saves the policy in
+the principal's `NetworkSettings` and sends the document to the members, who
+apply it at once; the answer is `{ relay_policy, synced_peers }`. The policy is
+read in `GET /api/ui/network/info` (`network.relay_policy`). `POST
+/api/ui/network/settings` never changes it: it keeps the value already saved,
+so a screen that does not know the field cannot reset it.
 
 **`POST /api/ui/network/quic`** - body `{ quic_enabled: bool }`, turns the
 HTTP/3-over-QUIC preference for new inference hops on or off. Only the
@@ -1894,6 +1954,18 @@ explicitly measured residual, connection counters, first token milestones,
 streaming metrics, the four per-request MTP acceptance fields and the
 distributed integrity `telemetry` summary, with expected and observed peers and
 spans, duplicates, late receipts, absences and `remote-stream` aggregates.
+Each hop's `prefill` and `decode` in `x_pom.trace` also split that phase's wall
+time for the machine (`RequestTrace::derive_stage_balance`, run by
+`refresh_telemetry` on the llama.cpp and plugin paths alike): `compute_ms` (its
+own work, `processing_ms`), `transfer_ms` (`network_ms`), `wait_input_ms`
+(waiting on the earlier machines, at most their own work and wire before it),
+`wait_output_ms` (the rest of the waiting: on the later machines), `wall_ms` and
+`utilization` (compute over wall). `x_pom.trace.stage_balance` names each phase's
+bottleneck, the machine with the highest utilization (`node_id`, layers,
+`utilization`, `compute_ms`). The split of the waiting is an estimate: the engines
+report their own work and the wire, not the moments they sat idle. All the fields
+are optional and absent where the phase did not run.
+
 `x_pom.timings` separates legacy TTFT, `server_ttft_ms`, `engine_ttft_ms` and
 `client_ttft_ms`. A missing field means the boundary was not measured, not
 zero. The audit at `GET /api/ui/requests` keeps that same object in

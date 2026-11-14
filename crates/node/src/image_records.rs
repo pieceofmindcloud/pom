@@ -29,6 +29,19 @@ pub(crate) struct FileIdentity {
     pub size_bytes: u64,
 }
 
+/// A LoRA applied to the diffusion model, by file identity and strength
+/// (`LoraLoaderModelOnly`'s `strength_model`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct LoraChoice {
+    pub file: FileIdentity,
+    #[serde(default = "full_strength")]
+    pub strength: f32,
+}
+
+fn full_strength() -> f32 {
+    1.0
+}
+
 /// One machine serving a stage, with the path of the file on its disk.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Replica {
@@ -36,6 +49,10 @@ pub(crate) struct Replica {
     #[serde(default)]
     pub hostname: String,
     pub path: String,
+    /// The stage's LoRAs on this machine's disk, in the stage's order. Absent
+    /// in a record written before LoRAs (and on a stage without them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lora_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,6 +60,9 @@ pub(crate) struct ImageStage {
     pub component: String,
     pub file: FileIdentity,
     pub replicas: Vec<Replica>,
+    /// The LoRAs applied over the diffusion model (the diffusion stage only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loras: Vec<LoraChoice>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -130,6 +150,7 @@ impl ImageDeployment {
                 node_id: choice.node_id.clone(),
                 hostname: String::new(),
                 path: choice.path.clone(),
+                lora_paths: Vec::new(),
             };
             match stages.iter_mut().find(|s| s.component == choice.component) {
                 Some(stage) => stage.replicas.push(replica),
@@ -140,6 +161,7 @@ impl ImageDeployment {
                         size_bytes: 0,
                     },
                     replicas: vec![replica],
+                    loras: Vec::new(),
                 }),
             }
         }
@@ -238,8 +260,10 @@ mod tests {
                     node_id: (*n).into(),
                     hostname: (*n).into(),
                     path: format!("/m/{component}.safetensors"),
+                    lora_paths: Vec::new(),
                 })
                 .collect(),
+            loras: Vec::new(),
         }
     }
 

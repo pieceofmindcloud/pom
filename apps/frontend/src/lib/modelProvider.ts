@@ -45,3 +45,24 @@ export function percentOfDownload(job: Pick<Job, "bytes_downloaded" | "total_byt
 export function isModelDownloadActive(job: Job): boolean {
   return job.kind === "model_download" && job.state === "running";
 }
+
+const SPLIT_PART = /^(.*)-(\d{5})-of-(\d{5})\.gguf$/i;
+
+/**
+ * The other files of a repository that a download of `filename` goes with:
+ * `parts` are the rest of a split GGUF (the model does not load without them),
+ * `sidecars` the vision projectors and MTP drafts the operator may add.
+ */
+export function downloadCompanions(filename: string, files: { filename: string; size_bytes: number | null }[]) {
+  const split = SPLIT_PART.exec(filename);
+  const parts = split
+    ? files.filter((file) => {
+        const other = SPLIT_PART.exec(file.filename);
+        return file.filename !== filename && other !== null && other[1] === split[1] && other[3] === split[3];
+      })
+    : [];
+  const sidecars = files.filter(
+    (file) => file.filename !== filename && !parts.includes(file) && /mmproj|(^|[-_.])mtp([-_.]|$)/i.test(file.filename),
+  );
+  return { parts, sidecars };
+}

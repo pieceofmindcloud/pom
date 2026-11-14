@@ -81,6 +81,10 @@ level entry consumed by `backend/gateway/` (`generate_stream_with_stops`).
   remote head keeps the decode loop on the peer and delivers tokens to the
   gateway in callbacks bounded by opportunistic batches. The gateway also requires
   a callback address; the local shortcut never uses this transport.
+- `CAP_RANGE_LOAD` - capability `model/range-load-v1`, announced (node and gateway
+  state) when `POM_VIRTUAL_SLICES=1`: the node serves a range of a whole model it holds
+  through a header-only virtual slice, so the deploy planner charges it no disk for
+  the range. Not an inference frame capability; the planner only reads it.
 - `PipelinePlan::supports_relay_chain` / `supports_direct_reply` /
   `supports_speculation` - all-or-nothing: one step without the capability drops
   the feature for the whole plan (`CAP_RELAY_CHAIN`, `CAP_RELAY_DIRECT`,

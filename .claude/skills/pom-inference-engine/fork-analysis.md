@@ -13,22 +13,23 @@ Refresh this file after a new engine lands or a fork moves:
 `git log --format='%h %s' <upstream>/<default>..origin/<pom branch>` in
 each fork, then `git diff --stat` on the same range.
 
-## 1. llama.cpp fork (`pom-tensor-parallel` vs upstream `master`)
+## 1. llama.cpp fork (`pom` vs upstream `master`)
 
-32 commits on top of upstream `b49650adb` (2026-09-17), about 80 files and
-5000 lines. The engine is linked in process: `pom-plugin-llama.cpp` builds
+Rebased on upstream `202c1a229` (2026-11-10): the POM commits were replayed on
+top of it, without the external MoE executor hook (the own MoE engine was
+removed; llama.cpp runs every model). The commit ids below are from before that
+rebase. The engine is linked in process: `pom-plugin-llama.cpp` builds
 `llama-cpp-sys-2` against the commit `llama-cpp.lock` pins and its C++ shims
-(`llama_mtp_shim.cpp`, `wrapper_common.cpp`) call internal methods. The fork
-keeps its own report, `docs/rdma-p2p-divergence-from-upstream.md`.
+(`llama_mtp_shim.cpp`, `wrapper_common.cpp`) call internal methods.
 
 ### Features
 
 | Feature | Commits | What it adds |
 |---|---|---|
 | Tensor parallelism without moving weights | `ba39cec84` `6e5d86726` `a2d91edd2` | A reduce op after the row-parallel GEMMs (attention output, FFN down) driven by `llama_set_tp_reduce_callback`; the all-reduce lives in the POM node. Identity when no callback is set. |
-| External MoE executor hook | `ff59e560a` `03902a5ba` `4bb64b070` `b7b163cdc` `32d461112` `e822a565c` `16c517a43` | `llama_set_moe_ffn_callback` with a generic `llama_moe_ffn_descriptor` (layer, experts, dtypes, shapes); per-layer metadata-only expert loading (`moe_external_executor_layers`); route tensors materialized for the callback; a route copy trace. The POM's own MoE executor runs the experts. |
 | GPU cache for host-resident experts | `6b99580c2` `d5926811e` | Port of upstream PRs #29887 and #29030 (`--moe-cache-mib`, lazy-row reads), extended to one cache per GPU. |
 | External MTP draft | `1b9c07a81` `7af965b84` | `qwen4exp` exports `h_nextn` for an outside draft head and loads a nextn-only draft file (shared MTP module) with its own `DECODER_MTP` graph. |
+| External tensor data (branch `pom-external-data`) | `bd4b9586a` | The loader reads `general.external_data.files`, `.tensor_files` and `.tensor_offsets` from a GGUF header and maps each listed tensor from another file at an absolute offset. It lets a header-only "virtual slice" serve a layer range of the whole model without copying weights (POM's `write_virtual_slice`, `POM_VIRTUAL_SLICES=1`). Now on `pom`. |
 | Parallel constrained decisions | `5ddafd2d3` `ef5b9bfa4` `5b1f9f9c5` | `/v1/decision` and `llama-parallel-decision`: every allowed value of a finite schema scored in branch sequences forked from one cached context (the POM's typed decisions). Contributed from another fork and merged. |
 
 ### Characteristics
@@ -39,7 +40,7 @@ keeps its own report, `docs/rdma-p2p-divergence-from-upstream.md`.
 | Every symbol exported from the Windows DLL | `239fba375` | The POM's C++ bridge calls internal `llama_model`/`llama_context` methods; Linux exports them, Windows did not. |
 | Release packages the POM links | `bdcb6188d` `f7daca92c` `600d31512` `933a6e10e` | CUDA 13.4 plus Vulkan as loadable backends, MSVC import libraries, no web UI publish, so the POM links a release instead of compiling the fork. |
 | Pinned by exact commit | `pom-plugin-llama.cpp/llama-cpp.lock` | Repository, branch and commit; CI and the Docker build fetch the same source. |
-| Fork documentation | `TP_DESIGN.md`, `docs/rdma-p2p-*.md`, `AGENTS.md` | Why each divergence exists, regenerated after every upstream merge. |
+| Fork documentation | `TP_DESIGN.md`, `AGENTS.md` | Why each divergence exists, regenerated after every upstream merge. |
 
 ### Fixes
 

@@ -8,7 +8,7 @@ order: 260
 ---
 
 :::lead
-Preferences holds what belongs to this machine alone: the password of this panel, where the interface listens, the node's HTTPS certificate, the GPU thermal protection and the Hugging Face token.
+Preferences holds what belongs to this machine alone: the password of this panel, where the interface listens, the node's HTTPS certificate and the GPU thermal protection. The Hugging Face token is set on the Settings tab of Search Models, the Hugging Face plugin's screen.
 :::
 
 ![Preferences: the administrative password, the interface exposure and the node certificate.](../images/en/preferences.webp)
@@ -20,8 +20,8 @@ A new node opens with the password `admin` and the bell asks to change it. **Cha
 Who can open this interface - only this computer, or the local network (IPv4/IPv6) - and on which port. The network mode always asks for the password. The inference routes between machines stay open either way.
 ### Node certificate
 The node serves HTTPS with a certificate signed by its own local CA. **Download certificate (.crt)** and trust it once, and browsers and harnesses accept HTTPS to this node with no warning.
-### Thermal protection and Hugging Face
-The GPU temperature policy for deployments, and the token that opens Hugging Face search and gated models.
+### Thermal protection
+The GPU temperature policy for deployments.
 :::
 
 :::warn The password is not the connection key

@@ -11,9 +11,9 @@ shared `[workspace.package]` metadata, shared `[workspace.dependencies]` for
 - `llama-engine` is **not in this workspace**: it lives in the repository
   `pom-plugin-llama.cpp` (private), pinned by `rev` in `crates/node/Cargo.toml`.
   It holds **all** the code that talks to `llama-cpp-sys-2`: the FFI wrapper
-  (`llm`), MTP (`mtp`), the in-house MoE executor (`moe`), the TP reduce barrier
+  (`llm`), MTP (`mtp`), the TP reduce barrier
   (`collective`), GGUF header parsing (`gguf`/`multipart`), KV budget
-  (`kv_budget`), and system/GPU monitoring (`sysmon`), plus the C/CUDA shims and
+  (`kv_budget`), and system/GPU monitoring (`sysmon`), plus the C shims and
   the `mtp_arch` build step. `llama-cpp-sys-2` (the binding) lives there too and
   is patched into the workspace from the same `rev`. The features
   `cuda`/`metal`/`vulkan` forward to `llama-engine`.

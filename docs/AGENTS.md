@@ -162,7 +162,8 @@ Plans worth knowing: `2026-09-12-windows-crash-root-cause.md` (`model_loaded`
 tracing and the native `/health` boundaries),
 `2026-09-14-reload-idle-runtime-v2.md` (reload after idle-unload),
 `2026-09-15-hybrid-memory-decode-segv.md` (recurring Kimi-K3 rollback),
-`2026-09-15-moe-freetoken-performance.md` (heterogeneous CUDA hot path),
+`2026-09-15-moe-freetoken-performance.md` (heterogeneous CUDA hot path of the
+own MoE executor, since removed: llama.cpp runs every model),
 `2026-09-16-enterprise-heartbeat-schema.md` (rich heartbeat contract),
 `2026-09-21-docker-backend-variants.md` (CUDA, Vulkan and CPU image variants).
 

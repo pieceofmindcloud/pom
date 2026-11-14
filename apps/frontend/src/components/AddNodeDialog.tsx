@@ -12,7 +12,10 @@ import type { AddNodeOption, AddNodeOptionsResponse, CacheTypesResponse, KvCache
 import { Confirm } from "./Confirm";
 import { DeploymentInspector } from "./DeploymentInspector";
 import type { InferenceServiceEntry } from "../lib/inferenceServices";
-import { Select } from "./ui";
+import { Button, Select } from "./ui";
+import { LayerRangeSlider, rangeBounds } from "./LayerRangeSlider";
+import { validEnds } from "../lib/wholeRanges";
+import { layerRange } from "../lib/format";
 import { useI18n } from "../i18n/provider";
 
 export interface AddNodePeer {
@@ -62,6 +65,9 @@ export function AddNodeDialog({
   const [optionKey, setOptionKey] = useState(() => keyOf(options[0]));
   const [cacheTypes, setCacheTypes] = useState<CacheTypesResponse | null>(null);
   const [visionInfo, setVisionInfo] = useState<AddNodeOptionsResponse["vision"] | null>(null);
+  /** The machine's whole file, when it has one: any range of it is served as a virtual slice. */
+  const [layerCuts, setLayerCuts] = useState<number[] | null>(null);
+  const [range, setRange] = useState<[number, number] | null>(null);
   const [vision, setVision] = useState(false);
   // This machine's whole configuration, edited with the deployment inspector. It starts as the deployment's
   // active version, and it is sent to the node as this machine's own override (the version keeps its parameters).
@@ -85,6 +91,8 @@ export function AddNodeDialog({
       setCacheTypes(null);
       setVisionInfo(null);
       setVision(false);
+      setLayerCuts(null);
+      setRange(null);
       setDraft(null);
       setEngineCode("");
       setError(null);
@@ -132,10 +140,13 @@ export function AddNodeDialog({
     setOptionKey("");
     setCacheTypes(null);
     setVisionInfo(null);
+    setLayerCuts(null);
+    setRange(null);
     setError(null);
     void addNodeOptions(group, nodeId, controller.signal)
       .then((result) => {
         setOptions(result.options);
+        setLayerCuts(result.layer_cuts ?? null);
         setCacheTypes(result.cache_types);
         setVisionInfo(result.vision ?? null);
         setVision(Boolean(result.vision?.deployed && result.vision.available));
@@ -156,7 +167,16 @@ export function AddNodeDialog({
   const engine = engines.find((service) => service.code === engineCode) ?? null;
   // A service that does not run layer slices takes the whole model on this machine; one that runs slices keeps both.
   const shownOptions = engine && !engine.stages ? options.filter((candidate) => candidate.kind === "whole") : options;
-  const option = shownOptions.find((candidate) => keyOf(candidate) === optionKey);
+  // With the whole file on this machine, the question is which layers it serves, not "whole model or slices": any
+  // range of the whole file (a virtual slice). A service that runs the whole model only keeps it whole.
+  const wholeFile = shownOptions.find((candidate) => candidate.kind === "whole" && candidate.start_layer === 0);
+  const totalLayers = wholeFile ? wholeFile.end_layer + 1 : null;
+  const pickRange = Boolean(wholeFile) && (!engine || engine.stages);
+  const bounds = totalLayers == null ? [] : rangeBounds(totalLayers, validEnds(totalLayers, layerCuts));
+  const chosenRange: [number, number] | null = wholeFile ? range ?? [0, wholeFile.end_layer] : null;
+  const option = pickRange && wholeFile && chosenRange
+    ? { ...wholeFile, start_layer: chosenRange[0], end_layer: chosenRange[1] }
+    : shownOptions.find((candidate) => keyOf(candidate) === optionKey);
   // The machine's whole configuration, with its engine: what the deployment inspector shows and what is sent.
   const machine: RuntimeParams | null = draft ? { ...draft, inference_service: engine?.code ?? null } : null;
 
@@ -251,6 +271,33 @@ export function AddNodeDialog({
             </label>
           )}
 
+          {pickRange && wholeFile && chosenRange && totalLayers != null ? (
+            <div className="flex flex-col gap-1.5">
+              <span className="flex items-center justify-between gap-2 text-xs text-muted">
+                <span>{t("deploy.addNodeLayers")}</span>
+                <span className="font-mono text-fg">
+                  {layerRange(chosenRange[0], chosenRange[1])} · {t("deployStudio.layerCount", { count: chosenRange[1] - chosenRange[0] + 1 })}
+                </span>
+              </span>
+              <LayerRangeSlider
+                bounds={bounds}
+                start={chosenRange[0]}
+                end={chosenRange[1]}
+                label={t("deploy.addNodeLayers")}
+                onChange={(start, end) => setRange([start, end])}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                className="self-start"
+                disabled={chosenRange[0] === 0 && chosenRange[1] === totalLayers - 1}
+                onClick={() => setRange([0, totalLayers - 1])}
+              >
+                {t("deployStudio.machineWholeModel")}
+              </Button>
+            </div>
+          ) : (
           <label className="flex flex-col gap-1">
             <span className="text-xs text-muted">{t("deploy.addNodeSlice")}</span>
             <select
@@ -267,6 +314,7 @@ export function AddNodeDialog({
             </select>
             {loadingOptions && <span className="text-xs text-muted">{t("deploy.addNodeLoading")}</span>}
           </label>
+          )}
 
           {visionInfo && (visionInfo.available || visionInfo.deployed) && (
             <label className="flex items-start gap-2" title={t("deploy.visionHint")}>
@@ -296,8 +344,9 @@ export function AddNodeDialog({
                     ? { name: engine.name, settings: engine.settings, pomSettings: engine.pomSettings }
                     : undefined
                 }
-                // a slice carries the hidden state; a whole model takes the prefill/decode role instead
-                showHiddenStateDtype={option?.kind !== "whole"}
+                // a range carries the hidden state; the whole model on one machine takes the prefill/decode role instead
+                showHiddenStateDtype={!(option?.kind === "whole" && option.start_layer === 0 && totalLayers != null
+                  && option.end_layer === totalLayers - 1)}
                 cacheTypes={
                   cacheTypes
                     ? {

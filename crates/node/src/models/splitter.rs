@@ -231,6 +231,24 @@ fn encode_kv_u32(key: &str, value: u32) -> Vec<u8> {
     buf
 }
 
+/// A non-negative scalar written back with the integer type it had in the
+/// source: the loader checks the type, and the DeepSeek-V4.1 candidate source
+/// is an INT32 that a UINT32 copy made unreadable.
+fn encode_kv_like_source(key: &str, source_type: u32, value: u32) -> Vec<u8> {
+    match (source_type, i32::try_from(value)) {
+        (T_I32, Ok(signed)) => {
+            let mut buf = Vec::with_capacity(8 + key.len() + 4 + 4);
+            let kb = key.as_bytes();
+            buf.extend_from_slice(&(kb.len() as u64).to_le_bytes());
+            buf.extend_from_slice(kb);
+            buf.extend_from_slice(&T_I32.to_le_bytes());
+            buf.extend_from_slice(&signed.to_le_bytes());
+            buf
+        }
+        _ => encode_kv_u32(key, value),
+    }
+}
+
 fn encode_kv_u32_array(key: &str, values: &[u32]) -> Vec<u8> {
     let payload: Vec<u8> = values
         .iter()
@@ -263,6 +281,21 @@ fn encode_kv_u32_array_with_type(key: &str, element_type: u32, values: &[u32]) -
         ),
     };
     Ok(encode_kv_array(key, element_type, &payload))
+}
+
+fn encode_kv_string_array(key: &str, values: &[String]) -> Vec<u8> {
+    let kb = key.as_bytes();
+    let mut buf = Vec::with_capacity(8 + kb.len() + 16 + values.iter().map(|v| 8 + v.len()).sum::<usize>());
+    buf.extend_from_slice(&(kb.len() as u64).to_le_bytes());
+    buf.extend_from_slice(kb);
+    buf.extend_from_slice(&T_ARR.to_le_bytes());
+    buf.extend_from_slice(&T_STR.to_le_bytes());
+    buf.extend_from_slice(&(values.len() as u64).to_le_bytes());
+    for value in values {
+        buf.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        buf.extend_from_slice(value.as_bytes());
+    }
+    buf
 }
 
 fn encode_kv_array(key: &str, element_type: u32, payload: &[u8]) -> Vec<u8> {
@@ -618,6 +651,63 @@ pub fn validate_slice_source(
     Ok(())
 }
 
+/// The context the model declares it supports: `<arch>.context_length` in the
+/// header of `src` (the first part of a multipart source). `None` when the
+/// header does not declare it. A slice keeps the source's value, so a range
+/// of the model answers the same as the whole file.
+pub fn read_context_length(src: &Path) -> Result<Option<u32>> {
+    let source = crate::multipart::GgufSource::open(src)?;
+    let mm = source
+        .parts()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("GGUF without parts"))?
+        .map();
+    let mut r = R { data: mm, pos: 0 };
+    if r.u32()? != GGUF_MAGIC {
+        bail!("not a GGUF file: {}", src.display());
+    }
+    let version = r.u32()?;
+    if version != 2 && version != 3 {
+        bail!("GGUF version {version} not supported (expected 2 or 3)");
+    }
+    let _n_tensors = r.u64()?;
+    let n_kv = r.u64()? as usize;
+    if n_kv > 100_000 {
+        bail!("implausible GGUF header ({n_kv} kv)");
+    }
+    let mut architecture = None;
+    let mut lengths: Vec<(String, u32)> = Vec::new();
+    for _ in 0..n_kv {
+        let key = r.string()?;
+        let vtype = r.u32()?;
+        let value_start = r.pos;
+        if vtype == T_ARR {
+            let element_type = r.u32()?;
+            let count = r.u64()?;
+            r.skip_array_payload(element_type, count)?;
+            continue;
+        }
+        r.skip_value(vtype)?;
+        let entry = KvSource { start: 0, end: r.pos, key, vtype, value_start, array: None };
+        if entry.key == "general.architecture" {
+            architecture = source_string(mm, &entry);
+        } else if entry.key.ends_with(".context_length") {
+            if let Some(value) = source_scalar_u32(mm, &entry) {
+                lengths.push((entry.key, value));
+            }
+        }
+    }
+    let Some(architecture) = architecture else {
+        return Ok(None);
+    };
+    let wanted = format!("{architecture}.context_length");
+    Ok(lengths
+        .into_iter()
+        .find(|(key, _)| *key == wanted)
+        .map(|(_, value)| value)
+        .filter(|&value| value > 0))
+}
+
 /// Slice a GGUF model file.
 ///
 /// Produces a valid standalone GGUF at `dst` covering layers
@@ -632,6 +722,43 @@ pub fn split(
     end_layer: u32,
     is_first: bool,
     is_last: bool,
+    on_progress: impl Fn(f64),
+) -> Result<WrittenSlice> {
+    split_impl(src, dst, start_layer, end_layer, is_first, is_last, false, on_progress)
+}
+
+/// A header-only slice: the same header `split` writes (same metadata and
+/// tensor rules), but each source tensor points at its bytes in the source
+/// file(s) through `general.external_data.*`, which the llama.cpp fork's loader
+/// reads. Only the injected tensors (the identity `output_norm` of a non-final
+/// range) carry data, so the file is a few KB to a few MB (the tokenizer) and
+/// takes milliseconds to write. It is valid only while the source files stay
+/// where they are and unchanged.
+pub fn write_virtual_slice(
+    src: &Path,
+    dst: &Path,
+    start_layer: u32,
+    end_layer: u32,
+    is_first: bool,
+    is_last: bool,
+) -> Result<WrittenSlice> {
+    split_impl(src, dst, start_layer, end_layer, is_first, is_last, true, |_| {})
+}
+
+/// Metadata keys of the external tensor data the loader reads.
+pub const EXTERNAL_DATA_FILES_KEY: &str = "general.external_data.files";
+pub const EXTERNAL_DATA_TENSOR_FILES_KEY: &str = "general.external_data.tensor_files";
+pub const EXTERNAL_DATA_TENSOR_OFFSETS_KEY: &str = "general.external_data.tensor_offsets";
+
+#[allow(clippy::too_many_arguments)]
+fn split_impl(
+    src: &Path,
+    dst: &Path,
+    start_layer: u32,
+    end_layer: u32,
+    is_first: bool,
+    is_last: bool,
+    external_data: bool,
     on_progress: impl Fn(f64),
 ) -> Result<WrittenSlice> {
     let _ = is_first; // reserved; currently unused (no tensors differ on first vs. middle)
@@ -740,6 +867,39 @@ pub fn split(
         bail!("the {arch} source declares PLE, but does not contain per_layer_token_embd.weight");
     }
 
+    // deepseek41 keeps one set of Engram hash constants per Engram layer, back to back (the fork checks
+    // n_layers * columns): a slice keeps the sets of its own Engram layers, which are contiguous. The head
+    // offsets index the whole table, which the slice carries whole, so they keep their values.
+    let engram_layer_count = ple_layers.len() as u32;
+    let engram_cut: Option<(u32, u32, u32, u32)> = if arch == "deepseek41" && !ple_layers.is_empty()
+    {
+        let scalar = |name: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.key == format!("{arch}.{name}"))
+                .and_then(|entry| source_scalar_u32(mm, entry))
+        };
+        let first = ple_layers
+            .iter()
+            .position(|layer| (start_layer..=end_layer).contains(layer));
+        let kept = ple_layers
+            .iter()
+            .filter(|layer| (start_layer..=end_layer).contains(*layer))
+            .count();
+        match (
+            first,
+            scalar("ple.ngram_size"),
+            scalar("ple.heads_per_ngram"),
+        ) {
+            (Some(first), Some(ngram), Some(heads)) if ngram >= 2 => {
+                Some((first as u32, kept as u32, ngram, (ngram - 1) * heads))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
     let mut block_count_updated = false;
     let pom_prefix = format!("{}.", crate::brand::slug());
@@ -786,8 +946,38 @@ pub fn split(
             // is what a slice ending before this layer has.
             if let Some(layer) = source_scalar_u32(mm, entry) {
                 if (start_layer..=end_layer).contains(&layer) {
-                    kv_out.push(KvOut::Encoded(encode_kv_u32(key, layer - start_layer)));
+                    kv_out.push(KvOut::Encoded(encode_kv_like_source(
+                        key,
+                        entry.vtype,
+                        layer - start_layer,
+                    )));
                 }
+                continue;
+            }
+        }
+        if let Some((first, kept, ngram, cols)) = engram_cut {
+            let chunk = if *key == format!("{arch}.ple.layer_multipliers") {
+                Some(ngram)
+            } else if *key == format!("{arch}.ple.head_offsets")
+                || *key == format!("{arch}.ple.head_vocab_sizes")
+            {
+                Some(cols)
+            } else {
+                None
+            };
+            if let Some(chunk) = chunk {
+                let total = entry.array.map(|array| array.count).unwrap_or(0);
+                if total != u64::from(chunk) * engram_layer_count as u64 {
+                    bail!(
+                        "metadata array '{key}' has length {total}; expected {chunk} per Engram layer for {engram_layer_count} layers"
+                    );
+                }
+                kv_out.push(KvOut::Encoded(encode_array_slice(
+                    mm,
+                    entry,
+                    first * chunk,
+                    kept * chunk,
+                )?));
                 continue;
             }
         }
@@ -964,6 +1154,50 @@ pub fn split(
         });
     }
 
+    // A header-only slice lists the tensors that carry data first, so their
+    // offsets in this file stay small; the rest point at the source files.
+    if external_data {
+        out_tensors.sort_by_key(|t| matches!(t, TensorOut::Real(_)));
+        let mut files = Vec::with_capacity(source.parts().len());
+        for part in source.parts() {
+            let path = std::fs::canonicalize(&part.path)
+                .with_context(|| format!("resolve {}", part.path.display()))?;
+            files.push(
+                path.to_str()
+                    .ok_or_else(|| anyhow::anyhow!("source path is not UTF-8: {}", path.display()))?
+                    .to_string(),
+            );
+        }
+        let mut tensor_files = Vec::with_capacity(out_tensors.len());
+        let mut tensor_offsets = Vec::with_capacity(out_tensors.len());
+        for t in &out_tensors {
+            match t {
+                TensorOut::Fake { .. } => {
+                    tensor_files.push(-1i32);
+                    tensor_offsets.push(0u64);
+                }
+                TensorOut::Real(rec) => {
+                    let part = source.parts().get(rec.part_index).ok_or_else(|| {
+                        anyhow::anyhow!("part {} missing for '{}'", rec.part_index, rec.name)
+                    })?;
+                    tensor_files.push(i32::try_from(rec.part_index)?);
+                    tensor_offsets.push(part.data_start() as u64 + rec.src_offset);
+                }
+            }
+        }
+        kv_out.push(KvOut::Encoded(encode_kv_string_array(EXTERNAL_DATA_FILES_KEY, &files)));
+        kv_out.push(KvOut::Encoded(encode_kv_array(
+            EXTERNAL_DATA_TENSOR_FILES_KEY,
+            T_I32,
+            &tensor_files.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>(),
+        )));
+        kv_out.push(KvOut::Encoded(encode_kv_array(
+            EXTERNAL_DATA_TENSOR_OFFSETS_KEY,
+            T_U64,
+            &tensor_offsets.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>(),
+        )));
+    }
+
     // ── Compute output layout ─────────────────────────────────────────────────
 
     // New relative offsets for output tensors (aligned)
@@ -1043,6 +1277,10 @@ pub fn split(
 
     for t in &out_tensors {
         let size = t.byte_size();
+        if external_data && matches!(t, TensorOut::Real(_)) {
+            // Its bytes stay in the source file; the injected tensors came first.
+            break;
+        }
 
         match t {
             TensorOut::Fake { data, .. } => {
@@ -2726,6 +2964,26 @@ mod tests {
         assert_eq!(source_read_order(&tensors), vec![2, 1, 0]);
     }
 
+    /// The GGUF value type of `want`'s entry.
+    fn kv_type(mm: &[u8], want: &str) -> Option<u32> {
+        let mut r = R { data: mm, pos: 0 };
+        if r.u32().ok()? != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?;
+        let _n_tensors = r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            if key == want {
+                return Some(vtype);
+            }
+            r.skip_value(vtype).ok()?;
+        }
+        None
+    }
+
     fn kv_u32(mm: &[u8], want: &str) -> Option<u32> {
         let mut r = R { data: mm, pos: 0 };
         let magic = r.u32().ok()?;
@@ -2741,6 +2999,7 @@ mod tests {
             if key == want {
                 return match vtype {
                     T_U32 => Some(u32::from_le_bytes(r.take(4).ok()?.try_into().unwrap())),
+                    T_I32 => u32::try_from(i32::from_le_bytes(r.take(4).ok()?.try_into().unwrap())).ok(),
                     T_U64 => Some(r.u64().ok()? as u32),
                     _ => None,
                 };
@@ -2748,6 +3007,110 @@ mod tests {
             r.skip_value(vtype).ok()?;
         }
         None
+    }
+
+    /// Writes a real and a virtual slice of a real model for a manual load
+    /// comparison: `POM_VIRTUAL_SLICE_SRC=<gguf> POM_VIRTUAL_SLICE_OUT=<dir>
+    /// POM_VIRTUAL_SLICE_RANGE=<start>-<end>[-last] cargo test -- --ignored
+    /// writes_real_and_virtual_slices_of_a_real_model`.
+    #[test]
+    #[ignore]
+    fn writes_real_and_virtual_slices_of_a_real_model() {
+        let src = PathBuf::from(std::env::var("POM_VIRTUAL_SLICE_SRC").unwrap());
+        let out = PathBuf::from(std::env::var("POM_VIRTUAL_SLICE_OUT").unwrap());
+        let range = std::env::var("POM_VIRTUAL_SLICE_RANGE").unwrap();
+        let mut parts = range.split('-');
+        let start: u32 = parts.next().unwrap().parse().unwrap();
+        let end: u32 = parts.next().unwrap().parse().unwrap();
+        let is_last = parts.next() == Some("last");
+        let real = out.join(format!("real-{range}.gguf"));
+        let virt = out.join(format!("virtual-{range}.gguf"));
+        let written = split(&src, &real, start, end, start == 0, is_last, |_| {}).unwrap();
+        let header = write_virtual_slice(&src, &virt, start, end, start == 0, is_last).unwrap();
+        eprintln!("real {} bytes, virtual {} bytes", written.bytes, header.bytes);
+    }
+
+    /// Tensor names of a GGUF header, in table order.
+    fn tensor_table_names(mm: &[u8]) -> Vec<String> {
+        let mut r = R { data: mm, pos: 0 };
+        r.u32().unwrap();
+        r.u32().unwrap();
+        let n_tensors = r.u64().unwrap();
+        let n_kv = r.u64().unwrap();
+        for _ in 0..n_kv {
+            r.string().unwrap();
+            let vtype = r.u32().unwrap();
+            r.skip_value(vtype).unwrap();
+        }
+        let mut names = Vec::new();
+        for _ in 0..n_tensors {
+            names.push(r.string().unwrap());
+            let n_dims = r.u32().unwrap();
+            for _ in 0..n_dims {
+                r.u64().unwrap();
+            }
+            r.u32().unwrap();
+            r.u64().unwrap();
+        }
+        names
+    }
+
+    #[test]
+    fn a_virtual_slice_points_at_the_same_bytes_the_real_slice_copies() {
+        let dir = std::env::temp_dir().join(format!("pom-virtual-slice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("model.gguf");
+        std::fs::write(&src, test_gguf_bytes(8)).unwrap();
+        let source = std::fs::read(&src).unwrap();
+
+        for (start, end, is_last) in [(0u32, 3u32, false), (2, 5, false), (4, 7, true)] {
+            let real = dir.join(format!("real-{start}-{end}.gguf"));
+            let virt = dir.join(format!("virtual-{start}-{end}.gguf"));
+            split(&src, &real, start, end, start == 0, is_last, |_| {}).unwrap();
+            write_virtual_slice(&src, &virt, start, end, start == 0, is_last).unwrap();
+
+            let real_bytes = std::fs::read(&real).unwrap();
+            let virt_bytes = std::fs::read(&virt).unwrap();
+            for key in ["llama.block_count", &crate::brand::gguf_key("start_layer"), &crate::brand::gguf_key("end_layer")] {
+                assert_eq!(kv_u32(&virt_bytes, key), kv_u32(&real_bytes, key), "{key}");
+            }
+
+            let real_src = crate::multipart::GgufSource::open(&real).unwrap();
+            let real_part = &real_src.parts()[0];
+            let real_by_name: HashMap<&str, &crate::multipart::GgufTensor> =
+                real_src.tensors().iter().map(|t| (t.name.as_str(), t)).collect();
+
+            let names = tensor_table_names(&virt_bytes);
+            let files = kv_i32_array(&virt_bytes, EXTERNAL_DATA_TENSOR_FILES_KEY).unwrap();
+            let offsets = kv_u64_array(&virt_bytes, EXTERNAL_DATA_TENSOR_OFFSETS_KEY).unwrap();
+            assert_eq!(names.len(), real_by_name.len());
+            assert_eq!((files.len(), offsets.len()), (names.len(), names.len()));
+            // Tensors with data in the header come first, so the file stays small.
+            let first_external = files.iter().position(|&f| f >= 0).unwrap();
+            assert!(files[first_external..].iter().all(|&f| f == 0));
+            assert_eq!(first_external, if is_last { 0 } else { 1 });
+
+            let mut internal_offset = 0usize;
+            for (i, name) in names.iter().enumerate() {
+                let real_t = real_by_name[name.as_str()];
+                let size = real_t.byte_size as usize;
+                let start_real = real_part.data_start() + real_t.offset as usize;
+                let expected = &real_bytes[start_real..start_real + size];
+                let got = if files[i] < 0 {
+                    // The only data in the header: the identity output_norm, at the start of its data section.
+                    let data_start = virt_bytes.len() - align_up(size as u64) as usize;
+                    let bytes = &virt_bytes[data_start + internal_offset..data_start + internal_offset + size];
+                    internal_offset += align_up(size as u64) as usize;
+                    bytes
+                } else {
+                    let off = offsets[i] as usize;
+                    &source[off..off + size]
+                };
+                assert_eq!(got, expected, "{name} in range {start}-{end}");
+            }
+            assert!(virt_bytes.len() < real_bytes.len());
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn kv_u32_array(mm: &[u8], want: &str) -> Option<Vec<u32>> {
@@ -4343,6 +4706,13 @@ mod tests {
             bytes.extend_from_slice(&value.to_le_bytes());
             bytes
         };
+        // The real DeepSeek-V4.1 files write the candidate source as INT32.
+        let i32_kv = |key: &str, value: i32| {
+            let mut bytes = string(key);
+            bytes.extend_from_slice(&T_I32.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        };
         let u32_array_kv = |key: &str, values: &[u32]| {
             let mut bytes = string(key);
             bytes.extend_from_slice(&T_ARR.to_le_bytes());
@@ -4380,8 +4750,11 @@ mod tests {
             ),
             u32_array_kv("deepseek41.attention.kv_source_layers", &[1, 4]),
             u32_array_kv("deepseek41.attention.indexer.source_layers", &[1, 4, 6]),
-            u32_kv("deepseek41.attention.indexer.candidate_source_layer", 4),
+            i32_kv("deepseek41.attention.indexer.candidate_source_layer", 4),
             u32_array_kv("deepseek41.ple.layers", &[1, 3]),
+            // per Engram layer: ngram_size multipliers and (ngram_size - 1) * heads_per_ngram heads
+            u32_kv("deepseek41.ple.ngram_size", 2),
+            u32_kv("deepseek41.ple.heads_per_ngram", 6),
             u32_array_kv("deepseek41.ple.layer_multipliers", &[11, 13, 17, 19]),
             u32_array_kv("deepseek41.ple.head_offsets", &head_offsets),
             u32_array_kv("deepseek41.ple.head_vocab_sizes", &[20; 12]),
@@ -4414,6 +4787,35 @@ mod tests {
         }
         bytes
     }
+
+    #[test]
+    fn deepseek41_slice_keeps_the_hash_constants_of_its_own_engram_layers() {
+        let dir = std::env::temp_dir().join(format!("pom-ds41-engram-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let out = dir.join("mid.gguf");
+        std::fs::write(&whole, deepseek41_test_gguf_bytes()).unwrap();
+        // layers 2-7 hold the second Engram layer (3) only
+        split(&whole, &out, 2, 7, false, true, |_| {}).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+
+        assert_eq!(kv_u32_array(&bytes, "deepseek41.ple.layers"), Some(vec![1]));
+        assert_eq!(
+            kv_u32_array(&bytes, "deepseek41.ple.layer_multipliers"),
+            Some(vec![17, 19])
+        );
+        assert_eq!(
+            kv_u32_array(&bytes, "deepseek41.ple.head_offsets"),
+            Some((6..12).map(|head| head * 20).collect()),
+            "the offsets index the whole table, which the slice carries"
+        );
+        assert_eq!(
+            kv_u32_array(&bytes, "deepseek41.ple.head_vocab_sizes"),
+            Some(vec![20; 6])
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
 
     fn deepseek41_split_at_valid_cut(dir: &Path) -> (Vec<u8>, Vec<u8>) {
         std::fs::create_dir_all(dir).unwrap();
@@ -4491,6 +4893,11 @@ mod tests {
         assert_eq!(
             kv_u32(&second, "deepseek41.attention.indexer.candidate_source_layer"),
             Some(0)
+        );
+        assert_eq!(
+            kv_type(&second, "deepseek41.attention.indexer.candidate_source_layer"),
+            Some(T_I32),
+            "llama.cpp reads the candidate source as INT32 and refuses a UINT32"
         );
         assert_eq!(kv_u32_array(&second, "deepseek41.ple.layers"), Some(Vec::new()));
         assert_eq!(

@@ -1,6 +1,4 @@
 import { Check, CheckCircle2, Download, Inbox, Upload, X } from "lucide-react";
-import { ModelDownloadsPanel } from "../components/ModelDownloadsPanel";
-import { SendFilePanel } from "./SendFile";
 import {
   Badge,
   Button,
@@ -12,23 +10,29 @@ import {
   PanelHeader,
   Progress,
   ScrollX,
+  Select,
   Skeleton,
 } from "../components/ui";
 import { api } from "../lib/api";
 import { bytes, duration, layerRange, rate } from "../lib/format";
-import { useModelDownloads, useOffers, useTransfers } from "../lib/queries";
+import { useOffers, usePaths, useTransfers } from "../lib/queries";
+import { useState } from "react";
 import { useToast } from "../lib/toast";
 import { canCancel, isActiveTransfer, isFinishedTransfer } from "../lib/transferStatus";
 import { transferHash, transferTitle } from "../lib/transferLabel";
 import { useI18n } from "../i18n/provider";
 import type { TransferOffer } from "../lib/types";
 
-export function Transfers() {
+/** `embedded`: the Models screen's Transfers tab, under that screen's own header. */
+export function Transfers({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useI18n();
   const transfers = useTransfers();
   const offers = useOffers();
-  const modelDownloads = useModelDownloads();
+  const paths = usePaths();
   const toast = useToast();
+  // A whole file lands in one of this machine's model folders; the first is the default.
+  const modelDirs = (paths.data?.model_dirs ?? []).map((d) => d.path);
+  const [destDirs, setDestDirs] = useState<Record<string, string>>({});
 
   const jobs = transfers.data?.jobs ?? [];
   const active = jobs.filter((j) => isActiveTransfer(j.state));
@@ -49,7 +53,11 @@ export function Transfers() {
 
   async function answer(id: string, accept: boolean) {
     try {
-      await api.post(`/api/transfer/offers/${id}/${accept ? "accept" : "reject"}`);
+      const destDir = destDirs[id] ?? modelDirs[0];
+      await api.post(
+        `/api/transfer/offers/${id}/${accept ? "accept" : "reject"}`,
+        accept && destDir ? { dest_dir: destDir } : undefined,
+      );
       toast.success(accept ? t("transfers.offerAccepted") : t("transfers.offerRejected"));
       void offers.refetch();
       void transfers.refetch();
@@ -60,10 +68,12 @@ export function Transfers() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-ink">
-      <FullBleedHeader
-        title={t("transfers.title")}
-        subtitle={t("transfers.subtitle")}
-      />
+      {!embedded && (
+        <FullBleedHeader
+          title={t("transfers.title")}
+          subtitle={t("transfers.subtitle")}
+        />
+      )}
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto p-4 sm:p-5">
         {(transfers.isError || offers.isError) && (
@@ -76,10 +86,6 @@ export function Transfers() {
         )}
 
         <div className="space-y-5">
-          <SendFilePanel />
-
-          <ModelDownloadsPanel />
-
           {waiting.length > 0 && (
             <Panel>
               <PanelHeader
@@ -122,6 +128,20 @@ export function Transfers() {
                         </td>
                         <td className="whitespace-nowrap px-5 py-3.5">
                           <div className="flex shrink-0 gap-2">
+                            {!o.pom && modelDirs.length > 1 && (
+                              <Select
+                                compact
+                                className="w-56"
+                                value={destDirs[o.id] ?? modelDirs[0]}
+                                aria-label={t("transfers.destFolder")}
+                                title={t("transfers.destFolder")}
+                                onChange={(e) => setDestDirs((m) => ({ ...m, [o.id]: e.target.value }))}
+                              >
+                                {modelDirs.map((dir) => (
+                                  <option key={dir} value={dir}>{dir}</option>
+                                ))}
+                              </Select>
+                            )}
                             <Button
                               variant="primary"
                               size="sm"
@@ -316,7 +336,7 @@ export function Transfers() {
         </div>
       </div>
 
-      {waiting.length === 0 && jobs.length === 0 && (modelDownloads.data?.length ?? 0) === 0 && (
+      {waiting.length === 0 && jobs.length === 0 && (
         <Footnote
           className="shrink-0 border-t border-line px-4 py-2.5"
           icon={<Inbox className="h-3.5 w-3.5" />}

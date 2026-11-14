@@ -20,8 +20,10 @@ pub(super) async fn plan_endpoint(
     .await;
     let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
-    let layer_options = if req.kind == DeployKind::Whole && req.whole_slice.is_some() {
-        whole_layer_options_for_plan(&state, &machines, &req.group).await
+    let layer_options = if req.kind == DeployKind::Whole
+        && (req.whole_slice.is_some() || req.whole_ranges.is_some())
+    {
+        whole_layer_options_for_plan(&state, &machines, &req.group, &req.params).await
     } else {
         None
     };
@@ -31,11 +33,33 @@ pub(super) async fn plan_endpoint(
             return bad(json!({ "error": error }));
         }
     }
+    // A range the GGUF refuses is a blocked preview, not a bare error: the plan
+    // still carries `layer_options`, which is how the screen learns the valid
+    // cuts after a first guess. The deploy itself refuses such a range.
+    let mut range_refusal = None;
+    let range_selection = match (&req.whole_ranges, &layer_options) {
+        (None, _) => None,
+        (Some(_), None) => {
+            return bad(json!({
+                "error": format!("ranges of {} need kind \"whole\" and a machine that holds the whole model", req.group)
+            }))
+        }
+        (Some(ranges), Some(options)) => {
+            match add_whole_ranges(&mut machines, &req.group, ranges, options) {
+                Ok(selection) => Some(selection),
+                Err(error) => {
+                    range_refusal = Some(error);
+                    None
+                }
+            }
+        }
+    };
+    let selection = req.selection.clone().or(range_selection);
     let params = effective_params_for_kind(req.kind, &req.params);
     let mut p = plan_with_rtt_options(
         &req.group,
         &machines,
-        req.selection.as_deref(),
+        selection.as_deref(),
         &params,
         req.merge,
         req.kind,
@@ -47,6 +71,11 @@ pub(super) async fn plan_endpoint(
         layer_options,
         None,
     );
+    if let Some(reason) = range_refusal {
+        p.blocked = Some(reason);
+        // Not the node's suggestion: the operator named ranges.
+        p.auto = false;
+    }
     if req.kind == DeployKind::TensorParallel && p.blocked.is_none() && !has_tp_parts(&machines) {
         if let Some(tp) = &req.tp {
             if let Some(reason) = tp_shardability_check(&state, &machines, tp).await {
@@ -72,6 +101,11 @@ pub(super) async fn plan_endpoint(
     if let Some(reason) = survey.metadata_pending {
         p.blocked = Some(reason);
     }
+    // `copies` stays in the answer so a screen can name the machines; the
+    // plan is blocked because nothing is copied any more.
+    if p.blocked.is_none() {
+        p.blocked = super::planning::copies_refusal(&p.copies);
+    }
     if p.blocked.is_none() {
         if let Some(service) = req.params.inference_service.as_deref() {
             super::planning::share_whole_model_roles(req.kind, &mut p.steps, req.params.inference_role);
@@ -85,10 +119,12 @@ pub(super) async fn plan_endpoint(
                 .iter()
                 .map(|step| step.inference_role.unwrap_or(req.params.inference_role))
                 .collect();
+            let ranges = super::planning::splits_whole_into_ranges(req.kind, &p.steps);
             p.blocked = crate::plugin_engine::deploy_block(
                 &state,
                 service,
-                req.kind == DeployKind::Whole,
+                req.kind == DeployKind::Whole && !ranges,
+                ranges,
                 &targets,
                 &roles,
                 survey
@@ -97,6 +133,12 @@ pub(super) async fn plan_endpoint(
                     .and_then(|shape| shape.architecture.as_deref()),
             )
             .await;
+            // the service cuts each range from the whole file itself: nothing is written to disk
+            if ranges && p.blocked.is_none() {
+                for step in p.steps.iter_mut().filter(|step| step.from_whole_path.is_some()) {
+                    step.note = None;
+                }
+            }
         }
     }
     // A plan already refused gains nothing from knowing whether it would fit
@@ -149,7 +191,10 @@ pub(super) async fn enrich_capacity_previews(
                         .cloned()
                 })
                 .flatten();
-            let model_path = step.target_path.clone();
+            // A range the machine points at in its own whole file is costed
+            // on that file, for the range only.
+            let range_of_whole = step.target_path.is_none() && step.from_whole_path.is_some();
+            let model_path = step.target_path.clone().or_else(|| step.from_whole_path.clone());
             let eligible = !step.merged;
             let total_layers = step.total_layers.or(plan.total_layers);
             let req = CapacityPreviewRequest {
@@ -163,6 +208,7 @@ pub(super) async fn enrich_capacity_previews(
                 params: plan.params.clone(),
                 n_gpu_layers: step.n_gpu_layers,
                 offload_kqv: step.offload_kqv,
+                range_of_whole,
             };
             (index, peer, model_path, eligible, total_layers, req)
         })
@@ -196,6 +242,8 @@ pub(super) async fn enrich_capacity_previews(
             step.capacity = preview;
         }
     }
+
+    refuse_cpu_part_beyond_ram(plan, machines);
 
     for machine in &mut plan.machines {
         let mut by_device: std::collections::BTreeMap<u32, crate::webui::GpuCapacityProjection> =
@@ -247,5 +295,34 @@ pub(super) async fn enrich_capacity_previews(
             note: (!notes.is_empty()).then(|| notes.join("; ")),
             gpus: by_device.into_values().collect(),
         });
+    }
+}
+
+/// Layers that do not fit in VRAM run on the CPU from system RAM; past the
+/// machine's free RAM the load cannot succeed, so the plan is refused by name.
+pub(super) fn refuse_cpu_part_beyond_ram(plan: &mut Plan, machines: &[Machine]) {
+    if plan.blocked.is_some() {
+        return;
+    }
+    for step in &plan.steps {
+        let Some(cpu_ram) = step.capacity.as_ref().and_then(|c| c.cpu_ram_bytes) else {
+            continue;
+        };
+        let Some(machine) = machines.iter().find(|m| m.node_id == step.target_node_id) else {
+            continue;
+        };
+        let free = machine.ram_free_mb.saturating_mul(1024 * 1024);
+        if machine.ram_free_mb > 0 && cpu_ram > free {
+            plan.blocked = Some(format!(
+                "{} has {} GB of free RAM, and the {} layers of L{}-{} that do not fit in its VRAM need {} GB: give it fewer layers or add a machine",
+                machine.label(),
+                gb(machine.ram_free_mb),
+                step.capacity.as_ref().and_then(|c| c.cpu_layers).unwrap_or(0),
+                step.start_layer,
+                step.end_layer,
+                gb(cpu_ram.div_ceil(1024 * 1024)),
+            ));
+            return;
+        }
     }
 }

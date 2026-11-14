@@ -17,6 +17,31 @@ const dump = reference as ReferenceDump;
 // The dump is the frozen pre-ICU baseline. Keep intentional product-copy
 // revisions here rather than rewriting the generated 1.8 MB single-line file.
 const copyUpdates: Record<string, string> = {
+  // Deploy is a single menu entry; History opens from the deploy screen.
+  "en:nav.deployments": "Deploy",
+  "pt-BR:nav.deployments": "Implantar",
+  // The model downloads moved to the Hugging Face plugin; Transfers keeps
+  // only an older admin's file transfers and left the menu.
+  // A received file lands in a whole-model folder the receiver picks.
+  "en:transfers.receivedDetail":
+    "Received files go into one of this machine's model folders; with more than one you pick it before accepting.",
+  "pt-BR:transfers.receivedDetail":
+    "Os arquivos recebidos vão para uma das pastas de modelos desta máquina; com mais de uma você escolhe antes de aceitar.",
+  "en:transfers.title": "Transfers",
+  "pt-BR:transfers.title": "Transferências",
+  "en:transfers.subtitle":
+    "Files an older admin sends to this machine. Model downloads moved to Search Models, the Hugging Face plugin's screen.",
+  "pt-BR:transfers.subtitle":
+    "Arquivos que um admin mais antigo envia para esta máquina. Os downloads de modelos foram para Procurar Modelos, a tela do plugin do Hugging Face.",
+  // Models has no submenu now that the search is the Hugging Face plugin's.
+  "en:guide.downloadGo":
+    "Open Search Models to download a small model from Hugging Face. Not in the menu? Install the Hugging Face plugin in Plugins first.",
+  "pt-BR:guide.downloadGo":
+    "Abra Procurar Modelos para baixar um modelo pequeno do Hugging Face. Não está no menu? Instale antes o plugin do Hugging Face em Plugins.",
+  "en:models.fullTitle": "Models",
+  "pt-BR:models.fullTitle": "Modelos",
+  "en:models.fullSubtitle": "Complete GGUF files found on this machine. Inspect multipart parts and manage local model files here.",
+  "pt-BR:models.fullSubtitle": "GGUFs completos encontrados nesta máquina. Consulte as partes dos modelos multipart e gerencie os arquivos locais por aqui.",
   // "Network" beside "Networks" in the main menu read as the same thing twice.
   "en:nav.network": "My Network",
   "pt-BR:nav.network": "Minha Rede",
@@ -115,13 +140,34 @@ const MOVED_TO_PLUGINS = new Set([
   "chat.ttftPipeline",
 ]);
 // Keys of the repetition-cycle detector, removed from the POM with it, of
-// the one-machine limit a whole model no longer has, and of the profiles
-// renamed to `worker` and `visitor`.
+// the one-machine limit a whole model no longer has, of the profiles
+// renamed to `worker` and `visitor`, of sending files between machines, and of
+// the inference engine selector.
+const KEPT_MODEL_PROVIDER_KEYS = new Set([
+  "remoteModels.downloadFailed",
+  "remoteModels.downloadStarted",
+  "remoteModels.downloadStartedOn",
+]);
 const removed = (key: string) =>
   /^(profile|network\.enrollment|publicNetworks\.roleTip|quickSetup\.role)\.(node|infer)$/.test(key) ||
   key.startsWith("deploy.cycleDetection") ||
   key.includes(".knob.cycle_detection_") ||
-  key.startsWith("deploy.wholeSingleMachine");
+  key.startsWith("deploy.wholeSingleMachine") ||
+  // Sending files between machines, retired with deployments that copy.
+  /^(sendFile\.|deploy\.copies|deploy\.copy)/.test(key) ||
+  // The Shards and pipeline slicing screens, retired with ranges served from the whole model.
+  /^(shards\.|nav\.shards$|nav\.sliceModels$)/.test(key) ||
+  // The model table no longer has a Slice button or its local-slicing footnote.
+  /^models\.(localSlice|slice)$/.test(key) ||
+  // Search Models, the downloads and the token moved to the Hugging Face
+  // plugin, with their copy; the deploy screen's "Download here" keeps three.
+  (/^(remoteModels|huggingFace)\./.test(key) && !KEPT_MODEL_PROVIDER_KEYS.has(key)) ||
+  /^nav\.(remoteModels|fullModels|transfers)$/.test(key) ||
+  // The inference engine selector, retired with the own MoE engine: llama.cpp runs every model.
+  /^inspector\.(engine\.(auto|dense|moe)|inferenceMode|inferenceModeHint)$/.test(key) ||
+  key === "deployStudio.moeNeedsMetadata" ||
+  // The slice folder left the Storage screen with virtual slices.
+  /^paths\.(maxShardGb|maxShardGbHint|received|shardDetail|shardFolder|defaultHint|usageAria|usedOf)$/.test(key);
 const moved = (key: string) =>
   key.startsWith("chat.telemetry.") || MOVED_TO_PLUGINS.has(key) || removed(key);
 

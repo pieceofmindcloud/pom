@@ -21,7 +21,6 @@ import type { NodeInfo, RuntimeParams } from "../lib/types";
 import type { PipelineRouteCost } from "../components/PipelineGatewayNode";
 
 const deploymentParams: RuntimeParams = {
-  inference_mode: "auto",
   n_gpu_layers: 99,
   n_ctx: 8192,
   offload_kqv: true,

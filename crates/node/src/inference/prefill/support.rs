@@ -1199,6 +1199,23 @@ impl TransportTrace {
 pub struct PhaseTrace {
     /// Time the peer reported for itself (`processing_ms` on the wire).
     pub processing_ms: u64,
+    /// The phase's wall time split per machine (`RequestTrace::derive_stage_balance`), the same for every engine:
+    /// `compute_ms` is the machine's own work (`processing_ms`), `transfer_ms` the time on the wire (`network_ms`),
+    /// and the rest of the phase's wall time `wall_ms` is waiting - `wait_input_ms` for the earlier machines (at most
+    /// their own work and wire before this one), `wait_output_ms` for the later ones. `utilization` is
+    /// compute / wall: in a pipeline the machine closest to 1 with the least waiting is the bottleneck.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_input_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_output_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wall_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub utilization: Option<f64>,
     /// Sum of the observed call round trips for this phase, including peer
     /// processing. The frontend uses this for the execution RTT total.
     pub round_trip_ms: u64,
@@ -1278,12 +1295,6 @@ pub struct PhaseTrace {
     /// recorded; the effective `POM_PROFILE_SYNC` state is published separately
     /// by `/health` and must never be inferred from this timing.
     pub node_backend_sync_ms: f64,
-    /// Time of the external MoE forward, measured outside `llama_decode`.
-    ///
-    /// The llama.cpp hook is opt-in and records the forward after it
-    /// returns; without this field the trace confused this cost with the rest of the
-    /// backend and left the sum impossible to close.
-    pub node_moe_forward_ms: f64,
     /// Device-to-host copy of the residual, measured inside the capture hook.
     pub node_residual_capture_d2h_sync_ms: f64,
     /// Scheduler ask-to-ready wall, including graph evaluation and its sync.
@@ -1324,11 +1335,6 @@ pub struct PhaseTrace {
     pub executed_engines: Vec<crate::executor::ExecutionEngine>,
     pub engine_mismatch: bool,
     pub mixed_execution: bool,
-    pub moe_executor: Option<String>,
-    pub moe_executors: Vec<String>,
-    pub moe_executor_dtypes: Vec<u32>,
-    pub moe_executor_reason: Option<String>,
-    pub moe_executor_diagnostics: Option<crate::moe::runtime::MoeExecutorDiagnostics>,
     #[serde(skip)]
     pub(super) node_samples_ms: Vec<f64>,
     #[serde(skip)]
@@ -1401,40 +1407,6 @@ impl PhaseTrace {
                     .filter(|engine| *engine != crate::executor::ExecutionEngine::Unknown)
                     .collect()
             });
-        let moe_executor = node
-            .get("moe_executor")
-            .and_then(|value| value.as_str())
-            .filter(|value| *value != "not-run")
-            .map(str::to_owned);
-        let moe_executors = node
-            .get("moe_executors")
-            .and_then(|value| value.as_array())
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(|value| value.as_str())
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let moe_executor_dtypes = node
-            .get("moe_executor_dtypes")
-            .and_then(|value| value.as_array())
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(|value| value.as_u64())
-                    .filter_map(|value| u32::try_from(value).ok())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let moe_executor_reason = node
-            .get("moe_executor_reason")
-            .and_then(|value| value.as_str())
-            .map(str::to_owned);
-        let moe_executor_diagnostics = node
-            .get("moe_executor_diagnostics")
-            .and_then(|value| serde_json::from_value(value.clone()).ok());
 
         self.processing_ms += processing_ms;
         self.round_trip_ms += round_trip_ms;
@@ -1481,7 +1453,6 @@ impl PhaseTrace {
         self.node_mtp_observe_ms += node_ms("mtp_observe_ms");
         self.node_backend_call_ms += node_ms("backend_call_ms");
         self.node_backend_sync_ms += node_ms("backend_sync_ms");
-        self.node_moe_forward_ms += node_ms("moe_forward_ms");
         self.node_residual_capture_d2h_sync_ms += node_ms("residual_capture_d2h_sync_ms");
         self.node_residual_capture_ready_wait_ms += node_ms("residual_capture_ready_wait_ms");
         self.node_residual_capture_tensor_get_ms += node_ms("residual_capture_tensor_get_ms");
@@ -1536,38 +1507,7 @@ impl PhaseTrace {
         for engine in engines {
             self.observe_engine(engine);
         }
-        self.observe_moe_executor(moe_executor);
-        for executor in moe_executors {
-            self.observe_moe_executor(Some(executor));
-        }
-        for dtype in moe_executor_dtypes {
-            if !self.moe_executor_dtypes.contains(&dtype) {
-                self.moe_executor_dtypes.push(dtype);
-            }
-        }
-        if let Some(reason) = moe_executor_reason {
-            if self.moe_executor_reason.is_none() {
-                self.moe_executor_reason = Some(reason);
-            }
-        }
-        if moe_executor_diagnostics.is_some() {
-            self.moe_executor_diagnostics = moe_executor_diagnostics;
-        }
         self.refresh_percentiles();
-    }
-
-    pub(super) fn observe_moe_executor(&mut self, next: Option<String>) {
-        let Some(next) = next else {
-            return;
-        };
-        if !self.moe_executors.contains(&next) {
-            self.moe_executors.push(next);
-        }
-        self.moe_executor = match self.moe_executors.as_slice() {
-            [executor] => Some(executor.clone()),
-            [] => None,
-            _ => Some("mixed".to_owned()),
-        };
     }
 
     pub(super) fn observe_engine(&mut self, next: crate::executor::ExecutionEngine) {
@@ -1604,9 +1544,7 @@ impl PhaseTrace {
             self.engine_mismatch = false;
             return;
         };
-        let expected = if path.starts_with("moe/") {
-            crate::executor::ExecutionEngine::Moe
-        } else if path.starts_with("dense/") {
+        let expected = if path.starts_with("dense/") {
             crate::executor::ExecutionEngine::LlamaCpp
         } else {
             crate::executor::ExecutionEngine::Unknown
@@ -1730,21 +1668,6 @@ impl PhaseTrace {
         }
         for engine in &next.executed_engines {
             self.observe_engine(*engine);
-        }
-        self.observe_moe_executor(next.moe_executor.clone());
-        for executor in &next.moe_executors {
-            self.observe_moe_executor(Some(executor.clone()));
-        }
-        for dtype in &next.moe_executor_dtypes {
-            if !self.moe_executor_dtypes.contains(dtype) {
-                self.moe_executor_dtypes.push(*dtype);
-            }
-        }
-        if self.moe_executor_reason.is_none() {
-            self.moe_executor_reason = next.moe_executor_reason.clone();
-        }
-        if next.moe_executor_diagnostics.is_some() {
-            self.moe_executor_diagnostics = next.moe_executor_diagnostics.clone();
         }
         self.refresh_percentiles();
     }
@@ -1944,9 +1867,32 @@ pub fn critical_path_ms(spans: &[TraceSpan], host: &str) -> u64 {
     covered
 }
 
+/// The machine that sets the pace of one phase (`RequestTrace::derive_stage_balance`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct StageBottleneck {
+    pub node_id: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    /// Its compute over the phase's wall time.
+    pub utilization: f64,
+    pub compute_ms: u64,
+}
+
+/// Each phase's bottleneck, when the trace had machines to compare.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct StageBalance {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill: Option<StageBottleneck>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode: Option<StageBottleneck>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestTrace {
     pub trace_id: String,
+    /// Which machine set the pace of the prefill and of the decode (`derive_stage_balance`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_balance: Option<StageBalance>,
     /// Probability of each label when the request was a typed decision
     /// (`/v1/systemone`): `{labels, probabilities, mass}` of the last peer.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2352,6 +2298,7 @@ impl RequestTrace {
     ) -> Self {
         Self {
             trace_id: trace_id.into(),
+            stage_balance: None,
             probe: None,
             jev: None,
             profile: crate::telemetry::Profile::current(),
@@ -3094,7 +3041,58 @@ impl RequestTrace {
         self.decode_rounds = self.decode_rounds.saturating_add(1);
     }
 
+    /// Splits each machine's part of the prefill and of the decode into compute, wire and waiting (see
+    /// `PhaseTrace::compute_ms`), and names each phase's bottleneck: the machine with the highest utilization.
+    /// Called with the request's wall time by `refresh_telemetry`, on the llama.cpp and the plugin paths alike.
+    pub fn derive_stage_balance(&mut self, wall_clock_ms: u64) {
+        let prefill_wall = self.prefill_ms;
+        let first_token = self.server_ttft_ms.unwrap_or(self.prefill_ms);
+        let decode_wall = wall_clock_ms.saturating_sub(first_token);
+        let mut balance = StageBalance::default();
+        for (decode, wall) in [(false, prefill_wall), (true, decode_wall)] {
+            if wall == 0 || self.hops.is_empty() {
+                continue;
+            }
+            let mut upstream: u64 = 0;
+            let mut best: Option<StageBottleneck> = None;
+            for hop in &mut self.hops {
+                let part = if decode { &mut hop.decode } else { &mut hop.prefill };
+                let compute = part.processing_ms;
+                let transfer = part.network_ms;
+                if compute == 0 && transfer == 0 && part.calls == 0 && part.reported_spans == 0 {
+                    continue;
+                }
+                let waiting = wall.saturating_sub(compute.saturating_add(transfer));
+                let wait_input = waiting.min(upstream);
+                part.compute_ms = Some(compute);
+                part.transfer_ms = Some(transfer);
+                part.wait_input_ms = Some(wait_input);
+                part.wait_output_ms = Some(waiting - wait_input);
+                part.wall_ms = Some(wall);
+                let utilization = (compute as f64 / wall as f64).min(1.0);
+                part.utilization = Some((utilization * 1000.0).round() / 1000.0);
+                if best.as_ref().map_or(true, |b| utilization > b.utilization) {
+                    best = Some(StageBottleneck {
+                        node_id: hop.node_id.clone(),
+                        start_layer: hop.start_layer,
+                        end_layer: hop.end_layer,
+                        utilization: (utilization * 1000.0).round() / 1000.0,
+                        compute_ms: compute,
+                    });
+                }
+                upstream = upstream.saturating_add(compute.saturating_add(transfer));
+            }
+            if decode {
+                balance.decode = best;
+            } else {
+                balance.prefill = best;
+            }
+        }
+        self.stage_balance = (balance.prefill.is_some() || balance.decode.is_some()).then_some(balance);
+    }
+
     pub fn refresh_telemetry(&mut self, wall_clock_ms: u64) {
+        self.derive_stage_balance(wall_clock_ms);
         let expected_peers = self.hops.len() as u32;
         let decode_tracking = self.expected_decode_spans > 0
             || self.hops.iter().any(|hop| hop.decode.reported_spans > 0);

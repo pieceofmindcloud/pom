@@ -142,6 +142,8 @@ pub fn classify(header: &SafetensorsHeader) -> (ImageCategory, Option<String>, O
             "x_embedder.",
             "img_in.",
             "noise_refiner.",
+            "final_layer.",
+            "video_patch_proj.",
         ]
         .iter()
         .any(|p| n.starts_with(p))
@@ -163,7 +165,15 @@ pub fn classify(header: &SafetensorsHeader) -> (ImageCategory, Option<String>, O
         || contains("controlnet_cond_embedding")
     {
         ImageCategory::Controlnet
-    } else if starts("decoder.conv_in.") || (starts("decoder.up") && starts("encoder.down")) {
+    } else if starts("decoder.conv_in.")
+        || (starts("decoder.up") && starts("encoder.down"))
+        // Video and audio autoencoders (MiniMax H3, Wan...): an encoder and a
+        // decoder with the latent statistics or the quantisation convs that
+        // only an autoencoder has; checked before T5's `encoder.block.`.
+        || (starts("encoder.")
+            && starts("decoder.")
+            && (starts("latents_mean") || starts("quant_conv.") || starts("post_quant_conv.")))
+    {
         ImageCategory::Vae
     } else if any(&denoiser_root) {
         ImageCategory::Diffusion
@@ -445,6 +455,9 @@ mod tests {
             ("controlnet", ImageCategory::Controlnet),
             ("clip_vision", ImageCategory::ClipVision),
             ("esrgan_upscale", ImageCategory::Upscale),
+            ("minimax_h3_diffusion", ImageCategory::Diffusion),
+            ("minimax_h3_video_vae", ImageCategory::Vae),
+            ("minimax_h3_audio_vae", ImageCategory::Vae),
         ] {
             let path =
                 write_test_safetensors(dir.path(), &format!("{name}.safetensors"), &fixture(name));

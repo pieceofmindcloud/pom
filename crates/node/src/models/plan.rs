@@ -263,6 +263,37 @@ fn usable_memory_bytes(budget_mb: f64, reserve: f64) -> Result<u64> {
     Ok(bytes.floor() as u64)
 }
 
+/// Tensors the llama.cpp fork creates with `TENSOR_READ_LAZY`: input-layer
+/// lookup tables read row by row (`get_rows`) from the memory-mapped file,
+/// with only the rows of the tokens in use prefetched. `per_layer_token_embd`
+/// is the per-layer embedding (PLE) of `qwen4exp` and `gemma4` and the Engram
+/// table of `deepseek41`, which alone is about 110 GB of a 170 GB file. They
+/// weigh on disk, never whole in VRAM or RAM, so a memory projection leaves
+/// them out; a slice file still carries them (`GgufLayout::slice_bytes`).
+pub(crate) const LAZY_LOOKUP_TABLES: &[&str] = &["per_layer_token_embd.weight"];
+
+/// Bytes of the model's lazy lookup tables (`LAZY_LOOKUP_TABLES`).
+pub(crate) fn lazy_table_bytes(tensors: &[crate::multipart::GgufTensor]) -> u64 {
+    tensors
+        .iter()
+        .filter(|tensor| LAZY_LOOKUP_TABLES.contains(&tensor.name.as_str()))
+        .map(|tensor| tensor.byte_size)
+        .sum()
+}
+
+/// The part of a range's weight cost that must be resident in memory.
+/// `weights` is `range_cost`'s serialized cost of the range and `layers` the
+/// bytes of its `blk.*` tensors; the lazy table rides in the rest only when
+/// the range carries it (a range without a PLE layer does not), and then it
+/// stays on disk.
+pub(crate) fn resident_weight_bytes(weights: u64, layers: u64, lazy_table: u64) -> u64 {
+    if lazy_table > 0 && weights.saturating_sub(layers) >= lazy_table {
+        weights - lazy_table
+    } else {
+        weights
+    }
+}
+
 /// `pub(crate)`: also used by the capacity preview of the deployment
 /// planner (`crate::deploy::capacity_preview_endpoint`), which charges the
 /// weight and KV of a range exactly as the slicing planner does here.
@@ -451,6 +482,80 @@ pub async fn extract_shard(
         })
     })
     .await
+}
+
+/// Suffix of the opt-in that makes a node serve a range of a whole model it
+/// holds through a header-only virtual slice instead of cutting a real one
+/// (`splitter::write_virtual_slice`). Off until the pinned engine is built
+/// from a fork commit with external tensor data: an engine without it fails to
+/// load the header.
+pub const VIRTUAL_SLICES_ENV: &str = "VIRTUAL_SLICES";
+
+pub fn virtual_slices_enabled() -> bool {
+    crate::brand::env(VIRTUAL_SLICES_ENV).is_ok_and(|value| value == "1")
+}
+
+/// Where a node keeps its virtual slice headers: outside every model folder,
+/// so the catalog never lists them as models.
+pub fn virtual_slice_dir() -> PathBuf {
+    crate::config::project_root().join("virtual-slices")
+}
+
+/// Why a range of `source` cannot be served through a virtual slice, or
+/// `None` when it can. llama.cpp loads every tensor itself and reads a virtual
+/// slice spread over any number of source files, so only an unreadable header
+/// refuses it.
+pub fn virtual_slice_refusal(source: &Path) -> Option<String> {
+    match crate::gguf::read_info(source) {
+        Ok(_) => None,
+        Err(error) => Some(format!("the GGUF header could not be read: {error}")),
+    }
+}
+
+/// Writes this node's range of `source_model` as a virtual slice and returns
+/// its path. Rewritten on every apply: it takes milliseconds and stays true to
+/// the source file as it is now. The name carries the source's canonical path,
+/// size and modification time, so two models never share a header.
+pub async fn write_virtual_shard(
+    source_model: &str,
+    start_layer: u32,
+    end_layer: u32,
+    is_first: bool,
+    is_last: bool,
+) -> Result<String> {
+    let src = std::fs::canonicalize(source_model)
+        .with_context(|| format!("resolve {source_model}"))?;
+    let meta = std::fs::metadata(&src).with_context(|| format!("stat {}", src.display()))?;
+    let identity = {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(src.to_string_lossy().as_bytes());
+        hash.update(meta.len().to_le_bytes());
+        if let Ok(modified) = meta.modified() {
+            if let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH) {
+                hash.update(since.as_nanos().to_le_bytes());
+            }
+        }
+        hex::encode(&hash.finalize()[..6])
+    };
+    let stem = src
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "model".into());
+    let tail = if is_last { "-last" } else { "" };
+    let dir = virtual_slice_dir();
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let dst = dir.join(format!("{stem}-{identity}-L{start_layer}-{end_layer}{tail}.gguf"));
+    let tmp = dst.with_extension("gguf.tmp");
+    let tmp_for_write = tmp.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::splitter::write_virtual_slice(&src, &tmp_for_write, start_layer, end_layer, is_first, is_last)
+    })
+    .await
+    .context("virtual slice task")??;
+    std::fs::rename(&tmp, &dst).with_context(|| format!("rename to {}", dst.display()))?;
+    info!("virtual slice ready: {}", dst.display());
+    Ok(dst.to_string_lossy().into_owned())
 }
 
 /// Extracts the tensor shard of one tensor parallelism rank (path C).
@@ -836,6 +941,52 @@ pub fn base_name_from_label(label: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tensor(name: &str, byte_size: u64) -> crate::multipart::GgufTensor {
+        crate::multipart::GgufTensor {
+            name: name.into(),
+            dims: vec![1],
+            dtype: 0,
+            part_index: 0,
+            offset: 0,
+            byte_size,
+        }
+    }
+
+    #[test]
+    fn only_the_lazy_lookup_tables_count_as_lazy() {
+        let tensors = [
+            tensor("token_embd.weight", 7),
+            tensor("blk.0.attn_q.weight", 11),
+            tensor("per_layer_token_embd.weight", 110),
+        ];
+        assert_eq!(lazy_table_bytes(&tensors), 110);
+        assert_eq!(lazy_table_bytes(&tensors[..2]), 0);
+    }
+
+    #[test]
+    fn a_range_that_carries_the_lazy_table_leaves_it_on_disk() {
+        // 40 GB of layers, 2 GB of embedding/head and the 110 GB table in the
+        // range's serialized cost: only the 42 GB must be resident.
+        assert_eq!(resident_weight_bytes(152, 40, 110), 42);
+        // A range without the table (its cost has no room for it) is untouched.
+        assert_eq!(resident_weight_bytes(42, 40, 110), 42);
+        // No table in the model.
+        assert_eq!(resident_weight_bytes(42, 40, 0), 42);
+    }
+
+    #[test]
+    fn a_dense_model_can_be_served_through_a_virtual_slice_and_an_unreadable_one_cannot() {
+        let dir = std::env::temp_dir().join(format!("pom-virtual-refusal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dense = dir.join("dense.gguf");
+        std::fs::write(&dense, crate::splitter::test_gguf_bytes(4)).unwrap();
+        assert_eq!(virtual_slice_refusal(&dense), None);
+        let broken = dir.join("broken.gguf");
+        std::fs::write(&broken, b"not a gguf").unwrap();
+        assert!(virtual_slice_refusal(&broken).is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     fn plan_split(
         model_path: &str,

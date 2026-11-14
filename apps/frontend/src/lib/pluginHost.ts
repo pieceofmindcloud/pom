@@ -19,6 +19,9 @@
  * Version 7 adds `plugin(code).loader`, POM's official loader and installer over
  * the plugin's screen (`loader.*` commands and the `loader.retry` event; see
  * `lib/pluginLoader.ts`).
+ * Version 8 adds `api.post`, a same-origin POST to the node's API with the
+ * panel's own credentials, so a plugin screen can act on the node routes it
+ * draws (the Hugging Face plugin starts downloads and saves the token).
  */
 import * as React from "react";
 import * as ReactDOM from "react-dom";
@@ -45,7 +48,7 @@ import {
 } from "./pluginEvents";
 import { signalPluginReady } from "./pluginReady";
 
-export const PLUGIN_HOST_VERSION = 7;
+export const PLUGIN_HOST_VERSION = 8;
 
 /**
  * Compatibility for plugins built against host version 2, which rendered the
@@ -67,7 +70,7 @@ export function buildPluginHost() {
     format,
     components: { Modal, ExecutionTelemetry: ExecutionTelemetryCompat, TelemetryLine, Markdown },
     hooks: { useI18n, useTheme, useCluster },
-    api: { get: api.get },
+    api: { get: api.get, post: api.post },
     storageKey,
     /** Events and commands contract between POM and plugins. */
     protocol: {

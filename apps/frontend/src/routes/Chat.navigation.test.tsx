@@ -192,7 +192,8 @@ describe("navigation after the chat", () => {
     // No model on this machine: the next step is downloading one.
     const steps = screen.getByTestId("no-model-steps");
     expect(steps.querySelector('[data-step="download"]')?.getAttribute("data-state")).toBe("current");
-    expect(steps.querySelector('[data-step="download"] a')?.getAttribute("href")).toContain("/models/remote");
+    // Without the Hugging Face plugin there is no search screen: the step leads to Plugins.
+    expect(steps.querySelector('[data-step="download"] a')?.getAttribute("href")).toContain("/plugins");
     expect(screen.getByRole("link", { name: "Como o POM funciona" })).toBeTruthy();
     // No conversation yet: no way to a history that does not exist.
     expect(screen.queryByRole("button", { name: "Ver conversas anteriores" })).toBeNull();

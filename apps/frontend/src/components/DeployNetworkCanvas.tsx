@@ -1,17 +1,16 @@
 import clsx from "clsx";
 import { ArrowRight, LayoutGrid, Minus, Plus, RotateCcw, ServerCog, Sparkles, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { layerRange, megabytes } from "../lib/format";
 import {
-  CARD_HEIGHT,
   CARD_WIDTH,
+  DEPLOY_CARD_SIZE,
   clearPositions,
   deployLayout,
   deploymentLayoutKey,
   fallbackPosition,
   gatewayRouteGeometry,
   pipelineGatewayPosition,
-  mergePositions,
   readPositions,
   routeGeometry,
   writePositions,
@@ -21,7 +20,7 @@ import type { DeployMachine, DeployPlan, DeploySelection, InferenceRole } from "
 import { edgeStyle, type EdgeState } from "./ModelNetworkCanvas";
 import { PipelineGatewayNode, type PipelineCycleCost } from "./PipelineGatewayNode";
 import { RouteRttLabel } from "./RouteRttLabel";
-import { AlertTooltip, Badge, Button, Dot, Progress } from "./ui";
+import { AlertTooltip, Badge, Button, Progress } from "./ui";
 import { useI18n } from "../i18n/provider";
 
 type DeployNetworkCanvasProps = {
@@ -38,7 +37,16 @@ type DeployNetworkCanvasProps = {
   primaryNodeId?: string;
   onTogglePrimary?: (nodeId: string) => void;
   pipelineCost?: PipelineCycleCost;
+  /** Extra content at the foot of a machine's card (the model it lacks, its download). */
+  cardFooter?: (nodeId: string) => ReactNode;
+  /** The machines marked for Split the layers; Shift+click on a card toggles one. */
+  markedNodeIds?: string[];
+  onToggleMarked?: (nodeId: string) => void;
 };
+
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 1.6;
+const clampZoom = (zoom: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
 
 function machineRows(rows: DeploySelection[], nodeId: string) {
   return rows.filter((row) => row.target_node_id === nodeId).sort((a, b) => a.start_layer - b.start_layer);
@@ -98,9 +106,13 @@ function stagesOf(plan: DeployPlan, rows: DeploySelection[] = []): Stage[] {
 function machineBounds(rows: DeploySelection[], machine: DeployMachine) {
   const taking = machineRows(rows, machine.node_id);
   const ranges = taking.length > 0 ? taking : machine.holds.map(([start_layer, end_layer]) => ({ start_layer, end_layer }));
+  // the machine's own first and last layer (0 only when it has no range at all):
+  // `Math.min(..., 0)` put every machine at layer 0, so the arrangement stacked
+  // the whole pipeline in the heads' column
+  if (ranges.length === 0) return { start_layer: 0, end_layer: 0 };
   return {
-    start_layer: Math.min(...ranges.map((range) => range.start_layer), 0),
-    end_layer: Math.max(...ranges.map((range) => range.end_layer), 0),
+    start_layer: Math.min(...ranges.map((range) => range.start_layer)),
+    end_layer: Math.max(...ranges.map((range) => range.end_layer)),
   };
 }
 
@@ -192,6 +204,9 @@ function NodeCard({
   onPointerUp,
   primaryNodeId,
   onTogglePrimary,
+  footer,
+  marked,
+  onToggleMarked,
 }: {
   machine: DeployMachine;
   rows: DeploySelection[];
@@ -206,6 +221,9 @@ function NodeCard({
   onPointerUp: (event: PointerEvent<HTMLElement>) => void;
   primaryNodeId?: string;
   onTogglePrimary?: () => void;
+  footer?: ReactNode;
+  marked?: boolean;
+  onToggleMarked?: () => void;
 }) {
   const taking = machineRows(rows, machine.node_id);
   const active = taking.length > 0;
@@ -214,7 +232,10 @@ function NodeCard({
     <article
       role="button"
       tabIndex={0}
-      onClick={onInspect}
+      onClick={(event) => {
+        if (event.shiftKey && onToggleMarked) onToggleMarked();
+        else onInspect();
+      }}
       onDoubleClick={(event) => {
         event.stopPropagation();
         onAddPeer();
@@ -230,9 +251,10 @@ function NodeCard({
         "absolute select-none rounded-xl border bg-ink/95 p-3.5 shadow-panel backdrop-blur transition-[box-shadow,border-color]",
         dragging ? "cursor-grabbing border-iris shadow-lift" : "cursor-grab border-line-strong hover:border-iris/55 hover:shadow-lift",
         selected && "border-aqua ring-2 ring-aqua/30 shadow-[0_0_24px_rgba(65,224,206,0.16)]",
+        marked && !selected && "border-iris/70",
         !active && "opacity-75",
       )}
-      style={{ left: position.left, top: position.top, width: CARD_WIDTH, minHeight: CARD_HEIGHT, touchAction: "none" }}
+      style={{ left: position.left, top: position.top, width: CARD_WIDTH, minHeight: DEPLOY_CARD_SIZE.height, touchAction: "none" }}
     >
       <div className="absolute inset-x-3.5 top-0 h-px bg-iris/70" />
       <div className="flex items-start justify-between gap-3">
@@ -241,15 +263,19 @@ function NodeCard({
             <ServerCog className="h-4 w-4" />
           </span>
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-fg">{machine.label}</h3>
-            <p className="flex min-w-0 items-center gap-1 truncate text-[10px] text-faint">
-              <span className="truncate">{active ? t("deployStudio.inDeployment") : t("deployStudio.availableForPlan")}</span>
-              {machine.rtt_ms != null && <><span aria-hidden="true">·</span><span className="shrink-0">RTT {machine.rtt_ms.toFixed(1)} ms</span></>}
-            </p>
+            <h3 className="truncate text-sm font-semibold text-fg">
+              {machine.label}
+              {marked && <span className="sr-only"> ({t("deployStudio.marked")})</span>}
+            </h3>
+            {!active && <p className="truncate text-[10px] text-faint">{t("deployStudio.dropToInclude")}</p>}
           </div>
         </div>
-        <div className="flex items-center gap-1">
-          <Dot tone={active ? "aqua" : "neutral"} pulse={active} />
+        <div className="flex shrink-0 items-center gap-1">
+          {taking.map((row) => (
+            <Badge key={`${row.start_layer}-${row.end_layer}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">
+              {layerRange(row.start_layer, row.end_layer)}
+            </Badge>
+          ))}
           {onTogglePrimary && (
             <button
               type="button"
@@ -288,13 +314,6 @@ function NodeCard({
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
-      </div>
-      <div className="mt-3 flex min-h-7 flex-wrap items-center gap-1 rounded-lg border border-line bg-raised/90 px-2 py-1.5">
-        {active ? taking.map((row) => (
-          <Badge key={`${row.start_layer}-${row.end_layer}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">
-            {layerRange(row.start_layer, row.end_layer)}
-          </Badge>
-        )) : <span className="font-mono text-[10px] text-faint">{t("deployStudio.dropToInclude")}</span>}
       </div>
       <div className="mt-3 space-y-2">
         {machine.capacity && machine.capacity.gpus.length > 0 ? (
@@ -371,13 +390,8 @@ function NodeCard({
           detail={machine.ram_used_pct == null ? "-" : `${machine.ram_used_pct.toFixed(0)}% · ${megabytes(machine.ram_free_mb)}`}
           tone={machine.ram_used_pct != null && machine.ram_used_pct >= 88 ? "amber" : "iris"}
         />
-        <CapacityBar
-          label={t("canvas.load")}
-          value={machine.load == null ? null : Math.min(100, (machine.load / 8) * 100)}
-          detail={machine.load == null ? t("dashboard.inFlightUnavailable") : t("canvas.inFlight", { count: machine.load })}
-          tone={machine.load != null && machine.load >= 7 ? "amber" : "aqua"}
-        />
       </div>
+      {footer}
     </article>
   );
 }
@@ -396,11 +410,48 @@ export function DeployNetworkCanvas({
   primaryNodeId,
   onTogglePrimary,
   pipelineCost,
+  cardFooter,
+  markedNodeIds,
+  onToggleMarked,
 }: DeployNetworkCanvasProps) {
   const { t } = useI18n();
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
+  // the zoom the wheel handler reads between renders
+  const zoomRef = useRef(1);
+  zoomRef.current = zoom;
+  // dragging the dotted background scrolls the map, like its scrollbars
+  const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const [panning, setPanning] = useState(false);
+
+  // The wheel and the trackpad pinch (a wheel event with ctrlKey) zoom around
+  // the pointer. A native listener, not React's: React's wheel handler is
+  // passive and cannot keep the page from scrolling.
+  useEffect(() => {
+    const element = canvas.current;
+    if (!element) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const bounds = element.getBoundingClientRect();
+      const pointerX = event.clientX - bounds.left;
+      const pointerY = event.clientY - bounds.top;
+      const previous = zoomRef.current;
+      // a pinch sends small deltas, a mouse wheel larger ones
+      const next = clampZoom(previous * Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.0015)));
+      if (next === previous) return;
+      const contentX = (element.scrollLeft + pointerX) / previous;
+      const contentY = (element.scrollTop + pointerY) / previous;
+      zoomRef.current = next;
+      setZoom(next);
+      requestAnimationFrame(() => {
+        element.scrollLeft = contentX * next - pointerX;
+        element.scrollTop = contentY * next - pointerY;
+      });
+    };
+    element.addEventListener("wheel", onWheel, { passive: false });
+    return () => element.removeEventListener("wheel", onWheel);
+  }, []);
   const [positions, setPositions] = useState<Record<string, CanvasPosition>>({});
   const [dragging, setDragging] = useState<string | null>(null);
 
@@ -432,28 +483,30 @@ export function DeployNetworkCanvas({
       machines.filter((machine) => !assigned.includes(machine)).map((machine) => machine.node_id),
     );
   }, [machines, plan, rows]);
+  // `positions` holds only the cards the operator dragged, for this topology
+  // (`layoutKey`: the machines and their ranges). Every other card follows the
+  // arrangement, which is recomputed when a machine or a range changes - the
+  // old merge kept the spot a card had before it got a range, so the map stayed
+  // tangled until Reset.
   const positionOf = (nodeId: string, index: number) => positions[nodeId] ?? arrangement[nodeId] ?? fallbackPosition(index);
 
+  // A string key: `nodeIds` is a new array on every render of the screen.
+  const nodeKey = nodeIds.join("|");
   useEffect(() => {
-    setPositions((current) => {
-      const next = mergePositions(current, readPositions(layoutKey), arrangement, nodeIds);
-      writePositions(layoutKey, next);
-      return next;
-    });
-  }, [arrangement, layoutKey, nodeIds]);
+    const present = new Set(nodeKey.split("|"));
+    const dragged = readPositions(layoutKey);
+    setPositions(Object.fromEntries(Object.entries(dragged).filter(([nodeId]) => present.has(nodeId))));
+  }, [layoutKey, nodeKey]);
 
   const updatePosition = (nodeId: string, next: CanvasPosition) => setPositions((current) => {
     const updated = { ...current, [nodeId]: next };
     writePositions(layoutKey, updated);
     return updated;
   });
+  // Organize puts every card back on the arrangement, dragged ones included.
   const organize = () => {
-    setPositions((current) => {
-      const manuallyMoved = Object.fromEntries(Object.entries(current).filter(([id]) => id in arrangement));
-      const next = { ...arrangement, ...manuallyMoved };
-      writePositions(layoutKey, next);
-      return next;
-    });
+    clearPositions(layoutKey);
+    setPositions({});
     setZoom(1);
   };
   const reset = () => { clearPositions(layoutKey); setPositions({}); setZoom(1); };
@@ -471,7 +524,7 @@ export function DeployNetworkCanvas({
     if (dragging !== nodeId || !canvas.current) return;
     const bounds = canvas.current.getBoundingClientRect();
     const maxLeft = Math.max(16, bounds.width / zoom - CARD_WIDTH - 16);
-    const maxTop = Math.max(58, bounds.height / zoom - CARD_HEIGHT - 16);
+    const maxTop = Math.max(58, bounds.height / zoom - DEPLOY_CARD_SIZE.height - 16);
     updatePosition(nodeId, {
       left: Math.max(16, Math.min(maxLeft, (event.clientX - bounds.left) / zoom - dragOffset.current.x)),
       top: Math.max(58, Math.min(maxTop, (event.clientY - bounds.top) / zoom - dragOffset.current.y)),
@@ -479,13 +532,27 @@ export function DeployNetworkCanvas({
   }
 
   const stages = stagesOf(plan, rows);
+  // The hops, as the Flow draws them: from a range to every range that starts on
+  // the next layer. The heads (layer 0) are where the pipeline leaves from, never
+  // a hop from one head to another; a prefill machine also hands its state to
+  // the machines that decode the same layers.
+  const assignedRows = rows.filter((row) => row.target_node_id && nodeIds.includes(row.target_node_id));
   const bridgeIds = new Set<string>();
-  for (let index = 1; index < stages.length; index += 1) {
-    for (const from of stages[index - 1].nodeIds) {
-      for (const to of stages[index].nodeIds) bridgeIds.add(edgeId(from, to));
+  for (const from of assignedRows) {
+    for (const to of assignedRows) {
+      if (from.target_node_id !== to.target_node_id && to.start_layer === from.end_layer + 1) {
+        bridgeIds.add(edgeId(from.target_node_id, to.target_node_id));
+      }
     }
   }
-  // The backend already limits the options to the next stage. This guard in the canvas
+  for (let index = 1; index < stages.length; index += 1) {
+    const previous = stages[index - 1];
+    const stage = stages[index];
+    if (previous.prefill && !stage.prefill && previous.start_layer === stage.start_layer && previous.end_layer === stage.end_layer) {
+      for (const from of previous.nodeIds) for (const to of stage.nodeIds) if (from !== to) bridgeIds.add(edgeId(from, to));
+    }
+  }
+  // The backend already limits the options to the hops. This guard in the canvas
   // keeps the visual rule even while an old peer still answers with the
   // previous broad list: no jump over a layer appears on the map.
   const visibleRouteOptions = (plan.route_options ?? []).filter(
@@ -494,10 +561,9 @@ export function DeployNetworkCanvas({
   const selectedEdges = new Set(visibleRouteOptions.filter((route) => route.selected).map((route) => edgeId(route.from_node_id, route.to_node_id)));
   const candidateEdges = new Set(visibleRouteOptions.filter((route) => !route.selected).map((route) => edgeId(route.from_node_id, route.to_node_id)));
   const edges = visibleRouteOptions.filter((route) => nodeIds.includes(route.from_node_id) && nodeIds.includes(route.to_node_id));
-  const principalEdges = stages.slice(1).flatMap((stage, stageIndex) => {
-    const previous = stages[stageIndex];
-    return previous.nodeIds.flatMap((from) => stage.nodeIds.map((to) => ({ from, to })));
-  }).filter((edge) => edge.from !== edge.to && !edges.some((route) => route.from_node_id === edge.from && route.to_node_id === edge.to));
+  const principalEdges = [...bridgeIds]
+    .map((id) => { const [from, to] = id.split(":"); return { from, to }; })
+    .filter((edge) => !edges.some((route) => route.from_node_id === edge.from && route.to_node_id === edge.to));
   const allEdges = [
     ...edges,
     ...principalEdges.map((edge) => ({
@@ -510,16 +576,31 @@ export function DeployNetworkCanvas({
       note: "pipeline",
     })),
   ];
-  const terminalNodeIds = stages.at(-1)?.nodeIds.filter((nodeId) => nodeIds.includes(nodeId)) ?? [];
+  // The answer leaves from the machines that run the last layer (a prefill machine never answers).
+  const lastLayer = assignedRows.length > 0 ? Math.max(...assignedRows.map((row) => row.end_layer)) : null;
+  const tailRows = assignedRows.filter((row) => row.end_layer === lastLayer);
+  const answeringRows = tailRows.some((row) => roleOf(rows, plan, row.target_node_id) !== "prefill")
+    ? tailRows.filter((row) => roleOf(rows, plan, row.target_node_id) !== "prefill")
+    : tailRows;
+  const terminalNodeIds = [...new Set(answeringRows.map((row) => row.target_node_id))];
+  // The legend reads like the columns: the heads (layer 0) together, then each
+  // later starting layer, the machines that start there joined by "|".
+  const legendSteps = [...new Set(assignedRows.map((row) => row.start_layer))]
+    .sort((a, b) => a - b)
+    .map((start) => ({
+      start,
+      nodeIds: [...new Set(assignedRows.filter((row) => row.start_layer === start).map((row) => row.target_node_id))],
+    }));
   const gatewayPosition = pipelineGatewayPosition(
     terminalNodeIds.map((nodeId) => positionOf(nodeId, nodeIds.indexOf(nodeId))),
+    terminalNodeIds.map(() => DEPLOY_CARD_SIZE),
   );
 
   return (
+    // The toolbar, the legend and the route chips sit on the section, outside
+    // the area that scrolls, so they stay put when the map scrolls.
     <section
-      ref={canvas}
-      className="relative h-full min-h-0 w-full overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]"
-      style={{ backgroundSize: "18px 18px" }}
+      className="relative h-full min-h-0 w-full overflow-hidden"
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
         event.preventDefault();
@@ -527,19 +608,36 @@ export function DeployNetworkCanvas({
         if (nodeId) onDropPeer(nodeId);
       }}
     >
-      <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
-        <div className="flex items-center gap-2 px-2">
-          <span className="eyebrow">{t("deployStudio.mapTitle")}</span>
-          <span className="font-mono text-[10px] text-muted">{t("deployStudio.mapSummary", { nodes: machines.length, layers: plan.total_layers ?? "-" })}</span>
-        </div>
-        <span className="h-5 w-px bg-line" />
-        <Button size="sm" aria-label={t("canvas.zoomOut")} title={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(0.65, value - 0.1))}><Minus className="h-4 w-4" /></Button>
-        <Button size="sm" aria-label={t("canvas.zoomIn")} title={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + 0.1))}><Plus className="h-4 w-4" /></Button>
-        <Button size="sm" aria-label={t("deployStudio.fitCanvas")} title={t("deployStudio.fitCanvas")} onClick={fit}>Fit</Button>
-        <Button size="sm" aria-label={t("deployStudio.organizeMachines")} title={t("deployStudio.organizeMachines")} onClick={organize}><LayoutGrid className="h-4 w-4" /></Button>
-        <Button size="sm" aria-label={t("deployStudio.resetLayout")} title={t("deployStudio.resetLayout")} onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
-      </div>
-
+      <div
+        ref={canvas}
+        data-testid="deploy-map-scroll"
+        className={clsx(
+          "absolute inset-0 overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]",
+          panning ? "cursor-grabbing select-none" : "cursor-grab",
+        )}
+        style={{ backgroundSize: "18px 18px" }}
+        onPointerDown={(event) => {
+          // a card, a button or a field keeps its own gesture
+          if (event.button !== 0 || (event.target as Element).closest("article, button, a, input, select, textarea")) return;
+          const element = event.currentTarget;
+          pan.current = { x: event.clientX, y: event.clientY, left: element.scrollLeft, top: element.scrollTop };
+          element.setPointerCapture?.(event.pointerId);
+          setPanning(true);
+        }}
+        onPointerMove={(event) => {
+          const start = pan.current;
+          if (!start) return;
+          event.currentTarget.scrollLeft = start.left - (event.clientX - start.x);
+          event.currentTarget.scrollTop = start.top - (event.clientY - start.y);
+        }}
+        onPointerUp={(event) => {
+          if (!pan.current) return;
+          pan.current = null;
+          setPanning(false);
+          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={() => { pan.current = null; setPanning(false); }}
+      >
       {machines.length === 0 ? (
         <div className="flex h-full items-center justify-center text-sm text-muted">{t("deployStudio.dropMachine")}</div>
       ) : (
@@ -552,14 +650,14 @@ export function DeployNetworkCanvas({
               if (fromIndex < 0 || toIndex < 0) return null;
               const from = positionOf(route.from_node_id, fromIndex);
               const to = positionOf(route.to_node_id, toIndex);
-              const geometry = routeGeometry(from, to);
+              const geometry = routeGeometry(from, to, DEPLOY_CARD_SIZE, DEPLOY_CARD_SIZE);
               const id = edgeId(route.from_node_id, route.to_node_id);
               const state: EdgeState = selectedEdges.has(id) || (!selectedEdges.has(id) && route.selected) ? "principal" : candidateEdges.has(id) ? "paralela" : "inativa";
               const style = edgeStyle(state);
               return <path key={`${id}-${index}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd?.replace("route-arrow", "deploy-route-arrow")} />;
             })}
             {gatewayPosition && terminalNodeIds.map((nodeId) => {
-              const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition);
+              const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition, DEPLOY_CARD_SIZE);
               return <path key={`gateway-${nodeId}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className="fill-none stroke-aqua" strokeWidth="3" markerEnd="url(#deploy-route-arrow)" />;
             })}
           </svg>
@@ -569,24 +667,48 @@ export function DeployNetworkCanvas({
             if (fromIndex < 0 || toIndex < 0) return null;
             const from = positionOf(route.from_node_id, fromIndex);
             const to = positionOf(route.to_node_id, toIndex);
-            const geometry = routeGeometry(from, to);
+            const geometry = routeGeometry(from, to, DEPLOY_CARD_SIZE, DEPLOY_CARD_SIZE);
             return <RouteRttLabel key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} rttMs={route.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
           })}
           {gatewayPosition && terminalNodeIds.map((nodeId) => {
-            const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition);
+            const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition, DEPLOY_CARD_SIZE);
             const route = plan.route_options?.find((option) => option.from_node_id === nodeId && option.to_node_id === "gateway");
             return <RouteRttLabel key={`rtt-gateway-${nodeId}`} rttMs={route?.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
           })}
           {machines.map((machine, index) => (
-            <NodeCard key={machine.node_id} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
+            <NodeCard key={machine.node_id} marked={markedNodeIds?.includes(machine.node_id)} onToggleMarked={onToggleMarked ? () => onToggleMarked(machine.node_id) : undefined} footer={cardFooter?.(machine.node_id)} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
           ))}
           {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} />}
-          <div className="absolute bottom-3 left-4 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
-            <Sparkles className="h-3 w-3 text-aqua" /><span>prefill</span>
-            {nodeIds.map((nodeId, index) => <span key={nodeId} className="flex items-center gap-1"><ArrowRight className="h-3 w-3 text-faint" /><span className={index === 0 ? "text-iris" : "text-aqua"}>{labelOf(nodeId)}</span></span>)}
-            <ArrowRight className="h-3 w-3 text-faint" /><span>resposta</span>
-          </div>
         </div>
+      )}
+      </div>
+
+      <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
+        <div className="flex items-center gap-2 px-2">
+          <span className="eyebrow">{t("deployStudio.mapTitle")}</span>
+          <span className="font-mono text-[10px] text-muted">{t("deployStudio.mapSummary", { nodes: machines.length, layers: plan.total_layers ?? "-" })}</span>
+        </div>
+        <span className="h-5 w-px bg-line" />
+        <Button size="sm" aria-label={t("canvas.zoomOut")} title={t("canvas.zoomOut")} onClick={() => setZoom((value) => clampZoom(value - 0.1))}><Minus className="h-4 w-4" /></Button>
+        <Button size="sm" aria-label={t("canvas.zoomIn")} title={t("canvas.zoomIn")} onClick={() => setZoom((value) => clampZoom(value + 0.1))}><Plus className="h-4 w-4" /></Button>
+        <Button size="sm" aria-label={t("deployStudio.fitCanvas")} title={t("deployStudio.fitCanvas")} onClick={fit}>Fit</Button>
+        <Button size="sm" aria-label={t("deployStudio.organizeMachines")} title={t("deployStudio.organizeMachines")} onClick={organize}><LayoutGrid className="h-4 w-4" /></Button>
+        <Button size="sm" aria-label={t("deployStudio.resetLayout")} title={t("deployStudio.resetLayout")} onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
+      </div>
+
+      {machines.length > 0 && (
+          <div className="absolute bottom-3 left-4 z-20 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
+            <Sparkles className="h-3 w-3 text-aqua" /><span>prefill</span>
+            {legendSteps.map((step) => (
+              <span key={step.start} className="flex items-center gap-1">
+                <ArrowRight className="h-3 w-3 text-faint" />
+                <span className={step.start === 0 ? "text-iris" : "text-aqua"}>
+                  {step.nodeIds.map(labelOf).join(" | ")}
+                </span>
+              </span>
+            ))}
+            <ArrowRight className="h-3 w-3 text-faint" /><span>{t("deployStudio.legendAnswer")}</span>
+          </div>
       )}
       {visibleRouteOptions.length > 0 && <div className="absolute bottom-3 right-4 z-20 flex max-w-[48%] gap-1 overflow-x-auto">{visibleRouteOptions.slice(0, 6).map((route) => <span key={`${route.from_node_id}-${route.to_node_id}`} className={clsx("shrink-0 border px-1.5 py-0.5 font-mono text-[10px]", route.selected ? "border-aqua/30 bg-aqua/10 text-aqua" : "border-line text-faint")}>{labelOf(route.from_node_id)} → {labelOf(route.to_node_id)} · {route.rtt_ms == null ? "RTT -" : `${route.rtt_ms.toFixed(1)} ms`}</span>)}</div>}
     </section>

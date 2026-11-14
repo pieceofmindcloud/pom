@@ -87,7 +87,7 @@ export interface SystemLoad {
 export type ServerState = "disabled" | "starting" | "ready" | "idle" | "failed" | "thermal";
 
 /** Engine the backend states it ran, with no inference by the interface. */
-export type ExecutionEngine = "llama.cpp" | "moe" | "plugin" | "unknown";
+export type ExecutionEngine = "llama.cpp" | "plugin" | "unknown";
 
 export interface RuntimeStatus {
   state: ServerState;
@@ -118,8 +118,6 @@ export interface NodeConfig {
   peer_count: number;
   peer_index: number;
   primary: boolean;
-  /** Persisted engine preference carried by the active deployment. */
-  inference_mode: InferenceMode;
   inference_port: number;
   n_gpu_layers: number;
   n_ctx: number;
@@ -194,6 +192,8 @@ export interface AdminAccessStatus {
    */
   auth_providers?: AuthProvider[];
   demo_mode?: boolean;
+  /** `DEMO_NO_AUTH`: the login screen goes straight here for a guest session. */
+  guest_url?: string;
 }
 
 export interface AuthProvider {
@@ -502,6 +502,8 @@ export interface NetworkSettings {
   public_stats: boolean;
   /** Opens the network Chat to visitors; off, it is the admins' and workers' only. */
   chat_visitors?: boolean;
+  /** Which relays the machines may use; absent reads as `all`. */
+  relay_policy?: RelayPolicy;
   location: NetworkLocation | null;
 }
 
@@ -787,6 +789,8 @@ export interface PluginService {
   stages?: boolean;
   /** Kind `inference` with `stages`: the architectures it runs in slices, when not all of them. */
   stage_architectures?: string[];
+  /** Architectures whose stage it also cuts from the whole model (`range` in `engine.load`). */
+  stage_ranges?: string[];
   /** Kind `inference`: the model architectures whose drafter file its engine takes from the deployment. */
   draft_architectures?: string[];
   /** Kind `inference`: the POM deployment settings that apply to its engine. */
@@ -871,12 +875,6 @@ export interface PeerRuntimeHealth {
   profile_sync_enabled?: boolean;
   /** Path selected by the GGUF; the per-request engine comes from the trace. */
   selected_path?: string;
-  /** Effective ownership of the experts on this node, separate from the selected path. */
-  moe_requested?: boolean;
-  moe_executor?: "cpu-reference" | "cuda" | "not-installed" | "not-requested" | "not-run" | "mixed";
-  moe_executor_dtypes?: number[];
-  /** Concrete reason when the MoE executor was not installed or uses the CPU. */
-  moe_executor_reason?: string | null;
   /** This node's KV cache in RAM. Absent on an old node. */
   cache_ram?: KvCacheRam;
   mtp_ready: boolean;
@@ -1139,6 +1137,8 @@ export interface DiscoveredModel {
   architecture: string | null;
   /** `<arch>.embedding_length`: the width a projector or MTP draft must match. */
   embedding_length?: number | null;
+  /** `<arch>.context_length`: the largest context the model declares; caps the deployment's `n_ctx`. */
+  context_length?: number | null;
   /** Header evidence: `mtp` is true when the GGUF carries its own `nextn` block. */
   capabilities?: { thinking?: boolean | null; mtp?: boolean | null } | null;
   /** True only when the GGUF metadata reports more than one expert. */
@@ -1354,7 +1354,8 @@ export interface ImageDeploymentVersion {
   stages: Array<{
     component: ImageStageName;
     file: ImageFileIdentity;
-    replicas: Array<{ node_id: string; hostname: string; path: string }>;
+    replicas: Array<{ node_id: string; hostname: string; path: string; lora_paths?: string[] }>;
+    loras?: ImageLoraChoice[];
   }>;
 }
 
@@ -1374,10 +1375,18 @@ export interface ImageDeployment {
   versions?: ImageDeploymentVersion[];
 }
 
+/** A LoRA applied over the diffusion model, with its strength. */
+export interface ImageLoraChoice {
+  file: ImageFileIdentity;
+  strength: number;
+}
+
 export interface ImageStageRequest {
   component: ImageStageName;
   file: ImageFileIdentity;
   node_ids: string[];
+  /** The diffusion stage only: every machine of the stage must hold each one. */
+  loras?: ImageLoraChoice[];
 }
 
 export interface ImagePlanRequest {
@@ -1392,6 +1401,7 @@ export interface ImageMachineVerdict {
   ok: boolean;
   reason?: string;
   path?: string;
+  lora_paths?: string[];
 }
 
 export interface ImageStagePlan {
@@ -1399,6 +1409,7 @@ export interface ImageStagePlan {
   file: ImageFileIdentity;
   chosen: ImageMachineVerdict[];
   alternatives: ImageMachineVerdict[];
+  loras?: ImageLoraChoice[];
 }
 
 /** `POST /api/ui/image-deploy/plan`. */
@@ -1537,6 +1548,16 @@ export interface PeerCatalog {
   /** False while this peer is reading GGUF headers in the background. */
   metadata_complete?: boolean;
   error?: string;
+  /** Where the models this peer downloaded through POM came from. Absent on an older node. */
+  hf_sources?: HfSource[];
+}
+
+/** The Hugging Face repository and file a model on disk was downloaded from. */
+export interface HfSource {
+  path: string;
+  repo_id: string;
+  revision: string | null;
+  filename: string;
 }
 
 export interface PathEntry {
@@ -1601,6 +1622,9 @@ export interface AddNodeOptionsResponse {
     available: boolean;
     deployed: boolean;
   };
+  /** When the machine holds the whole model: the layers a range of it may end at (the GGUF's valid cuts). Any range
+   *  of the whole file is served as a virtual slice. Absent on an older node. */
+  layer_cuts?: number[] | null;
 }
 
 /** A slicing or apply run. `src/backend/webui/jobs_apply.rs` - `Job`. */
@@ -2194,6 +2218,11 @@ export interface GpuCapacityProjection {
 /** A single deploy step's capacity projection. `src/backend/webui/params.rs` -
  *  `CapacityPreview`. */
 export interface CapacityPreview {
+  /** The GPU layers' weights, apart (absent from an older node). */
+  weights_bytes?: number | null;
+  /** Their KV cache at this context and sessions; `kv_in_vram` says whether it sits in VRAM or host RAM. */
+  kv_bytes?: number | null;
+  kv_in_vram?: boolean | null;
   /** `vram_projected_mb <= vram_total_mb` on every device. `true` on a
    *  machine with no discrete GPU — nothing to run out of. */
   fits: boolean;
@@ -2206,6 +2235,13 @@ export interface CapacityPreview {
   effective_n_gpu_layers?: number | null;
   effective_n_ctx?: number | null;
   gpus: GpuCapacityProjection[];
+  /** Requested GPU layers that fit in the free VRAM, when fewer than requested
+   *  (the rest run on the CPU). Absent when all fit, or on unified memory. */
+  gpu_layers_fit?: number | null;
+  /** Layers of the step that would run on the CPU from system RAM. */
+  cpu_layers?: number | null;
+  /** RAM the CPU layers' weights need. */
+  cpu_ram_bytes?: number | null;
 }
 
 /** A whole machine's projection: the sum, per GPU, of every step it would
@@ -2307,8 +2343,6 @@ export interface DeployLoadDistribution {
 export type MtpPlacement = "auto" | "vram" | "ram";
 
 export interface RuntimeParams {
-  /** Engine preference; the runtime decides from GGUF metadata in auto mode. */
-  inference_mode: InferenceMode;
   /** The plugin whose inference service runs the whole model instead of
    *  llama.cpp (`"strata"`); absent is POM's own engine. */
   inference_service?: string | null;
@@ -2416,8 +2450,6 @@ export interface DeploymentCapabilities {
   hidden_state_i4g128?: RuntimeCapability;
 }
 
-export type InferenceMode = "auto" | "dense" | "moe";
-
 /** What the operator picked, as `POST /api/ui/deploy{,/plan}` accepts it. */
 export interface DeploySelection {
   start_layer: number;
@@ -2463,6 +2495,31 @@ export interface TpLaunch {
   worker_node_ids: string[];
 }
 
+export interface WholeLayerCut {
+  end_layer: number;
+  layers: number;
+  size_bytes: number;
+  remainder_bytes: number;
+  /** KV cache of layers 0..=end_layer and of the remainder, for the
+   *  deployment's context. Absent on older nodes. */
+  kv_bytes?: number | null;
+  remainder_kv_bytes?: number | null;
+  /** Of `size_bytes` / `remainder_bytes`, what stays resident in memory (the
+   *  lazy lookup tables, a DeepSeek-V4.1 Engram table, stay on disk). Absent on
+   *  older nodes. */
+  resident_bytes?: number | null;
+  remainder_resident_bytes?: number | null;
+}
+
+export interface WholeLayerOptions {
+  source_node_id: string;
+  total_layers: number;
+  cuts: WholeLayerCut[];
+  granularity: number | null;
+  rule: string;
+  reason: string | null;
+}
+
 export interface DeployPlan {
   group: string;
   deployment_name: string;
@@ -2483,9 +2540,9 @@ export interface DeployPlan {
   mmproj_reason?: string | null;
   /** True only when the surveyed model's actual GGUF metadata is MoE. */
   is_moe?: boolean;
-  /** Whether this plan can honor the selected inference mode. */
+  /** Whether llama.cpp can run this plan's execution mode for this model. */
   inference_mode_supported?: boolean;
-  /** Why the selected inference mode cannot be honored, when applicable. */
+  /** Why it cannot (Tensor Parallelism of a MoE model), when applicable. */
   inference_mode_reason?: string | null;
   /** Conditional capabilities worked out by the backend for the current targets. */
   capabilities?: DeploymentCapabilities;
@@ -2502,6 +2559,9 @@ export interface DeployPlan {
   transfer_bytes: number;
   /** Set when the plan cannot be carried out at all, and why. */
   blocked: string | null;
+  /** Valid cuts of the whole GGUF, when the request named layer ranges of a
+   *  whole model (`whole_ranges`). Absent on older nodes. */
+  layer_options?: WholeLayerOptions | null;
   /** True while this is the node's suggestion rather than the operator's edit. */
   auto: boolean;
   /** True when the operator asked each machine's adjacent slices to be joined
@@ -2542,3 +2602,7 @@ export interface PlannedCopy {
   target_node_id: string;
   target_host: string;
 }
+
+/** The network's relay policy (`NetworkSettings.relay_policy`), decided by the principal. */
+export type RelayPolicy = "all" | "members" | "none";
+export const RELAY_POLICIES: readonly RelayPolicy[] = ["all", "members", "none"];

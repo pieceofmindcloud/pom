@@ -83,7 +83,7 @@ function mountTopbarWithRoutes() {
             <Topbar />
             <Routes>
               <Route path="/chat" element={<p>chat</p>} />
-              <Route path="/models/remote" element={<p>remotos</p>} />
+              <Route path="/deploy" element={<p>implantar</p>} />
             </Routes>
           </ProfileProvider>
         </MemoryRouter>
@@ -193,10 +193,9 @@ describe("menu mobile", () => {
     mountTopbarWithRoutes();
 
     fireEvent.click(screen.getByRole("button", { name: "Abrir menu" }));
-    fireEvent.click(screen.getByRole("button", { name: "Modelos" }));
-    fireEvent.click(screen.getByRole("link", { name: "Encontrar Modelos HF" }));
+    fireEvent.click(screen.getByRole("link", { name: "Implantar" }));
 
-    expect(screen.getByText("remotos")).toBeTruthy();
+    expect(screen.getByText("implantar")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Fechar menu" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Abrir menu" }));

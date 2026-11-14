@@ -50,15 +50,14 @@ screen. Whole-model mode is the controlled exception: when the operator asks
 for a prefix for another peer, the backend queries the real GGUF boundaries
 and materializes the ranges on the peer that owns the file.
 
-On the deploy screen, switching from slices to `whole` clears the map and does
-not pick a machine automatically. The operator adds the desired machine from
-the bottom strip; the UI keeps the one-machine rule for that mode. Changes to
-`RuntimeParams`, to the per-machine GPU/KV overrides in the inspector and to the
-operational name do not change the topology: the screen neither restarts the
-`plan` nor asks for a new capacity preview on every control. The plan key only
-considers ranges and machines; the overrides stay in the local rows and go into
-the deploy. The old projection stays hidden until `POST /api/ui/deploy`, which
-runs the full preflight with the current values before starting.
+The deploy screen offers Pipeline (this `whole` kind) and Image model only. It
+surveys the plan once per model, with `whole_ranges: []` (the machines, the
+valid cuts in `layer_options` and the defaults, no range named), and never
+re-plans on a map edit: the operator places machines and picks each one's
+ranges locally. Pressing Deploy posts the plan once with the rows on screen
+and lists every refusal (`blocked`, a step `problem`, a machine without the
+model) in a window before anything runs; then `POST /api/ui/deploy` runs the
+full preflight with the current values before starting.
 
 Three rules come from the architecture, not from taste:
 
@@ -72,10 +71,20 @@ Three rules come from the architecture, not from taste:
   serves the union. The merged step carries `parts`, one per slice. The same
   exact range on different nodes is a replica of the same stage and forms a
   valid parallel route.
-- **Partial overlap and a global gap are refusals.** Two ranges with different
-  cuts over the same layer would make the answer ambiguous; exact copies are
-  ignored in the logical coverage and stay available to the router. A valid
-  assignment must cover each required layer exactly once.
+- **Coverage is checked by path; a gap or a range on no path is a refusal.**
+  Every layer must be covered, and every chosen range must lie on some chain of
+  contiguous ranges from layer 0 to the last layer (`planning.rs`, the
+  coverage block). Two heads - the whole model on one machine, slices of it on
+  others - are two such paths and run as parallel routes. A range on no complete
+  path (one that half-overlaps another, like 0-10 beside 5-31) would run layers
+  twice: "layers L5-10 are in two chosen slices at the same time". Exact copies
+  are replicas of the same stage. Under a plugin's inference service, distinct
+  overlapping stages are refused, except in whole-model mode when one chosen
+  range covers the entire model and the other ranges form a complete route.
+  That whole-model head and the split route are independent; a partial range
+  without a complete path is still refused. Route options join consecutive
+  layer ranges, not consecutive rows in the plan (the whole head sorts between
+  the split stages).
 
 ## 1.1 Whole model: the degenerate case, not a second path
 
@@ -107,11 +116,15 @@ What actually changes:
   `model_label` to the peer - two different names for the same file are two
   models, here and in the pipeline planner.
 
-Known limit: if the target machine does not have the file yet, the copy uses
+Since phase 8 of the range deployment work, a plan in which a target lacks the
+file is refused (`machine_lacks_files`, section 4) instead of copying it; the
+machine downloads the model or gets it placed. What follows describes the copy
+path, which a current node no longer reaches (an older admin runs its own copy
+of it). Known limit: if the target machine does not have the file yet, the copy uses
 the **pull** direction, which `transfer::safe_model_path` confines to the
 sender's slice folder. A whole model almost always lives outside it (LM Studio
-library, Ollama store), so the step's `note` advises sending the file through
-the Transfers screen first.
+library, Ollama store). The step's `note` now says the machine does not have the
+model and to download it there or place the file and rescan.
 
 Planning a whole model does not wait for the full catalog. If the fast
 inventory already showed the file but the answer has no `total_layers` yet,
@@ -137,6 +150,39 @@ manifest with `sha256` before starting `transfer/pull`. If a range already
 exists on the target, it stays in the list of available layers and has no
 slider. A failure or missing GGUF read is a refusal by name, with the reason
 visible in the inspector.
+
+A range that stays on the machine that holds the whole model (the remainder
+of a `whole_slice` on its source, or any `whole_ranges` entry) is not cut by
+`slice-ranges` and copied to itself: the planner marks its step
+`from_whole_path` (the machine's own whole GGUF), no pull is planned, and the
+launch applies that machine with the whole file, the range and `skip_split:
+false`. `run_apply` then cuts the range locally, or writes a virtual slice
+with `POM_VIRTUAL_SLICES=1` (section 8).
+
+`model-layer-options` takes an optional `kv: {n_ctx, max_sessions}`; with it
+each cut also carries `kv_bytes` and `remainder_kv_bytes`, the KV cache of the
+prefix and of the rest for that context with this node's cache types, costed
+like the capacity preview. The plan asks it with the deployment's settings,
+and Auto-balance adds it to each prefix.
+
+`whole_ranges` (`[{node_id, start_layer, end_layer}]`, `kind: "whole"`) is the
+range form of a whole-model deploy, on both `/api/ui/deploy/plan` and
+`/api/ui/deploy`: each machine serves its range of the whole model it holds
+itself, so nothing is cut on another machine or copied. `add_whole_ranges`
+refuses by name a machine without the whole model and a cut the GGUF's rules
+do not allow (`model-layer-options`), sizes each range from the cut table, and
+turns the ranges into the selection when `selection` is absent; coverage and
+order are the planner's checks. On `/api/ui/deploy/plan`, a refused range is a
+blocked plan (`auto: false`) that still carries `layer_options`, so the screen
+learns the valid cuts from its first guess; `/api/ui/deploy` refuses it
+outright. Such a step never gets the "over the network"
+note, and the disk check charges a real slice of the range only when the
+target does not announce `model/range-load-v1` (`pipeline::CAP_RANGE_LOAD`,
+announced with `POM_VIRTUAL_SLICES=1`): without it the target cuts the range
+locally, the step's `note` says so ("cuts this range from its own copy: N GB
+written to disk"), and Deploy Studio shows step notes in the machine's tab.
+On the target, the fallback logs "POM_VIRTUAL_SLICES is not set: cutting
+layers a-b of <model> locally".
 
 The preflight also checks the output contract the loader requires. For the
 `deepseek4` architecture, `llama.cpp` requires `token_embd.weight`,
@@ -230,6 +276,11 @@ Exact operational steps before testing a long deployment:
 
 1. On the deploy screen, set `n_ctx` and `max_new_tokens` in `params` to the
    chosen values, for example `n_ctx: 100000` and `max_new_tokens: 32000`.
+   The only ceiling of `n_ctx` is the model's own `<arch>.context_length`
+   (`splitter::read_context_length`, published in the catalog as
+   `context_length`): the inspector caps the field at it and each node's
+   `NodeConfig::validate` refuses an apply above it. POM has no fixed cap; a
+   header that does not declare the value leaves the limit to the engine.
 2. Apply the deployment and wait for the `/health` of **each peer** to confirm
    `model_loaded` and `runtime_capacity`. A peer that is still restarting does
    not enter the published capacity. The gateway's `/health` keeps answering
@@ -356,7 +407,11 @@ serves, so components are a registry of their own.
   `ComponentAssignment` `{deploy_id, name, component, paths, plugin_code,
   options}`. Every path must be one of this node's image files (the catalog's
   `image_files`, without a `metadata_error`); `component` is `diffusion`,
-  `text_encoder` or `vae`. The node opens the plugin if it is on demand and asks
+  `text_encoder` or `vae`. The diffusion may carry `options.loras`
+  (`[{path, strength}]`): each path is one of this node's image files too and
+  each strength is within -10..10, and any other component with `loras` is
+  refused. The plugin applies them over the model in order
+  (`pom_components._diffusion`, as ComfyUI's `LoraLoaderModelOnly`). The node opens the plugin if it is on demand and asks
   `component.serve`; a refusal (`{"status": "refused", "error"}`, or no answer)
   is 502 with the reason and nothing is stored. Accepted, the assignment is kept
   in the `pom.db` setting `served_components`, replacing the same component of
@@ -370,14 +425,17 @@ serves, so components are a registry of their own.
   order, `text_encoder`, `diffusion`, `vae` (`image_records.rs`, `STAGES`).
   Each stage names one file (`FileIdentity`: name and size, the identity across
   machines) and one or more replicas (`{node_id, hostname, path}`); one machine
-  may serve several stages. The deploying node keeps it in the `pom.db` setting
+  may serve several stages. The diffusion stage may name `loras`
+  (`[{file, strength}]`, `LoraChoice`), and each of its replicas then keeps
+  `lora_paths`, the LoRAs on that machine in the same order; both fields are
+  left out of a stage without LoRAs, so a record reads and writes as before. The deploying node keeps it in the `pom.db` setting
   `image_deployments` with its versions (`versions`, `active_version`); a record
   from before the stages (one machine per component in `components`) loads as
   version 1, and `components` keeps being written (the first replica of each
   stage) so an older node still lists it. It is not an LLM `Deployment`: a new
   `DeploymentKind` would make older nodes fail to read every deployment.
 - **Planning.** `POST /api/ui/image-deploy/plan` `{name, stages: [{component,
-  file, node_ids}], allow_transfers}` (any admin, `image_plan.rs`,
+  file, node_ids, loras?}], allow_transfers}` (any admin, `image_plan.rs`,
   `plan_image`) surveys every machine (`components::survey_machines`: its
   `image_files` with sizes, whether it publishes an `image` service and its
   status, its free VRAM/RAM from `/api/ui/node`) and answers, touching nothing,
@@ -385,7 +443,11 @@ serves, so components are a registry of their own.
   (`alternatives`): `does not run ComfyUI`, `ComfyUI is <status>` (`error`,
   `waiting`), `does not hold <file>`, `holds another <file> (<size> bytes)`,
   `<file> is a <category>, not a <component>` (a `checkpoint` fits all three),
-  or ok with the path; `memory` per machine (free memory and the sum of the
+  `does not hold the LoRA <file>`, `<file> is a <category>, not a LoRA` (a
+  LoRA is never copied: every machine of the diffusion holds each one, found by
+  name and size with the `lora` category), or ok with the path and
+  `lora_paths`; `blocked` also names LoRAs on another stage, a LoRA chosen twice
+  and a strength outside -10..10; `memory` per machine (free memory and the sum of the
   files it would load); `copies` (a chosen machine without the file when
   another holds it); and `blocked`. Copies are not made yet (`transfer.rs`
   serves GGUF only): without `allow_transfers` the deploy answers 409
@@ -642,10 +704,11 @@ folder, often the folder of another quantization. Three pieces handle that.
 - **Plan and launch.** `deploy::attach_sidecars` resolves the screen's choice
   (`DeployRequest.vision_choice` / `mtp_choice`) or else the link: the head
   gets the projector, the tail gets the MTP draft. A target that already has a
-  file with that name and size uses it; otherwise a holder is chosen, the copy
-  joins `transfer_bytes` and the `pulls` of `lifecycle::run` (by path, landing
-  in the target's `received/` folder), and a file nobody has blocks the plan
-  naming it. `LaunchTarget`/`ApplyRequest` carry `mmproj_file` and
+  file with that name and size uses it; otherwise a holder is chosen and the
+  plan lists the copy, which a current node refuses as `machine_lacks_files`
+  (the copy through `transfer_bytes` and the `pulls` of `lifecycle::run`,
+  landing in `received/`, is no longer reached); a file nobody has
+  blocks the plan naming it. `LaunchTarget`/`ApplyRequest` carry `mmproj_file` and
   `mtp_draft_file`; the target resolves them on its own disk at apply time
   (`catalog::find_local_sidecar`), so a file copied a moment ago is found
   without waiting for the catalog cache. A model without `nextn` reports MTP as
@@ -667,14 +730,35 @@ and only show up that way.
 
 ## 3.1 Capacity preview (projected VRAM)
 
+A step that serves a range of the machine's own whole file (`from_whole_path`)
+is previewed on that file with `range_of_whole: true`, which costs only
+`start_layer..=end_layer`. On a machine with dedicated VRAM, the preview also
+answers how many of the requested GPU layers fit in the free VRAM minus the
+fit margin per device (`gpu_layers_fit`, `webui::params::gpu_layers_that_fit`),
+how many would run on the CPU (`cpu_layers`) and the RAM their weights need
+(`cpu_ram_bytes`), and adds "N layers fit on the GPU, M on the CPU: generation
+will be much slower" to its note. That note reaches the machine card and the
+confirmation before deploying; Deploy Studio shows "N on GPU, M on CPU" in the
+machine's tab. Unified memory reports no split. When a step's CPU part
+(`cpu_ram_bytes`) exceeds the machine's free RAM, the plan is blocked by name
+(`preview::refuse_cpu_part_beyond_ram`): the load could not succeed. The
+check runs on the preview, so the screen's Deploy press names it; a direct
+`POST /api/ui/deploy` does not repeat it. The VRAM and RAM projections leave
+out the lazy lookup tables (`plan::LAZY_LOOKUP_TABLES`, today
+`per_layer_token_embd.weight`): the llama.cpp fork creates them with
+`TENSOR_READ_LAZY` and reads only the rows of the tokens in use from the mapped
+file, so they weigh on disk. A `deepseek41` model's Engram table is about
+110 GB of a 170 GB file; charging it refused a machine whose RAM held every
+other weight. The note that compares a model's file size with a machine's
+free memory (`planning.rs`) still counts the whole file.
+
 After `plan_endpoint` builds the steps (and only if `blocked` is empty),
 `enrich_capacity_previews` asks each target where the step is already
 materialized locally how that step would fill its VRAM with this plan's
-parameters. That is what the Deploy screen uses to draw the cards as a
-**preview of the system after deployment**, not as the current state - one bar
-per GPU, projected usage against the total, recomputed on every change of
-context, batch or sessions (260 ms debounce and one round trip, like the rest
-of the plan).
+parameters. The Deploy screen no longer draws it: the screen surveys the plan
+without a range, and the estimate did not count that the model a machine
+serves now is released by the deploy, so it refused machines that would fit.
+The answer still carries it for an API caller.
 
 - **One call per `Step`** (`POST /api/ui/deploy/capacity-preview`, handler in
   `webui/routes/admin.rs`), only for `!merged` steps with a resolved `target_path` - a step
@@ -689,23 +773,20 @@ of the plan).
   quantization counts: `cache_type_k`/`cache_type_v` come from the
   installation config and KV is only added to VRAM when `offload_kqv` is on.
   Otherwise the cache lives in host RAM and the projection notes the
-  difference. The external MoE executor is left out because the route neither
-  opens the model nor computes expert ownership. The compute buffer is also
-  left out: the result is a planning signal, not a replacement for the real
+  difference. The compute buffer is left out: the result is a planning signal, not a replacement for the real
   load.
 - **Multi-GPU split.** Always proportional to current free VRAM. The answer
   marks the split as estimated and the real load stays the authority on
   effective layers, context and final layout. The route never calls
   `llama_backend_init`, `llama_rs_fit_params` or `fit_plan`, so it does not
   compete with the native load.
-- **Three visible states, no blocking.** Consistent with the "memory is an
+- **Three states, no blocking.** Consistent with the "memory is an
   estimate" rule (`a_target_short_on_memory_warns_and_still_deploys`):
-  **green** fits the analytical projection; **amber** (`fits && degraded`) the
+  `fits` against the analytical projection; `fits && degraded` the
   raw math does not fit, but `fit_memory` is on and the layers were left at the
-  default, so the real load can trim the request; **pink** (`!fits`) the math
-  does not fit and no automatic fit is allowed. Amber is an explicit
-  heuristic, not a claim about llama.cpp's result. All three states are
-  warnings and the screen still asks for a `Confirm` before deploying.
+  default, so the real load can trim the request; `!fits` the math
+  does not fit and no automatic fit is allowed. `degraded` is an explicit
+  heuristic, not a claim about llama.cpp's result, and none of them blocks.
 
   The endpoint admits four previews per process. When all slots are taken, it
   answers `429` immediately; the coordinator caps its fan-out at four
@@ -722,9 +803,13 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
 ## 4. Execution (`deploy_endpoint` -> `run`)
 
 1. `deploy_endpoint` rescans (`survey`), replans, refuses `blocked`/empty,
-   refuses with 409 `transfers_not_authorized` (and the `copies`) a plan whose
-   `copies` (`planned_copies`: every slice, rank or sidecar that crosses
-   machines) is not empty unless the request carries `allow_transfers: true`,
+   refuses with 409 `machine_lacks_files` (and the `copies`) a plan whose
+   `copies` (`planned_copies`: every slice, rank or sidecar that would cross
+   machines) is not empty, naming each machine and what it lacks
+   (`planning::copies_refusal`); `allow_transfers` is still parsed for an older
+   screen and authorizes nothing. The preview marks the same plan `blocked`
+   with that reason. Weights no longer travel between nodes: a machine
+   downloads the model or gets the file placed,
    creates the job ("Deploy {deployment_name} on {n} nodes") and spawns the
    execution. The job is claimed by `claim_deploy_job`, which records its
    `deployment_name` and refuses with 409 `deploy_in_progress` (and the running
@@ -756,11 +841,10 @@ add up. `Step.capacity` (`CapacityPreview`) is the step alone.
 5. `done` = "the model is serving on the network"; an error becomes a `failed`
    job.
 
-The Deploy screen lists `Plan.copies` (file, range, from, to, size) in an
-"Authorize the copies" window, after the coverage and capacity confirms and
-before the in-service one, and only then sends `allow_transfers`. A 409 from a
-cluster that moved since the preview opens the same window with the node's
-list. The job carries `deploy_id`, and the deploy stays registered as in flight
+Steps 2 and 3 (the `Pull`s over the transfer transport) no longer run from a
+current admin, since a plan with copies is refused; they stay one release for
+an older admin deploying to this node and are removed with `transfer.rs`. The
+job carries `deploy_id`, and the deploy stays registered as in flight
 (`lifecycle::in_flight`: its task and the copies already asked of the targets)
 until `run` ends.
 
@@ -768,7 +852,7 @@ until `run` ends.
 
 | Route | Role |
 |---|---|
-| `POST /api/ui/deploy/plan` | preview (read, called on every edit); enriches the steps with the capacity projection |
+| `POST /api/ui/deploy/plan` | preview (read): the screen calls it once per model with `whole_ranges: []` for the machines and cuts, and once when Deploy is pressed for the map's verdict; enriches the steps with the capacity projection |
 | `POST /api/ui/deploy/capacity-preview` | per-step preview, local to the peer: estimates from GGUF metadata and free VRAM, without calling the native fit, and returns the projected VRAM per GPU (`deploy/preview.rs`) |
 | `POST /api/ui/deploy` | executes (rescans, refuses `blocked`/empty, job) |
 | `POST /api/ui/deploy/node/options` | catalog and local options of the machine chosen for an incremental change |
@@ -981,6 +1065,14 @@ The derived facts the machine needs to know:
   catalog).
 - `skip_split` or `(is_first && is_last && peer_count <= 1)` -> serves the file
   as is (the slice already exists on disk).
+- with `POM_VIRTUAL_SLICES=1` and a model the virtual slice supports
+  (`plan::virtual_slice_refusal`: not a mixture-of-experts model split in
+  several files under the `moe` or `auto` inference mode, whose external
+  executor reads one source file; `dense` llama.cpp reads any number) -> `plan::write_virtual_shard`: a
+  header-only virtual slice of the range under `<project root>/virtual-slices/`
+  (outside the model folders, so the catalog never lists it), rewritten on
+  every apply in milliseconds, which the engine loads from the whole file
+  (`slicing.md`, "Virtual slices"). No `.pom` manifest and no catalog entry.
 - otherwise -> `extract_shard` (local slicing, "slicing" job, progress through
   `set_job_progress`, `invalidate_catalog`, outcome `reused`/produced).
 

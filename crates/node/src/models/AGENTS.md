@@ -22,7 +22,10 @@ Models, GGUF reading, planning and slice files. The module is used by
   model rule, `SidecarLink`/`SidecarMode` the link kept on the principal,
   `SidecarFile` the name + size identity and `find_local_sidecar` the on-disk
   lookup used at apply time. `DiscoveredModel.embedding_length` carries the
-  width a sidecar must match.
+  width a sidecar must match. `DiscoveredModel.context_length` carries the model's
+  `<arch>.context_length` (`splitter::read_context_length`), the only ceiling of a
+  deployment's `n_ctx`: `NodeConfig::validate` refuses above it, the Deploy
+  inspector caps the field at it, and a header without it sets no POM cap.
 - `catalog.rs` - discovers whole models and slices in the configured folders.
   `discover_fast` lists files and reads only `stat`/system metadata, without
   opening the GGUF content; `enrich` reads the headers afterwards and marks
@@ -73,6 +76,11 @@ Models, GGUF reading, planning and slice files. The module is used by
   output-tensor contract before offering or generating a range; required heads
   are charged and copied from the source when the loader demands their presence
   in partial ranges.
+  `LAZY_LOOKUP_TABLES`/`lazy_table_bytes`/`resident_weight_bytes`: the
+  `TENSOR_READ_LAZY` tables (`per_layer_token_embd.weight`, the PLE of
+  `qwen4exp`/`gemma4` and the Engram table of `deepseek41`) are part of a
+  slice's file cost but not of the memory a range needs; the capacity
+  preview subtracts them when the range carries them.
 - the engine's `gguf` module - reads the scalar or per-layer KV geometry
   (`attention.head_count_kv`, `key_length` and `value_length`) and the MoE
   evidence (`<arch>.expert_count`/`expert_used_count`) without loading the
@@ -138,6 +146,18 @@ Models, GGUF reading, planning and slice files. The module is used by
   an extra unclaimed tensor - that was the cause of "wrong number of tensors" on
   the first slice of a real Qwen3.8 Flash Next. The result is validated by
   `gguf::read_layout` before the backend names it by content.
+  `write_virtual_slice` writes the same header with no weights: each source
+  tensor points at its bytes in the source file(s) through
+  `general.external_data.files`/`tensor_files`/`tensor_offsets`, which the
+  llama.cpp fork's loader reads (branch `pom`).
+  Tensors with data in the header (the identity `output_norm`) come first.
+  `plan::write_virtual_shard` is the apply step that uses it behind
+  `POM_VIRTUAL_SLICES=1`; `plan::virtual_slice_refusal` keeps on real
+  slicing only a header it cannot read and, when the inference mode is `moe`
+  or `auto`, a MoE model in several files (under `dense` llama.cpp reads the
+  parts itself), since the MoE external executor follows a virtual slice into one source file
+  (`moe::format_q4_0::map_tensor_source` in the engine)
+  (`docs/superpowers/specs/2026-11-07-layer-range-deployment-design.md`, Part A).
 - `kv_budget.rs` - a pure byte policy of the KV cache. It replicates the row size
   of the supported types and refuses a width that does not close a block or any
   overflow, without consulting FFI or a device.
@@ -245,9 +265,16 @@ local index. The tensor `per_layer_token_embd.weight` accompanies only the slice
 that contain one of those layers. `deepseek41` follows the same model: its
 `attention.kv_source_layers`, `attention.indexer.source_layers` and `ple.layers`
 are filtered and rebased, `attention.indexer.candidate_source_layer` is rebased
-or left out, and the other Engram arrays are copied whole. Its valid cuts come
-from `GgufLayout::restricted_slice_starts`; `merge` and tensor parallel refuse
-the architecture by name.
+or left out (keeping its INT32 type, which llama.cpp checks), the Engram hash
+constants (`ple.layer_multipliers`, `ple.head_offsets`, `ple.head_vocab_sizes`,
+one set per Engram layer) are cut to the slice's Engram layers, and
+`engram.token_map` is copied whole. Its valid cuts come from
+`GgufLayout::restricted_slice_starts`: the KV and indexer sources shared by
+both lists, up to the candidate source (DeepSeek-V4.1-Flash: 2, 8, 14 and 20).
+A slice that starts mid-model gets the fork's layer-boundary state
+(`[n_embd, hc + 1]` per token: the hc streams plus the pending pre-mix) with
+the token ids of its rows, so its Engram layers run; `merge` and tensor
+parallel refuse the architecture by name.
 
 ### Multimodal projector
 
@@ -284,17 +311,8 @@ when MTP was not requested).
 
 ## Defects noted
 
-- `deepseek41` slices are written, but a pipeline across them does not run yet.
-  `deepseek41.cpp` keeps `pre_prev`, the pre-mix of the previous layer's FFN,
-  which is not part of the residual, so a slice starting mid-model would
-  collapse its first attention input with the identity instead. The same graph
-  has no expanded `hc` input and sets `n_embd_out = n_embd`, so
-  `validate_hidden_tensor` refuses the wide residual on the receiving peer
-  instead of computing a wrong answer. Serving needs the fork to accept an
-  expanded input and carry `pre_prev` across the boundary.
-
 - `ModelSource::Folder` is labelled `"Pasta"` (`catalog.rs`, the source label
-  the catalog sends), so the Full models screen shows a Portuguese word in the
+  the catalog sends), so the Models screen shows a Portuguese word in the
   English interface. The label should be a code the UI translates.
 - The engine's `gguf::read_layout` (pom-plugin-llama.cpp, pinned `rev`) refuses
   in Portuguese ("dtype GGML 99 desconhecido no tensor ...", "tem comprimento

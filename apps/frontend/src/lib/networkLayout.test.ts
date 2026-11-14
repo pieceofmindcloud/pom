@@ -4,6 +4,7 @@ import {
   autoLayout,
   clearPositions,
   deployLayout,
+  DEPLOY_CARD_SIZE,
   deploymentLayoutKey,
   fallbackPosition,
   GATEWAY_HEIGHT,
@@ -194,13 +195,16 @@ describe("deployLayout", () => {
     expect(positions.prefill.top).toBe(positions.decode.top);
   });
 
-  it("puts machines of a single stage side by side", () => {
+  it("stacks the heads one under the other, as the Flow does", () => {
     const positions = deployLayout([
       { id: "a", start_layer: 0, end_layer: 31 },
-      { id: "b", start_layer: 0, end_layer: 31 },
+      { id: "b", start_layer: 0, end_layer: 13 },
+      { id: "c", start_layer: 14, end_layer: 31 },
     ], []);
-    expect(positions.a.top).toBe(positions.b.top);
-    expect(positions.b.left).toBeGreaterThanOrEqual(positions.a.left + CARD_WIDTH);
+    expect(positions.a.left).toBe(positions.b.left);
+    expect(Math.abs(positions.b.top - positions.a.top)).toBeGreaterThanOrEqual(DEPLOY_CARD_SIZE.height);
+    // the range that continues a head takes the next column
+    expect(positions.c.left).toBeGreaterThan(positions.b.left + CARD_WIDTH);
   });
 
   it("keeps a multi-stage pipeline in columns", () => {

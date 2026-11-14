@@ -122,6 +122,12 @@ describe("SliceModels", () => {
       ],
     };
     post.mockResolvedValue({
+      mode: "tensor_parallel",
+      tp_size: 2,
+      ranks: [
+        { rank: 0, start_layer: 0, end_layer: 9 },
+        { rank: 1, start_layer: 0, end_layer: 9 },
+      ],
       total_layers: 10,
       model_bytes: 3_000_000_000,
       ranges: [
@@ -160,96 +166,6 @@ describe("SliceModels", () => {
   });
 
   afterEach(cleanup);
-
-  it("shows the final shard as fixed remainder without a size input", async () => {
-    render(
-      <MemoryRouter
-        initialEntries={["/models/slice"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
-        <LocaleProvider initialLocale="pt-BR">
-          <SliceModels />
-        </LocaleProvider>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => expect(screen.getAllByRole("textbox")).toHaveLength(1));
-    await waitFor(() => expect(post).toHaveBeenCalledWith(
-      "/api/ui/slice/plan",
-      expect.any(Object),
-    ));
-    expect(screen.getAllByText("o resto").length).toBeGreaterThan(0);
-
-    expect(post.mock.calls).toEqual(
-      expect.arrayContaining([
-        [
-          "/api/ui/slice/plan",
-          {
-            model_path: "/models/qwen.gguf",
-            mode: "pipeline",
-            slices: [{ target_mb: 4096 }, {}],
-          },
-        ],
-      ]),
-    );
-  });
-
-  it("shows the real required head cost for intermediate slices", async () => {
-    post.mockResolvedValue({
-      total_layers: 10,
-      model_bytes: 3_440_000_000,
-      required_head_bytes: 440 * 1024 * 1024,
-      ranges: [
-        {
-          index: 0,
-          start_layer: 0,
-          end_layer: 4,
-          layers: 5,
-          bytes: 1_940_000_000,
-          target_mb: 1940,
-          is_rest: false,
-          is_last: false,
-          too_small: false,
-          empty: false,
-        },
-        {
-          index: 1,
-          start_layer: 5,
-          end_layer: 9,
-          layers: 5,
-          bytes: 1_500_000_000,
-          target_mb: null,
-          is_rest: true,
-          is_last: true,
-          too_small: false,
-          empty: false,
-        },
-      ],
-      covered_layers: 10,
-      complete: true,
-      missing_range: null,
-      missing_bytes: 0,
-      blocked: false,
-      warnings: [],
-    });
-
-    render(
-      <MemoryRouter
-        initialEntries={["/models/slice"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
-        <LocaleProvider initialLocale="pt-BR">
-          <SliceModels />
-        </LocaleProvider>
-      </MemoryRouter>,
-    );
-
-    expect(
-      await screen.findByText(
-        "Cada fatia intermediária repete 440 MB de pesos reais da cabeça obrigatória.",
-      ),
-    ).toBeTruthy();
-  });
 
   it("shows the active slicing progress on the model slicing screen", async () => {
     render(
@@ -343,42 +259,7 @@ describe("SliceModels", () => {
     expect(screen.getByText("/models_sliced/primeira.gguf")).toBeTruthy();
   });
 
-  it("plans and starts one explicitly selected layer range", async () => {
-    post.mockImplementation(async (url: string, body: Record<string, unknown>) => {
-      if (url === "/api/ui/model-layer-options") {
-        return {
-          total_layers: 10,
-          valid_starts: [0, 5],
-          cuts: [],
-          granularity: 5,
-          rule: "modelo híbrido: cortes nas fronteiras reais",
-        };
-      }
-      const range = body.range as { start_layer: number; end_layer: number } | undefined;
-      return {
-        total_layers: 10,
-        model_bytes: 1_500_000_000,
-        ranges: [{
-          index: 0,
-          start_layer: range?.start_layer ?? 0,
-          end_layer: range?.end_layer ?? 4,
-          layers: 5,
-          bytes: 1_500_000_000,
-          target_mb: null,
-          is_rest: false,
-          is_last: false,
-          too_small: false,
-          empty: false,
-        }],
-        covered_layers: 5,
-        complete: false,
-        missing_range: [5, 9],
-        missing_bytes: 1,
-        blocked: false,
-        warnings: [],
-      };
-    });
-
+  it("plans and starts tensor parallel shards from the rank count", async () => {
     render(
       <MemoryRouter
         initialEntries={["/models/slice"]}
@@ -390,78 +271,7 @@ describe("SliceModels", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByLabelText("Fatiar uma faixa específica"));
-    expect(await screen.findByLabelText("Primeira camada")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Primeira camada"), { target: { value: "5" } });
-    fireEvent.change(screen.getByLabelText("Última camada"), { target: { value: "9" } });
-
-    await waitFor(() => expect(post).toHaveBeenCalledWith(
-      "/api/ui/slice/plan",
-      expect.objectContaining({ range: { start_layer: 5, end_layer: 9 } }),
-    ));
-    fireEvent.click(screen.getByRole("button", { name: "Fatiar agora" }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith(
-      "/api/ui/slice",
-      expect.objectContaining({ range: { start_layer: 5, end_layer: 9 } }),
-    ));
-  });
-
-  it("does not render the slicing activity card when there is no active job", async () => {
-    jobsState.value = { jobs: [] };
-
-    render(
-      <MemoryRouter
-        initialEntries={["/models/slice"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
-        <LocaleProvider initialLocale="pt-BR">
-          <SliceModels />
-        </LocaleProvider>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => expect(screen.getAllByRole("textbox")).toHaveLength(1));
-    expect(screen.queryByText("Fatiamentos em andamento")).toBeNull();
-  });
-
-  it("plans tensor parallel shards from the mode checkbox and rank count", async () => {
-    post.mockImplementation(async (_url: string, body: Record<string, unknown>) => {
-      if (body.mode === "tensor_parallel") {
-        return {
-          mode: "tensor_parallel",
-          model_bytes: 3_000_000_000,
-          total_layers: 10,
-          tp_size: body.tp_size,
-          ranks: [
-            { rank: 0, start_layer: 0, end_layer: 9 },
-            { rank: 1, start_layer: 0, end_layer: 9 },
-          ],
-          complete: true,
-          blocked: false,
-          warnings: [],
-        };
-      }
-      return {
-        total_layers: 10,
-        model_bytes: 3_000_000_000,
-        ranges: [],
-        warnings: [],
-      };
-    });
-
-    render(
-      <MemoryRouter
-        initialEntries={["/models/slice"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
-        <LocaleProvider initialLocale="pt-BR">
-          <SliceModels />
-        </LocaleProvider>
-      </MemoryRouter>,
-    );
-
-    fireEvent.click(await screen.findByRole("tab", { name: "Tensor Parallelism" }));
-    fireEvent.change(screen.getByLabelText("Quantidade de ranks TP"), {
+    fireEvent.change(await screen.findByLabelText("Quantidade de ranks TP"), {
       target: { value: "2" },
     });
 
@@ -476,41 +286,21 @@ describe("SliceModels", () => {
       ),
     );
     expect(await screen.findByText("rank 0")).toBeTruthy();
-    expect(await screen.findByText("1of2")).toBeTruthy();
-  });
-
-  it("hides Tensor Parallelism entirely when POM_DEV_MODE is off", async () => {
-    nodeState.value = { pom_dev_mode: false };
-
-    render(
-      <MemoryRouter
-        initialEntries={["/models/slice"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
-        <LocaleProvider initialLocale="pt-BR">
-          <SliceModels />
-        </LocaleProvider>
-      </MemoryRouter>,
-    );
-
-    expect(screen.queryByRole("tab", { name: "Tensor Parallelism" })).toBeNull();
+    expect(screen.getByText("1of2")).toBeTruthy();
     expect(screen.queryByRole("tab", { name: "Pipeline" })).toBeNull();
-    expect(screen.queryByLabelText("Quantidade de ranks TP")).toBeNull();
 
+    post.mockResolvedValueOnce({ job_id: "abcdef1234" });
+    fireEvent.click(screen.getByRole("button", { name: "Fatiar agora" }));
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith(
-        "/api/ui/slice/plan",
-        expect.objectContaining({ mode: "pipeline" }),
+        "/api/ui/slice",
+        expect.objectContaining({ mode: "tensor_parallel", tp_size: 2 }),
       ),
     );
-    expect(post.mock.calls.some((call) => (call[1] as { mode?: string })?.mode === "tensor_parallel")).toBe(
-      false,
-    );
   });
 
-  it("also hides Tensor Parallelism when the node info has not answered yet", async () => {
-    nodeState.value = undefined;
-
+  it("offers nothing to slice outside development mode", async () => {
+    nodeState.value = { pom_dev_mode: false };
     render(
       <MemoryRouter
         initialEntries={["/models/slice"]}
@@ -522,30 +312,10 @@ describe("SliceModels", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getAllByRole("textbox")).toHaveLength(1));
-    expect(screen.queryByRole("tab", { name: "Tensor Parallelism" })).toBeNull();
-  });
-
-  it("shows the summed size and every physical part of a multipart model", async () => {
-    render(
-      <MemoryRouter
-        initialEntries={["/models/slice"]}
-        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-      >
-        <LocaleProvider initialLocale="pt-BR">
-          <SliceModels />
-        </LocaleProvider>
-      </MemoryRouter>,
-    );
-
-    fireEvent.change(screen.getAllByRole("combobox")[0], {
-      target: { value: "/models/multipart-00001-of-00004.gguf" },
-    });
-
-    expect(await screen.findByText("GGUF MULTIPARTE")).toBeTruthy();
-    expect(screen.getByText("4 partes físicas neste conjunto")).toBeTruthy();
-    expect(screen.getByText(/Mantenha todas as partes juntas/)).toBeTruthy();
-    expect(screen.getByText("119 GB")).toBeTruthy();
+    expect(await screen.findByText("Partes tensor-parallel exigem o modo de desenvolvimento")).toBeTruthy();
+    expect(screen.queryByLabelText("Quantidade de ranks TP")).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(post).not.toHaveBeenCalled();
   });
 
   it("blocks an incomplete multipart source with its concrete reason", async () => {

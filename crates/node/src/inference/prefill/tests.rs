@@ -853,8 +853,8 @@ mod tests {
 
     #[test]
     fn hop_trace_publishes_the_real_engine_and_invents_none_for_an_old_peer() {
-        let mut moe = RequestTrace::new("qwen", &[("moe", 0, 15)]);
-        moe.record_hop(
+        let mut llama = RequestTrace::new("qwen", &[("llama", 0, 15)]);
+        llama.record_hop(
             0,
             Phase::Decode,
             1,
@@ -867,42 +867,43 @@ mod tests {
             0,
             TlsHop::default(),
             &json!({
-                "selected_path": "moe/q4_0",
-                "executed_engine": "moe",
-            }),
-        );
-        assert_eq!(
-            moe.hops[0].decode.executed_engine,
-            crate::executor::ExecutionEngine::Moe
-        );
-        assert_eq!(
-            moe.hops[0].decode.selected_path.as_deref(),
-            Some("moe/q4_0")
-        );
-
-        let mut delegated = RequestTrace::new("qwen", &[("delegated", 0, 15)]);
-        delegated.record_hop(
-            0,
-            Phase::Decode,
-            1,
-            1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            TlsHop::default(),
-            &json!({
-                "selected_path": "moe/q4_0",
+                "selected_path": "dense/llama.cpp",
                 "executed_engine": "llama.cpp",
             }),
         );
         assert_eq!(
-            delegated.hops[0].decode.executed_engine,
+            llama.hops[0].decode.executed_engine,
             crate::executor::ExecutionEngine::LlamaCpp
         );
-        assert!(delegated.hops[0].decode.engine_mismatch);
+        assert_eq!(
+            llama.hops[0].decode.selected_path.as_deref(),
+            Some("dense/llama.cpp")
+        );
+        assert!(!llama.hops[0].decode.engine_mismatch);
+
+        let mut diverged = RequestTrace::new("qwen", &[("diverged", 0, 15)]);
+        diverged.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({
+                "selected_path": "dense/llama.cpp",
+                "executed_engine": "plugin",
+            }),
+        );
+        assert_eq!(
+            diverged.hops[0].decode.executed_engine,
+            crate::executor::ExecutionEngine::Plugin
+        );
+        assert!(diverged.hops[0].decode.engine_mismatch);
 
         let mut old = RequestTrace::new("qwen", &[("old", 0, 15)]);
         old.record_hop(
@@ -927,41 +928,9 @@ mod tests {
     }
 
     #[test]
-    fn hop_trace_propagates_moe_executor_dtype_and_reason_per_phase() {
-        let mut trace = RequestTrace::new("qwen", &[("moe", 0, 39)]);
-        trace.record_hop_from_json(
-            0,
-            Phase::Decode,
-            &json!({
-                "round_trip_ms": 10,
-                "processing_ms": 9,
-                "bytes_sent": 1,
-                "bytes_received": 2,
-                "node_timings": {
-                    "selected_path": "moe/q4_0",
-                    "executed_engine": "moe",
-                    "moe_executor": "cpu-reference",
-                    "moe_executors": ["cpu-reference"],
-                    "moe_executor_dtypes": [21, 22, 23],
-                    "moe_executor_reason": "dtypes IQ3_S, IQ2_S and IQ4_XS without a CUDA bridge; CPUReference selected"
-                }
-            }),
-        );
-
-        let phase = &trace.hops[0].decode;
-        assert_eq!(phase.moe_executor.as_deref(), Some("cpu-reference"));
-        assert_eq!(phase.moe_executors, vec!["cpu-reference"]);
-        assert_eq!(phase.moe_executor_dtypes, vec![21, 22, 23]);
-        assert_eq!(
-            phase.moe_executor_reason.as_deref(),
-            Some("dtypes IQ3_S, IQ2_S and IQ4_XS without a CUDA bridge; CPUReference selected")
-        );
-    }
-
-    #[test]
     fn hop_trace_becomes_unknown_if_calls_of_the_same_hop_diverge() {
         let mut trace = RequestTrace::new("qwen", &[("mixed", 0, 15)]);
-        for (path, engine) in [("moe/q4_0", "llama.cpp"), ("moe/q4_0", "moe")] {
+        for (path, engine) in [("dense/llama.cpp", "llama.cpp"), ("dense/llama.cpp", "plugin")] {
             trace.record_hop(
                 0,
                 Phase::Prefill,
@@ -1893,4 +1862,44 @@ fn a_failed_prefill_names_its_cause_not_the_telemetry_wrapper() {
         failure_cause(&error),
         "hop 1 refused chunk 0: capture has 3 rows, expected 238"
     );
+}
+
+#[test]
+fn stage_balance_splits_each_hop_and_names_the_bottleneck() {
+    let mut trace = RequestTrace::new_with_trace_id(
+        "trace",
+        "flash",
+        &[("a", 0, 15), ("b", 16, 30), ("c", 31, 47)],
+    );
+    trace.prefill_ms = 10_000;
+    trace.server_ttft_ms = Some(10_000);
+    trace.hops[0].prefill.processing_ms = 3_000;
+    trace.hops[0].prefill.network_ms = 500;
+    trace.hops[0].prefill.calls = 1;
+    trace.hops[1].prefill.processing_ms = 9_000;
+    trace.hops[1].prefill.calls = 1;
+    trace.hops[2].prefill.processing_ms = 2_000;
+    trace.hops[2].prefill.calls = 1;
+    trace.refresh_telemetry(10_000);
+
+    let a = &trace.hops[0].prefill;
+    assert_eq!(a.compute_ms, Some(3_000));
+    assert_eq!(a.transfer_ms, Some(500));
+    // the first machine has nothing before it: its waiting is all on the later ones
+    assert_eq!(a.wait_input_ms, Some(0));
+    assert_eq!(a.wait_output_ms, Some(6_500));
+    let b = &trace.hops[1].prefill;
+    // 1,000 ms of waiting, no more than the 3,500 ms of work and wire before it
+    assert_eq!(b.wait_input_ms, Some(1_000));
+    assert_eq!(b.wait_output_ms, Some(0));
+    assert_eq!(b.utilization, Some(0.9));
+    let c = &trace.hops[2].prefill;
+    assert_eq!(c.wait_input_ms, Some(8_000));
+    assert_eq!(c.wait_output_ms, Some(0));
+
+    let prefill = trace.stage_balance.as_ref().and_then(|b| b.prefill.as_ref()).unwrap();
+    assert_eq!(prefill.node_id, "b");
+    assert_eq!((prefill.start_layer, prefill.end_layer), (16, 30));
+    // no decode recorded: no decode bottleneck
+    assert!(trace.stage_balance.as_ref().unwrap().decode.is_none());
 }

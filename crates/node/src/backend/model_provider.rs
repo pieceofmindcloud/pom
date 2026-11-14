@@ -83,6 +83,11 @@ pub(crate) struct DownloadRequest {
     /// is skipped, not an error.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_files: Vec<String>,
+    /// The models folder to download into: one of this node's configured
+    /// folders, exactly as `storage.destinations` lists it. Absent: the first
+    /// configured folder, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
 }
 
 /// `?node_id=` on the download routes that name a download by id, and on the
@@ -220,9 +225,18 @@ pub(crate) struct GgufFileView {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct StorageResponse {
+    /// Free space of the default (first) models folder.
     pub available_bytes: Option<u64>,
     pub destination_available: bool,
     pub destination_paths: Vec<String>,
+    /// Every configured models folder with the free space of its own disk.
+    pub destinations: Vec<DestinationView>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct DestinationView {
+    pub path: String,
+    pub available_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -712,7 +726,16 @@ async fn start_one(state: GatewayState, request: DownloadRequest) -> Response {
     else {
         return provider_error(HfError::HfRepositoryNotFound);
     };
-    if let (Some(size), Some(free)) = (file.size_bytes, disk_free_bytes().await) {
+    let destinations = configured_model_destinations(state.model_dirs().await);
+    let Some(destination) =
+        requested_model_destination(&destinations, request.destination.as_deref())
+    else {
+        return conflict(
+            "destination_unavailable",
+            "the models folder is not configured on this machine".into(),
+        );
+    };
+    if let (Some(size), Some(free)) = (file.size_bytes, folder_free_bytes(&destination).await) {
         if free < size {
             return conflict(
                 "insufficient_space",
@@ -720,13 +743,6 @@ async fn start_one(state: GatewayState, request: DownloadRequest) -> Response {
             );
         }
     }
-    let destinations = configured_model_destinations(state.model_dirs().await);
-    let Some(destination) = configured_model_destination(&destinations) else {
-        return conflict(
-            "destination_unavailable",
-            "no models folder is configured".into(),
-        );
-    };
     if let Err(error) = tokio::fs::create_dir_all(&destination).await {
         return provider_error(HfError::Io {
             message: format!("could not prepare the models folder: {error}"),
@@ -855,13 +871,22 @@ async fn retry_download(
     let Some(repo_id) = job.repo_id else {
         return conflict("download_invalid", "download cannot be retried".into());
     };
+    let filename = job.filename.unwrap_or_default();
+    // The new attempt goes to the folder of the failed one.
+    let destination = job
+        .local_path
+        .as_deref()
+        .and_then(|path| path.strip_suffix(filename.as_str()))
+        .map(|folder| folder.trim_end_matches(['/', '\\']).to_string())
+        .filter(|folder| !folder.is_empty());
     let request = DownloadRequest {
         repo_id,
         revision: job.revision,
-        filename: job.filename.unwrap_or_default(),
+        filename,
         quantization: job.quantization,
         node_id: None,
         extra_files: Vec::new(),
+        destination,
     };
     let response = start_download(ConnectionAuth, State(state), Json(request)).await;
     // The new attempt replaces the old row: "Try again" used to add a second
@@ -1299,14 +1324,48 @@ async fn gguf_views(
 
 async fn storage_response(state: &GatewayState) -> StorageResponse {
     let destinations = configured_model_destinations(state.model_dirs().await);
-    StorageResponse {
-        available_bytes: disk_free_bytes().await,
-        destination_available: configured_model_destination(&destinations).is_some(),
-        destination_paths: destinations
-            .iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect(),
+    let mut views = Vec::with_capacity(destinations.len());
+    for path in &destinations {
+        views.push(DestinationView {
+            path: path.to_string_lossy().into_owned(),
+            available_bytes: folder_free_bytes(path).await,
+        });
     }
+    StorageResponse {
+        available_bytes: match views.first() {
+            Some(first) => first.available_bytes,
+            None => disk_free_bytes().await,
+        },
+        destination_available: configured_model_destination(&destinations).is_some(),
+        destination_paths: views.iter().map(|view| view.path.clone()).collect(),
+        destinations: views,
+    }
+}
+
+/// The folder a download goes to: the requested one when it is exactly one
+/// of the configured folders (a caller cannot name any other path), or the
+/// first configured folder when none is requested.
+fn requested_model_destination(
+    directories: &[PathBuf],
+    requested: Option<&str>,
+) -> Option<PathBuf> {
+    match requested.map(str::trim).filter(|value| !value.is_empty()) {
+        None => configured_model_destination(directories),
+        Some(requested) => directories
+            .iter()
+            .find(|path| !path.as_os_str().is_empty() && path.to_string_lossy() == requested)
+            .cloned(),
+    }
+}
+
+/// Free space of the disk that holds `folder` (its nearest existing parent
+/// when it does not exist yet).
+async fn folder_free_bytes(folder: &std::path::Path) -> Option<u64> {
+    let folder = folder.to_path_buf();
+    let free = tokio::task::spawn_blocking(move || crate::sysmon::sample_disk_at(&folder).free_mb)
+        .await
+        .ok()?;
+    (free > 0).then_some(free.saturating_mul(1_048_576))
 }
 
 fn configured_model_destinations(directories: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -1875,6 +1934,7 @@ mod tests {
                 quantization: None,
                 node_id: Some("someone-else".into()),
                 extra_files: Vec::new(),
+                destination: None,
             }),
         )
         .await;
@@ -1979,6 +2039,7 @@ mod tests {
                 quantization: None,
                 node_id: None,
                 extra_files: vec!["model.gguf".into(), "mmproj.gguf".into()],
+                destination: None,
             }),
         )
         .await;
@@ -2015,6 +2076,7 @@ mod tests {
                 quantization: None,
                 node_id: None,
                 extra_files: Vec::new(),
+                destination: None,
             }),
         )
         .await;
@@ -2043,6 +2105,7 @@ mod tests {
             quantization: Some("Q5_K_M".into()),
             node_id: None,
             extra_files: Vec::new(),
+            destination: None,
         };
 
         assert_eq!(valid.identity().unwrap().repo_id, "Qwen/model");
@@ -2120,6 +2183,44 @@ mod tests {
         assert_eq!(
             response.destination_paths,
             vec!["/models/primary".to_string(), "/models/backup".to_string()]
+        );
+        assert_eq!(
+            response
+                .destinations
+                .iter()
+                .map(|destination| destination.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/models/primary", "/models/backup"]
+        );
+    }
+
+    #[test]
+    fn requested_destination_must_be_a_configured_folder() {
+        let configured = vec![
+            PathBuf::from("/models/primary"),
+            PathBuf::from("/models/backup"),
+        ];
+
+        assert_eq!(
+            requested_model_destination(&configured, None),
+            Some(PathBuf::from("/models/primary"))
+        );
+        assert_eq!(
+            requested_model_destination(&configured, Some("  ")),
+            Some(PathBuf::from("/models/primary"))
+        );
+        assert_eq!(
+            requested_model_destination(&configured, Some("/models/backup")),
+            Some(PathBuf::from("/models/backup"))
+        );
+        assert_eq!(requested_model_destination(&configured, Some("/etc")), None);
+        assert_eq!(
+            requested_model_destination(&configured, Some("/models/backup/../../etc")),
+            None
+        );
+        assert_eq!(
+            requested_model_destination(&[], Some("/models/backup")),
+            None
         );
     }
 

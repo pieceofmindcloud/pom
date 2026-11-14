@@ -1457,6 +1457,13 @@ see `security-model.md`). The start body also takes `extra_files`, other files
 of the same repository (split parts, a projector, an MTP draft) started as
 their own rows; the answer adds `extra_download_ids`, `skipped` (already
 installed or downloading) and `failed` (`{ filename, code }`).
+**Destination folder.** The model detail and `GET .../storage` answer
+`storage.destinations`, every configured models folder with the free space of
+its own disk (`{ path, available_bytes }`; `available_bytes` is the first
+folder's). The start body takes an optional `destination`, which must be one of
+those paths exactly: any other is 409 `destination_unavailable`, and absent
+means the first folder. The free-space check uses the chosen folder's disk;
+`retry` keeps the folder of the failed attempt.
 **`POST /api/ui/models/rescan`** (`ServingMember`, body optional
 `{ node_id }`) walks the models folders again at once, for a file placed by
 hand, and answers `{ node_id, rescanning: true }` before the walk ends; with

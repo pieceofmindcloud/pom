@@ -55,6 +55,8 @@ export interface PublicPluginCatalogEntry {
   releases: PublicPluginRelease[];
   /** Shown first in the store (destaque). */
   featured: boolean;
+  /** Announced before its first release: listed, but nothing to buy or install yet. */
+  coming_soon: boolean;
   /** Made by the POM team; false for a community plugin, null from an older license server. */
   pom_team: boolean | null;
   /** Free plugin installed from this public GitHub repository instead of the license server. */
@@ -201,7 +203,8 @@ function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
 
   const pricing = isRecord(value.pricing) ? value.pricing : {};
   const requiresLicense = typeof value.requires_license === "boolean" ? value.requires_license : null;
-  if (releases.length === 0) return null;
+  // Nothing to install yet: listed only when the store announces it as coming soon.
+  if (releases.length === 0 && value.coming_soon !== true) return null;
 
   return {
     code,
@@ -219,6 +222,7 @@ function catalogEntry(value: unknown): PublicPluginCatalogEntry | null {
     },
     releases,
     featured: value.featured === true,
+    coming_soon: value.coming_soon === true,
     pom_team: typeof value.pom_team === "boolean" ? value.pom_team : null,
     github_url: githubUrl(value.github_url),
     sales_mode: value.sales_mode === "contact" ? "contact" : "checkout",

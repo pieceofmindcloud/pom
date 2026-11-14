@@ -1904,7 +1904,11 @@ pub(super) fn prefill_batch_blocking(
             s.meter_prefill(
                 &item.sid_key,
                 item.n_tokens as u32,
-                if item.chunk_index == 0 { item.requested_cached_tokens } else { 0 },
+                if item.chunk_index == 0 {
+                    item.requested_cached_tokens
+                } else {
+                    0
+                },
                 engine_timings.backend_call_us / 1000,
             );
             let session = s.sessions.get_mut(&item.sid_key).unwrap();
@@ -2054,8 +2058,7 @@ pub(super) fn prefill_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let (residual, residual_shape) =
-                output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let (residual, residual_shape) = output.residual_for(&item.sid_key, s.engine.n_embd)?;
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let mut meta = json!({
                 "done": false,
@@ -2520,8 +2523,7 @@ pub(super) fn step_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let (residual, residual_shape) =
-                output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let (residual, residual_shape) = output.residual_for(&item.sid_key, s.engine.n_embd)?;
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let tokens = match &item.input {
                 PreparedStepInput::Tokens { token } => vec![*token],

@@ -141,7 +141,11 @@ pub(super) async fn deploy_endpoint(
 
     if plan.blocked.is_none() {
         if let Some(service) = params.inference_service.as_deref() {
-            super::planning::share_whole_model_roles(req.kind, &mut plan.steps, params.inference_role);
+            super::planning::share_whole_model_roles(
+                req.kind,
+                &mut plan.steps,
+                params.inference_role,
+            );
             let targets: Vec<String> = plan
                 .steps
                 .iter()
@@ -168,7 +172,11 @@ pub(super) async fn deploy_endpoint(
             .await;
             // the service cuts each range from the whole file itself: nothing is written to disk
             if ranges && plan.blocked.is_none() {
-                for step in plan.steps.iter_mut().filter(|step| step.from_whole_path.is_some()) {
+                for step in plan
+                    .steps
+                    .iter_mut()
+                    .filter(|step| step.from_whole_path.is_some())
+                {
                     step.note = None;
                 }
             }
@@ -296,15 +304,18 @@ pub(super) async fn deploy_endpoint(
     if let Some(job) = jobs().write().await.get_mut(&job_id) {
         job.deploy_id = Some(deploy_id.clone());
     }
-    in_flight().lock().unwrap_or_else(|error| error.into_inner()).insert(
-        deploy_id.clone(),
-        InFlightDeploy {
-            job_id: job_id.clone(),
-            group: req.group.clone(),
-            task: None,
-            transfers: Vec::new(),
-        },
-    );
+    in_flight()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(
+            deploy_id.clone(),
+            InFlightDeploy {
+                job_id: job_id.clone(),
+                group: req.group.clone(),
+                task: None,
+                transfers: Vec::new(),
+            },
+        );
     state.plugins.publish_event(
         "deployment.started",
         json!({
@@ -1165,7 +1176,10 @@ pub(super) fn add_whole_ranges(
     if let Some(reason) = &options.reason {
         return Err(format!("cannot choose layers of {}: {}", group, reason));
     }
-    let last = options.total_layers.checked_sub(1).ok_or("the model has no layers")?;
+    let last = options
+        .total_layers
+        .checked_sub(1)
+        .ok_or("the model has no layers")?;
     let whole_bytes = options
         .cuts
         .first()
@@ -1175,7 +1189,11 @@ pub(super) fn add_whole_ranges(
         if end == last {
             return whole_bytes;
         }
-        options.cuts.iter().find(|cut| cut.end_layer == end).map(|cut| cut.size_bytes)
+        options
+            .cuts
+            .iter()
+            .find(|cut| cut.end_layer == end)
+            .map(|cut| cut.size_bytes)
     };
     let mut selection = Vec::with_capacity(ranges.len());
     for range in ranges {
@@ -1218,7 +1236,9 @@ pub(super) fn add_whole_ranges(
                     group
                 )
             })?;
-        if machine.holds_ready(range.start_layer, range.end_layer).is_none()
+        if machine
+            .holds_ready(range.start_layer, range.end_layer)
+            .is_none()
             && !machine
                 .holds(range.start_layer, range.end_layer)
                 .is_some_and(|shard| shard.virtual_slice)
@@ -1734,19 +1754,28 @@ mod tests {
     async fn a_deployment_is_deployed_once_at_a_time() {
         let name = format!("guard-{}", uuid::Uuid::new_v4().simple());
         let first = uuid::Uuid::new_v4().to_string();
-        claim_deploy_job(&first, "first".into(), &name).await.unwrap();
+        claim_deploy_job(&first, "first".into(), &name)
+            .await
+            .unwrap();
 
         let second = uuid::Uuid::new_v4().to_string();
-        assert_eq!(claim_deploy_job(&second, "second".into(), &name).await, Err(first.clone()));
+        assert_eq!(
+            claim_deploy_job(&second, "second".into(), &name).await,
+            Err(first.clone())
+        );
         assert!(!jobs().read().await.contains_key(&second));
 
         let other = format!("{name}-other");
         let third = uuid::Uuid::new_v4().to_string();
-        assert!(claim_deploy_job(&third, "other".into(), &other).await.is_ok());
+        assert!(claim_deploy_job(&third, "other".into(), &other)
+            .await
+            .is_ok());
 
         jobs().write().await.get_mut(&first).unwrap().state = "done";
         let fourth = uuid::Uuid::new_v4().to_string();
-        assert!(claim_deploy_job(&fourth, "again".into(), &name).await.is_ok());
+        assert!(claim_deploy_job(&fourth, "again".into(), &name)
+            .await
+            .is_ok());
 
         let mut map = jobs().write().await;
         for id in [&first, &third, &fourth] {

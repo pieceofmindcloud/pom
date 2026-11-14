@@ -39,9 +39,10 @@ use crate::gateway::{
 };
 use crate::openai::{approx_tokens, cors_headers, preflight, resolve_model};
 use crate::tool_call::{
-    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call, render_tools_block, OutputPart,
-    ScanEvent, TagScanner, ToolDef, ToolSignatures,
+    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call,
+    render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef, ToolSignatures,
 };
+use axum::extract::DefaultBodyLimit;
 use axum::{
     extract::State,
     http::StatusCode,
@@ -52,7 +53,6 @@ use axum::{
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use axum::extract::DefaultBodyLimit;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
@@ -210,7 +210,9 @@ fn pin_billing_stamp(system: String) -> String {
         Some((start, end))
     };
     let mut pins = Vec::new();
-    if let Some((start, end)) = field(b"cch=").filter(|(start, end)| end > start && end - start <= 16) {
+    if let Some((start, end)) =
+        field(b"cch=").filter(|(start, end)| end > start && end - start <= 16)
+    {
         pins.push((start, end));
     }
     if let Some((start, end)) = field(b"cc_version=").filter(|(start, end)| end - start <= 64) {
@@ -652,8 +654,14 @@ async fn messages(
         };
         return error_response(status, "invalid_request_error", error);
     }
-    if let Some(denial) =
-        crate::quota::admit(&state, auth.caller(), &prompt, input_tokens, &request_details).await
+    if let Some(denial) = crate::quota::admit(
+        &state,
+        auth.caller(),
+        &prompt,
+        input_tokens,
+        &request_details,
+    )
+    .await
     {
         crate::gateway::record_rejected(
             &state,
@@ -1574,7 +1582,12 @@ mod tests {
         assert!(first_key.contains("tool\u{1f}read") && !first_key.contains("zebra"));
         // A short system part is not worth pinning.
         assert_eq!(
-            crate::gateway::SharedPrefix::offer("sys\n\nUser: q", "sys\u{1e}user", "sys", "sys\u{1e}"),
+            crate::gateway::SharedPrefix::offer(
+                "sys\n\nUser: q",
+                "sys\u{1e}user",
+                "sys",
+                "sys\u{1e}"
+            ),
             crate::gateway::SharedPrefix::None
         );
     }
@@ -1593,8 +1606,11 @@ mod tests {
         };
         let first = request("bf4", "b145e");
         let second = request("a07", "9c2d1");
-        let render = |req: &MessagesRequest| render_prompt(req.system.as_ref(), &req.messages, &req.tools);
-        let key = |req: &MessagesRequest| conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools);
+        let render =
+            |req: &MessagesRequest| render_prompt(req.system.as_ref(), &req.messages, &req.tools);
+        let key = |req: &MessagesRequest| {
+            conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools)
+        };
         assert_eq!(render(&first), render(&second));
         assert_eq!(key(&first), key(&second));
         assert!(render(&first).contains("cc_version=2.1.170.fff; cc_entrypoint=cli; cch=fffff;"));

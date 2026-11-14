@@ -73,16 +73,16 @@ use crate::network::PeerInfo;
 use crate::plan::DEFAULT_RESERVE_PCT;
 use crate::webui::{
     jobs, launch, new_job, set_job, set_job_progress, CapacityPreview, CapacityPreviewRequest,
-    LaunchRequest, LaunchTarget, LayerCut, MergeSource, ModelLayerOptions,
-    ReconfigureSlice, RuntimeParams, SliceRange, SliceRangesRequest, PEER_TIMEOUT,
+    LaunchRequest, LaunchTarget, LayerCut, MergeSource, ModelLayerOptions, ReconfigureSlice,
+    RuntimeParams, SliceRange, SliceRangesRequest, PEER_TIMEOUT,
 };
 
 const MIB: u64 = 1024 * 1024;
 
 mod launch;
 mod lifecycle;
-mod overrides;
 mod node;
+mod overrides;
 mod planning;
 mod preview;
 #[path = "routes.rs"]
@@ -98,9 +98,9 @@ pub use planning::*;
 use preview::*;
 pub use routes_impl::*;
 pub use sidecars::*;
+pub(crate) use survey::memory_capacity;
 #[cfg(test)]
 pub(crate) use survey::survey_for_tests;
-pub(crate) use survey::memory_capacity;
 use survey::*;
 pub use types::*;
 

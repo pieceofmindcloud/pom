@@ -217,7 +217,10 @@ pub(crate) async fn save_relay_policy(
 
 /// Saves and fans out `settings` from the principal (the payments runtime
 /// mirrors a deployment's price this way).
-pub(crate) async fn apply_network_settings(state: &GatewayState, settings: NetworkSettings) -> Result<usize, String> {
+pub(crate) async fn apply_network_settings(
+    state: &GatewayState,
+    settings: NetworkSettings,
+) -> Result<usize, String> {
     apply_network_settings_with_key(state, settings, true, None, None).await
 }
 
@@ -681,7 +684,9 @@ pub(crate) fn spawn_network_settings_ratchet(state: GatewayState) {
         // The principal authorizes a demonstration on itself from its own
         // environment; every other node waits for the principal's answer.
         let profile = state.auth.read().await.profile;
-        if state.admin_trust.effective_authority(&state.authority_principal, profile)
+        if state
+            .admin_trust
+            .effective_authority(&state.authority_principal, profile)
             == Some(crate::admin_trust::EffectiveAuthority::Principal)
         {
             crate::user_session::set_demo_authorized(crate::user_session::demo_mode_active_env());

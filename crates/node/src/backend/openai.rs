@@ -17,9 +17,10 @@ use crate::gateway::{
     DEFAULT_MAX_TOKENS,
 };
 use crate::tool_call::{
-    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call, render_tools_block, OutputPart,
-    ScanEvent, TagScanner, ToolDef, ToolSignatures,
+    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call,
+    render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef, ToolSignatures,
 };
+use axum::extract::DefaultBodyLimit;
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -27,7 +28,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use axum::extract::DefaultBodyLimit;
 use base64::Engine as _;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
@@ -487,11 +487,17 @@ struct ModelObject {
 }
 
 /// The `pricing` of `id` under `settings`, when the network charges for it.
-pub(crate) fn model_pricing(settings: &crate::config::NetworkSettings, id: &str) -> Option<serde_json::Value> {
+pub(crate) fn model_pricing(
+    settings: &crate::config::NetworkSettings,
+    id: &str,
+) -> Option<serde_json::Value> {
     if !settings.payments.enabled {
         return None;
     }
-    let price = settings.payments.prices.get(crate::deployment::split_selector(id).0)?;
+    let price = settings
+        .payments
+        .prices
+        .get(crate::deployment::split_selector(id).0)?;
     let per_token = |micro_per_1k: i64| format!("{}", micro_per_1k as f64 / 1e9);
     Some(json!({
         "prompt": per_token(price.in_micro_per_1k),
@@ -557,8 +563,7 @@ fn covers_whole_model(p: &crate::network::PeerInfo) -> bool {
 /// that is loading must not hide the one that serves).
 fn group_ready(group: &[&crate::network::PeerInfo]) -> bool {
     let ready = |p: &crate::network::PeerInfo| p.runtime_capacity.is_some() || p.idle;
-    group.iter().all(|p| ready(p))
-        || group.iter().any(|p| ready(p) && covers_whole_model(p))
+    group.iter().all(|p| ready(p)) || group.iter().any(|p| ready(p) && covers_whole_model(p))
 }
 
 pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
@@ -570,8 +575,10 @@ pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<St
     let mut ids: Vec<String> = alive_models
         .into_iter()
         .filter(|model| {
-            let group: Vec<&crate::network::PeerInfo> =
-                peers.iter().filter(|p| p.is_alive() && p.model == *model).collect();
+            let group: Vec<&crate::network::PeerInfo> = peers
+                .iter()
+                .filter(|p| p.is_alive() && p.model == *model)
+                .collect();
             group_ready(&group)
         })
         .collect();
@@ -642,7 +649,13 @@ async fn get_model(
             .await;
         let vision = crate::webui::model_vision_supported(&state, &id).await;
         let pricing = model_pricing(&crate::payments::runtime::settings(&state).await, &id);
-        let mut model = model_object(id, chrono::Utc::now().timestamp(), context_length, max_completion_tokens, vision);
+        let mut model = model_object(
+            id,
+            chrono::Utc::now().timestamp(),
+            context_length,
+            max_completion_tokens,
+            vision,
+        );
         model.pricing = pricing;
         (cors_headers(), Json(model)).into_response()
     } else {
@@ -899,9 +912,14 @@ async fn completions(
         };
         return error_response(status, error);
     }
-    if let Some(denial) =
-        crate::quota::admit(&state, auth.caller(), &req.prompt, prompt_tokens, &request_details)
-            .await
+    if let Some(denial) = crate::quota::admit(
+        &state,
+        auth.caller(),
+        &req.prompt,
+        prompt_tokens,
+        &request_details,
+    )
+    .await
     {
         crate::gateway::record_rejected(
             &state,
@@ -1288,7 +1306,16 @@ fn stream_response(
         tx,
     );
 
-    let stream = sse_stream(rx, id, created, model, mode, budget.total, output_limit, tools);
+    let stream = sse_stream(
+        rx,
+        id,
+        created,
+        model,
+        mode,
+        budget.total,
+        output_limit,
+        tools,
+    );
     (
         cors_headers(),
         Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()),
@@ -1793,11 +1820,16 @@ mod tests {
         let off = json!({"chat_template_kwargs": {"enable_thinking": false}});
         assert!(!super::client_thinking(None, &off));
         assert!(super::client_thinking(Some(true), &off));
-        assert!(!super::client_thinking(None, &json!({"reasoning_effort": "none"})));
-        assert!(super::client_thinking(None, &json!({"reasoning_effort": "low"})));
+        assert!(!super::client_thinking(
+            None,
+            &json!({"reasoning_effort": "none"})
+        ));
+        assert!(super::client_thinking(
+            None,
+            &json!({"reasoning_effort": "low"})
+        ));
         assert!(super::client_thinking(None, &json!({})));
     }
-
 
     #[test]
     fn reasoning_uses_the_structured_chat_delta_instead_of_visible_content() {
@@ -3226,13 +3258,21 @@ mod tests {
         let mut settings = crate::config::NetworkSettings::default();
         settings.payments.prices.insert(
             "m".into(),
-            crate::config::ModelPrice { in_micro_per_1k: 300_000, out_micro_per_1k: 1_500_000 },
+            crate::config::ModelPrice {
+                in_micro_per_1k: 300_000,
+                out_micro_per_1k: 1_500_000,
+            },
         );
-        assert!(model_pricing(&settings, "m").is_none(), "free while charging is off");
+        assert!(
+            model_pricing(&settings, "m").is_none(),
+            "free while charging is off"
+        );
         settings.payments.enabled = true;
         let price = model_pricing(&settings, "m@d-0123abcd").unwrap();
-        assert_eq!((price["prompt"].as_str(), price["completion"].as_str()), (Some("0.0003"), Some("0.0015")));
+        assert_eq!(
+            (price["prompt"].as_str(), price["completion"].as_str()),
+            (Some("0.0003"), Some("0.0015"))
+        );
         assert!(model_pricing(&settings, "other").is_none());
     }
-
 }

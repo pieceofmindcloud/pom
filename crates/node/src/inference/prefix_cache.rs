@@ -731,7 +731,10 @@ mod tests {
         let r1 = vec!["h".to_string()];
         assert!(idx.record("m", &r1, "a", "sys", 1, 1_000, false).is_empty());
         // Next turn of the same lineage: drops the ancestor "a".
-        assert_eq!(idx.record("m", &r1, "b", "sys\nu1", 3, 1_000, false), vec!["a"]);
+        assert_eq!(
+            idx.record("m", &r1, "b", "sys\nu1", 3, 1_000, false),
+            vec!["a"]
+        );
         assert_eq!(
             idx.record("m", &r1, "c", "sys\nu1\nu2", 5, 1_000, false),
             vec!["b"]
@@ -754,14 +757,23 @@ mod tests {
     fn a_pinned_system_part_outlives_the_conversations_that_grow_from_it() {
         let (dir, idx) = tmp_index("pinned", DEFAULT_SLOT_AUTO_MAX_BYTES);
         let r1 = vec!["h".to_string()];
-        assert!(idx.record("m", &r1, "root", "sys", 1, 1_000, true).is_empty());
+        assert!(idx
+            .record("m", &r1, "root", "sys", 1, 1_000, true)
+            .is_empty());
         // A conversation that opens with it does not supersede it...
-        assert!(idx.record("m", &r1, "a", "sys\nu1", 3, 1_000, false).is_empty());
+        assert!(idx
+            .record("m", &r1, "a", "sys\nu1", 3, 1_000, false)
+            .is_empty());
         // ...and its own next turn supersedes only its own ancestor.
-        assert_eq!(idx.record("m", &r1, "a2", "sys\nu1\nu2", 5, 1_000, false), vec!["a"]);
+        assert_eq!(
+            idx.record("m", &r1, "a2", "sys\nu1\nu2", 5, 1_000, false),
+            vec!["a"]
+        );
         // So a new conversation still starts from the system part.
         assert_eq!(
-            idx.longest_prefix_match("m", &r1, "sys\nother").expect("the pinned root").key_hash,
+            idx.longest_prefix_match("m", &r1, "sys\nother")
+                .expect("the pinned root")
+                .key_hash,
             "root"
         );
         let _ = std::fs::remove_dir_all(&dir);

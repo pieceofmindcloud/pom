@@ -673,7 +673,10 @@ impl NodeConfig {
         }
         if let Some(limit) = model_context_limit(&self.model_path) {
             if self.n_ctx > limit {
-                bail!("n_ctx {} exceeds the {limit} tokens the model declares (context_length)", self.n_ctx);
+                bail!(
+                    "n_ctx {} exceeds the {limit} tokens the model declares (context_length)",
+                    self.n_ctx
+                );
             }
         }
         total_context_tokens(self.n_ctx, self.max_sessions)?;
@@ -1065,7 +1068,10 @@ impl NodeRuntime {
         let Some(assignment) = self.assignment.read().await.clone() else {
             return;
         };
-        let detail = format!("model unloaded after {} min without requests", cfg.idle_minutes);
+        let detail = format!(
+            "model unloaded after {} min without requests",
+            cfg.idle_minutes
+        );
         self.unload_locked(&cfg, &assignment, detail).await;
     }
 
@@ -1087,8 +1093,12 @@ impl NodeRuntime {
         let Some(assignment) = self.assignment.read().await.clone() else {
             return false;
         };
-        self.unload_locked(&cfg, &assignment, "model lent its GPU to an image".to_owned())
-            .await;
+        self.unload_locked(
+            &cfg,
+            &assignment,
+            "model lent its GPU to an image".to_owned(),
+        )
+        .await;
         true
     }
 
@@ -1102,10 +1112,7 @@ impl NodeRuntime {
         self.net.set_slot_persist_ready(false);
         self.net.set_runtime_generation(generation);
         self.net.set_idle(true);
-        *self.status.write().await = RuntimeStatus::new(
-            ServerState::Idle,
-            detail.clone(),
-        );
+        *self.status.write().await = RuntimeStatus::new(ServerState::Idle, detail.clone());
         self.status_changed.notify_waiters();
         info!("💤 {detail}; the next request reloads it");
         if let Err(error) = crate::lastslice::save_at(
@@ -2655,7 +2662,9 @@ mod tests {
 
         let app = axum::Router::new().route(
             "/health",
-            axum::routing::get(|| async { axum::Json(serde_json::json!({ "model_loaded": true })) }),
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({ "model_loaded": true }))
+            }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -2675,7 +2684,12 @@ mod tests {
         let _ = attempt_tx.send(0);
         rt.spawn_health_watch(c.clone(), 0, Some(attempt_rx));
 
-        let serving = || matches!(crate::lastslice::inspect(), crate::lastslice::LastSlice::Serving(_));
+        let serving = || {
+            matches!(
+                crate::lastslice::inspect(),
+                crate::lastslice::LastSlice::Serving(_)
+            )
+        };
         for _ in 0..60 {
             if serving() {
                 break;
@@ -2693,7 +2707,10 @@ mod tests {
             }
             sleep(Duration::from_millis(250)).await;
         }
-        assert!(serving(), "the restarted attempt is confirmed by /health again");
+        assert!(
+            serving(),
+            "the restarted attempt is confirmed by /health again"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2742,7 +2759,11 @@ mod tests {
         );
         let dir = tempfile::tempdir().expect("tempdir");
         let journal = dir.path().join("pom.json.last-slice.json");
-        let rt = NodeRuntime::new_with_last_slice_path(net, Arc::new(RwLock::new(None)), journal.clone());
+        let rt = NodeRuntime::new_with_last_slice_path(
+            net,
+            Arc::new(RwLock::new(None)),
+            journal.clone(),
+        );
         rt.seed_config_for_test(cfg()).await;
         crate::lastslice::begin_new_attempt_at(&journal, &cfg()).expect("pending journal");
         assert!(journal.exists());
@@ -2754,12 +2775,24 @@ mod tests {
 
         rt.stop().await;
 
-        assert!(rt.config().await.is_none(), "the node no longer has the deployment");
+        assert!(
+            rt.config().await.is_none(),
+            "the node no longer has the deployment"
+        );
         let status = rt.status().await;
         assert_eq!(status.state, ServerState::Disabled);
-        assert!(status.detail.contains("released when its load returns"), "{}", status.detail);
-        assert!(!journal.exists(), "a crash of the load must not bring the deployment back");
-        let supervisor = rt.take_supervisor().expect("the loading supervisor is kept for the next apply to wait on");
+        assert!(
+            status.detail.contains("released when its load returns"),
+            "{}",
+            status.detail
+        );
+        assert!(
+            !journal.exists(),
+            "a crash of the load must not bring the deployment back"
+        );
+        let supervisor = rt
+            .take_supervisor()
+            .expect("the loading supervisor is kept for the next apply to wait on");
         release.send(()).unwrap();
         supervisor.await.unwrap();
     }
@@ -2939,10 +2972,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pom-ctx-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let model = dir.join("model.gguf");
-        std::fs::write(&model, crate::catalog::tests::gguf_header_fixture(
-            &[("llama.context_length", 262_144), ("llama.block_count", 32)],
-            &[("general.architecture", "llama")],
-        ))
+        std::fs::write(
+            &model,
+            crate::catalog::tests::gguf_header_fixture(
+                &[("llama.context_length", 262_144), ("llama.block_count", 32)],
+                &[("general.architecture", "llama")],
+            ),
+        )
         .unwrap();
         let mut c = cfg();
         c.model_path = model.to_string_lossy().into_owned();

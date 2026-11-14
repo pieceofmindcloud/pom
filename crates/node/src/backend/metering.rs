@@ -108,7 +108,8 @@ pub(crate) fn spawn_refresher(state: GatewayState) {
             if let Some(ctx) = context() {
                 let cycle = metering_core::cycle::cycle_of(now_ms(), ctx.settings.cycle_secs);
                 if last_prune_cycle != Some(cycle) {
-                    let oldest = metering_core::cycle::oldest_kept(cycle, ctx.settings.retain_cycles);
+                    let oldest =
+                        metering_core::cycle::oldest_kept(cycle, ctx.settings.retain_cycles);
                     if let Err(error) = prune(&state.database, oldest) {
                         warn!("metering: pruning old cycles failed: {error}");
                     }
@@ -170,7 +171,10 @@ fn blob_tokens(blob: &[u8]) -> Vec<i32> {
 pub(crate) fn prune(db: &crate::db::PomDb, oldest_kept: u64) -> Result<()> {
     db.with_write("metering prune", |c| {
         for table in ["metering_proofs", "metering_tokens", "metering_outbox"] {
-            c.execute(&format!("DELETE FROM {table} WHERE cycle < ?1"), params![oldest_kept as i64])?;
+            c.execute(
+                &format!("DELETE FROM {table} WHERE cycle < ?1"),
+                params![oldest_kept as i64],
+            )?;
         }
         Ok(())
     })
@@ -205,7 +209,8 @@ pub(crate) fn proofs_commit(rid: &str, cycle: u64, chunks: Vec<Vec<u8>>) {
 
 pub(crate) fn proofs_read(db: &crate::db::PomDb, rid: &str) -> Result<Vec<Vec<u8>>> {
     db.with_read("metering proofs read", |c| {
-        let mut stmt = c.prepare("SELECT proof FROM metering_proofs WHERE rid = ?1 ORDER BY chunk")?;
+        let mut stmt =
+            c.prepare("SELECT proof FROM metering_proofs WHERE rid = ?1 ORDER BY chunk")?;
         let rows = stmt
             .query_map(params![rid], |r| r.get::<_, Vec<u8>>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -213,7 +218,13 @@ pub(crate) fn proofs_read(db: &crate::db::PomDb, rid: &str) -> Result<Vec<Vec<u8
     })
 }
 
-pub(crate) fn tokens_store(db: &crate::db::PomDb, bid: &str, cycle: u64, prompt: &[i32], output: &[i32]) -> Result<()> {
+pub(crate) fn tokens_store(
+    db: &crate::db::PomDb,
+    bid: &str,
+    cycle: u64,
+    prompt: &[i32],
+    output: &[i32],
+) -> Result<()> {
     db.with_write("metering tokens", |c| {
         c.execute(
             "INSERT OR REPLACE INTO metering_tokens(bid, cycle, prompt, output) VALUES (?1, ?2, ?3, ?4)",
@@ -223,12 +234,18 @@ pub(crate) fn tokens_store(db: &crate::db::PomDb, bid: &str, cycle: u64, prompt:
     })
 }
 
-pub(crate) fn tokens_read(db: &crate::db::PomDb, bid: &str) -> Result<Option<(Vec<i32>, Vec<i32>)>> {
+pub(crate) fn tokens_read(
+    db: &crate::db::PomDb,
+    bid: &str,
+) -> Result<Option<(Vec<i32>, Vec<i32>)>> {
     db.with_read("metering tokens read", |c| {
         let mut stmt = c.prepare("SELECT prompt, output FROM metering_tokens WHERE bid = ?1")?;
         let mut rows = stmt.query(params![bid])?;
         Ok(match rows.next()? {
-            Some(row) => Some((blob_tokens(&row.get::<_, Vec<u8>>(0)?), blob_tokens(&row.get::<_, Vec<u8>>(1)?))),
+            Some(row) => Some((
+                blob_tokens(&row.get::<_, Vec<u8>>(0)?),
+                blob_tokens(&row.get::<_, Vec<u8>>(1)?),
+            )),
             None => None,
         })
     })
@@ -246,7 +263,8 @@ fn outbox_put(db: &crate::db::PomDb, bid: &str, cycle: u64, token: &str) -> Resu
 
 fn outbox_pending(db: &crate::db::PomDb, limit: usize) -> Result<Vec<(String, String)>> {
     db.with_read("metering outbox read", |c| {
-        let mut stmt = c.prepare("SELECT bid, token FROM metering_outbox ORDER BY attempts, cycle LIMIT ?1")?;
+        let mut stmt =
+            c.prepare("SELECT bid, token FROM metering_outbox ORDER BY attempts, cycle LIMIT ?1")?;
         let rows = stmt
             .query_map(params![limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -259,7 +277,10 @@ fn outbox_done(db: &crate::db::PomDb, bid: &str, delivered: bool) -> Result<()> 
         if delivered {
             c.execute("DELETE FROM metering_outbox WHERE bid = ?1", params![bid])?;
         } else {
-            c.execute("UPDATE metering_outbox SET attempts = attempts + 1 WHERE bid = ?1", params![bid])?;
+            c.execute(
+                "UPDATE metering_outbox SET attempts = attempts + 1 WHERE bid = ?1",
+                params![bid],
+            )?;
         }
         Ok(())
     })
@@ -277,8 +298,14 @@ static FORWARDED: Mutex<Option<HashMap<String, Forwarded>>> = Mutex::new(None);
 const MAX_FORWARDED: usize = 4096;
 
 /// A frame for `session_id` is about to leave for the next hop.
-pub(crate) fn note_forward(session_id: Option<&str>, tensor: Option<(&[f32], &[usize])>, dtype: crate::wire::WireDtype) {
-    let (Some(sid), Some((values, shape))) = (session_id, tensor) else { return };
+pub(crate) fn note_forward(
+    session_id: Option<&str>,
+    tensor: Option<(&[f32], &[usize])>,
+    dtype: crate::wire::WireDtype,
+) {
+    let (Some(sid), Some((values, shape))) = (session_id, tensor) else {
+        return;
+    };
     if context().is_none() {
         return;
     }
@@ -289,10 +316,16 @@ pub(crate) fn note_forward(session_id: Option<&str>, tensor: Option<(&[f32], &[u
         Err(_) => return,
     };
     let bytes: Vec<u8> = decoded.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let Ok(mut map) = FORWARDED.lock() else { return };
+    let Ok(mut map) = FORWARDED.lock() else {
+        return;
+    };
     let map = map.get_or_insert_with(HashMap::new);
     if map.len() >= MAX_FORWARDED && !map.contains_key(sid) {
-        if let Some(oldest) = map.iter().min_by_key(|(_, (_, _, at))| *at).map(|(k, _)| k.clone()) {
+        if let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, (_, _, at))| *at)
+            .map(|(k, _)| k.clone())
+        {
             map.remove(&oldest);
         }
     }
@@ -347,7 +380,9 @@ pub(crate) fn model_digest(path: &str) -> String {
     })()
     .unwrap_or_default();
     if let Ok(mut cache) = CACHE.lock() {
-        cache.get_or_insert_with(HashMap::new).insert(path.to_string(), digest.clone());
+        cache
+            .get_or_insert_with(HashMap::new)
+            .insert(path.to_string(), digest.clone());
     }
     digest
 }
@@ -388,7 +423,8 @@ impl ProofBuffer {
         let rows = values.len() / width;
         let chunk_rows = ctx.toploc.chunk.max(1) as usize;
         self.pending.extend_from_slice(values);
-        self.positions.extend((0..rows as u32).map(|i| first_pos + i));
+        self.positions
+            .extend((0..rows as u32).map(|i| first_pos + i));
         while self.positions.len() >= chunk_rows {
             let rest = self.pending.split_off(chunk_rows * width);
             let chunk = std::mem::replace(&mut self.pending, rest);
@@ -410,7 +446,8 @@ impl ProofBuffer {
     pub(crate) fn finish(&mut self, ctx: &MeterContext) -> (Option<String>, Option<u32>) {
         if !self.broken && !self.full_chunks_only && self.pending.len() >= ctx.toploc.k as usize {
             if let Ok(proof) = toploc::prove_chunk(&self.pending, ctx.toploc.k) {
-                self.chunks.push(toploc::encode_leaf(&self.positions, &proof));
+                self.chunks
+                    .push(toploc::encode_leaf(&self.positions, &proof));
             }
         }
         self.pending.clear();
@@ -419,7 +456,10 @@ impl ProofBuffer {
             return (None, None);
         }
         let leaves: Vec<&[u8]> = self.chunks.iter().map(|c| c.as_slice()).collect();
-        (Some(metering_core::merkle::root(&leaves)), Some(self.chunks.len() as u32))
+        (
+            Some(metering_core::merkle::root(&leaves)),
+            Some(self.chunks.len() as u32),
+        )
     }
 
     pub(crate) fn take_chunks(&mut self) -> Vec<Vec<u8>> {
@@ -433,7 +473,11 @@ impl ProofBuffer {
 pub(crate) fn nonce_of(body: &Value) -> Option<String> {
     body.get("metering_bundle")
         .and_then(Value::as_str)
-        .filter(|s| !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        .filter(|s| {
+            !s.is_empty()
+                && s.len() <= 64
+                && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
         .map(str::to_string)
 }
 
@@ -473,7 +517,11 @@ pub(crate) fn mint_ticket(consumer: Consumer, gw_visitor: bool) -> Option<Bundle
     context()?;
     let mut raw = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut raw);
-    Some(BundleTicket { bnd: hex::encode(raw), consumer, gw_visitor })
+    Some(BundleTicket {
+        bnd: hex::encode(raw),
+        consumer,
+        gw_visitor,
+    })
 }
 
 /// Assembles, countersigns and queues the bundle of a finished request.
@@ -490,7 +538,10 @@ pub(crate) fn finish_bundle(
     let hops = receipt::assemble_hops(plan, &ticket.bnd, answers, prompt);
     for hop in &hops {
         if let receipt::HopStatus::Unmetered { reason } = &hop.status {
-            warn!("metering: {} left unmetered: {reason}", &hop.node[..12.min(hop.node.len())]);
+            warn!(
+                "metering: {} left unmetered: {reason}",
+                &hop.node[..12.min(hop.node.len())]
+            );
         }
     }
     let gw_key = hex::encode(ctx.key.verifying_key().as_bytes());
@@ -551,7 +602,12 @@ async fn deliver_outbox(state: &GatewayState) {
 /// that runs it. `true` once a ledger accepted it (or refused it for good).
 async fn submit(state: &GatewayState, token: &str) -> bool {
     let params = json!({ "bundle": token });
-    if state.plugins.status(PLUGIN_CODE).await.is_some_and(|s| s.active) {
+    if state
+        .plugins
+        .status(PLUGIN_CODE)
+        .await
+        .is_some_and(|s| s.active)
+    {
         let caller = json!({
             "node_id": state.network.node_id,
             "local": true,
@@ -559,7 +615,11 @@ async fn submit(state: &GatewayState, token: &str) -> bool {
         });
         if let Some(reply) = state
             .plugins
-            .query_audit(PLUGIN_CODE, "peer.metering.submit", json!({ "params": params, "caller": caller }))
+            .query_audit(
+                PLUGIN_CODE,
+                "peer.metering.submit",
+                json!({ "params": params, "caller": caller }),
+            )
             .await
         {
             return accepted(&reply);
@@ -574,7 +634,10 @@ async fn submit(state: &GatewayState, token: &str) -> bool {
             continue;
         }
         let path = format!("/api/internal/plugins/{PLUGIN_CODE}/peer/metering.submit");
-        match state.control_post_json_routed(&peer, &path, &params, PEER_TIMEOUT).await {
+        match state
+            .control_post_json_routed(&peer, &path, &params, PEER_TIMEOUT)
+            .await
+        {
             Ok(response) if response.status().is_success() => {
                 if let Ok(reply) = response.json::<Value>().await {
                     return accepted(&reply);
@@ -590,8 +653,14 @@ async fn submit(state: &GatewayState, token: &str) -> bool {
 /// A ledger's answer: accepted, a duplicate, or a refusal it will never
 /// change its mind about all end the delivery.
 fn accepted(reply: &Value) -> bool {
-    reply.get("accepted").and_then(Value::as_bool).unwrap_or(false)
-        || reply.get("duplicate").and_then(Value::as_bool).unwrap_or(false)
+    reply
+        .get("accepted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || reply
+            .get("duplicate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
         || reply.get("final").and_then(Value::as_bool).unwrap_or(false)
 }
 
@@ -605,7 +674,12 @@ pub(crate) fn is_node_op(code: &str, op: &str) -> bool {
 
 /// Answers a node operation. `caller_role` is the caller's role as the
 /// trust chain proves it; only admins (and this node itself) get answers.
-pub(crate) async fn node_op(state: &GatewayState, caller_role: &str, op: &str, params: &Value) -> Result<Value, String> {
+pub(crate) async fn node_op(
+    state: &GatewayState,
+    caller_role: &str,
+    op: &str,
+    params: &Value,
+) -> Result<Value, String> {
     if !matches!(caller_role, "principal" | "admin") {
         return Err("only an admin may ask".into());
     }
@@ -620,7 +694,9 @@ pub(crate) async fn node_op(state: &GatewayState, caller_role: &str, op: &str, p
             match tokens_read(&state.database, bid).map_err(|e| e.to_string())? {
                 Some((prompt, output)) => {
                     use base64::Engine;
-                    let b64 = |t: &[i32]| base64::engine::general_purpose::STANDARD.encode(tokens_blob(t));
+                    let b64 = |t: &[i32]| {
+                        base64::engine::general_purpose::STANDARD.encode(tokens_blob(t))
+                    };
                     Ok(json!({ "prompt": b64(&prompt), "output": b64(&output) }))
                 }
                 None => Ok(json!({ "missing": true })),
@@ -630,7 +706,12 @@ pub(crate) async fn node_op(state: &GatewayState, caller_role: &str, op: &str, p
             let rid = params["rid"].as_str().ok_or("rid is required")?;
             let wanted: Vec<usize> = params["chunks"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as usize)).take(MAX_PROOF_CHUNKS).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_u64().map(|n| n as usize))
+                        .take(MAX_PROOF_CHUNKS)
+                        .collect()
+                })
                 .unwrap_or_default();
             let all = proofs_read(&state.database, rid).map_err(|e| e.to_string())?;
             if all.is_empty() {
@@ -653,14 +734,22 @@ pub(crate) async fn node_op(state: &GatewayState, caller_role: &str, op: &str, p
         "node.roles" => {
             let ids: Vec<String> = params["node_ids"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).take(512).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .take(512)
+                        .collect()
+                })
                 .unwrap_or_default();
             Ok(json!({ "roles": roles_of(state, &ids).await }))
         }
         "node.reexecute" => {
             // Readings (a validator's answer) come only from a validator or an admin.
             if params["mode"] == "readings" {
-                let admin = crate::admin_trust::is_admin_node(&state.admin_trust.document(), &state.network.node_id);
+                let admin = crate::admin_trust::is_admin_node(
+                    &state.admin_trust.document(),
+                    &state.network.node_id,
+                );
                 if !admin && !state.network.is_validator() {
                     return Err("this machine is not a validator".into());
                 }
@@ -708,7 +797,11 @@ async fn validators_of(state: &GatewayState) -> Vec<Value> {
         .filter(|peer| crate::gateway::peer_is_validator(peer))
         .map(|peer| json!({ "node_id": peer.node_id, "name": peer.hostname }))
         .collect();
-    tracing::debug!("metering: {} live validators among {} peers", found.len(), peers.len());
+    tracing::debug!(
+        "metering: {} live validators among {} peers",
+        found.len(),
+        peers.len()
+    );
     found
 }
 
@@ -751,12 +844,16 @@ pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
 pub(crate) fn with_test_context<T>(f: impl FnOnce() -> T) -> T {
     let _guard = test_guard();
     let key = SigningKey::from_bytes(&[9u8; 32]);
-    let node_id = metering_core::node_id_of_pubkey_hex(&hex::encode(key.verifying_key().as_bytes())).unwrap();
+    let node_id =
+        metering_core::node_id_of_pubkey_hex(&hex::encode(key.verifying_key().as_bytes())).unwrap();
     set_context(Some(MeterContext {
         key: Arc::new(key),
         node_id,
         net: "net-1".into(),
-        settings: MeteringSettings { enabled: true, ..Default::default() },
+        settings: MeteringSettings {
+            enabled: true,
+            ..Default::default()
+        },
         toploc: toploc::Params::default(),
     }));
     let out = f();
@@ -779,7 +876,10 @@ mod tests {
         let (_d, db) = temp_db();
         tokens_store(&db, "b1", 3, &[1, 2, -3], &[4]).unwrap();
         tokens_store(&db, "b2", 5, &[7], &[8, 9]).unwrap();
-        assert_eq!(tokens_read(&db, "b1").unwrap(), Some((vec![1, 2, -3], vec![4])));
+        assert_eq!(
+            tokens_read(&db, "b1").unwrap(),
+            Some((vec![1, 2, -3], vec![4]))
+        );
         prune(&db, 4).unwrap();
         assert_eq!(tokens_read(&db, "b1").unwrap(), None);
         assert!(tokens_read(&db, "b2").unwrap().is_some());
@@ -815,20 +915,22 @@ mod tests {
     #[test]
     fn proof_buffer_proves_full_chunks_and_a_long_enough_tail() {
         with_test_context(|| {
-        let ctx = context().unwrap();
-        let width = 64;
-        let mut buf = ProofBuffer::default();
-        let rows: Vec<f32> = (0..(40 * width)).map(|i| ((i * 7919) % 1000) as f32 - 500.0).collect();
-        buf.push_rows(&rows[..30 * width], width, 0);
-        buf.push_rows(&rows[30 * width..], width, 100);
-        let (root, chunks) = buf.finish(&ctx);
-        // 32 rows prove one chunk; the 8-row tail has 512 >= 128 values.
-        assert_eq!(chunks, Some(2));
-        assert!(root.is_some());
-        let leaves = buf.take_chunks();
-        let (positions, _) = toploc::decode_leaf(&leaves[0]).unwrap();
-        assert_eq!(positions.len(), 32);
-        assert_eq!(&positions[29..], &[29, 100, 101]);
+            let ctx = context().unwrap();
+            let width = 64;
+            let mut buf = ProofBuffer::default();
+            let rows: Vec<f32> = (0..(40 * width))
+                .map(|i| ((i * 7919) % 1000) as f32 - 500.0)
+                .collect();
+            buf.push_rows(&rows[..30 * width], width, 0);
+            buf.push_rows(&rows[30 * width..], width, 100);
+            let (root, chunks) = buf.finish(&ctx);
+            // 32 rows prove one chunk; the 8-row tail has 512 >= 128 values.
+            assert_eq!(chunks, Some(2));
+            assert!(root.is_some());
+            let leaves = buf.take_chunks();
+            let (positions, _) = toploc::decode_leaf(&leaves[0]).unwrap();
+            assert_eq!(positions.len(), 32);
+            assert_eq!(&positions[29..], &[29, 100, 101]);
         });
     }
 
@@ -839,7 +941,10 @@ mod tests {
         let b = dir.path().join("b.gguf");
         std::fs::write(&a, b"GGUF-a").unwrap();
         std::fs::write(&b, b"GGUF-b").unwrap();
-        let (da, db) = (model_digest(a.to_str().unwrap()), model_digest(b.to_str().unwrap()));
+        let (da, db) = (
+            model_digest(a.to_str().unwrap()),
+            model_digest(b.to_str().unwrap()),
+        );
         assert_eq!(da.len(), 64);
         assert_ne!(da, db);
         assert_eq!(model_digest("/nonexistent/x.gguf"), "");

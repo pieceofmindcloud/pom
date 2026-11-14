@@ -1118,7 +1118,7 @@ pub(super) async fn require_inference_auth(
         &parts.extensions,
         parts.uri.path(),
     )
-        .await
+    .await
     {
         Ok(()) => next.run(Request::from_parts(parts, body)).await,
         Err(rejection) => rejection.into_response(),

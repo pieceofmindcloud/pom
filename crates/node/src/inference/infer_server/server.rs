@@ -26,10 +26,7 @@ impl InferState {
         self.engine.token_to_piece_bytes(token, special)
     }
 
-    pub(super) fn new(
-        engine: LlmEngine,
-        cfg: &NodeConfig,
-    ) -> Self {
+    pub(super) fn new(engine: LlmEngine, cfg: &NodeConfig) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
         // The deployment's seed restarts the sampler's generator once, here,
@@ -1869,7 +1866,9 @@ fn close_meter(s: &mut InferState, sid: &str, nonce: Option<&str>) -> Option<(St
 /// re-execution, to a lifecycle answer. Only a metered turn adds the fields:
 /// an older gateway sees the same answer as before.
 fn attach_receipt(body: &mut Value, receipt: Option<(String, Vec<i32>)>) {
-    let Some((receipt, tokens)) = receipt else { return };
+    let Some((receipt, tokens)) = receipt else {
+        return;
+    };
     body["receipt"] = json!(receipt);
     if !tokens.is_empty() {
         use base64::Engine;
@@ -1913,7 +1912,10 @@ pub(super) async fn handle_rewind(
         .get(&req.session_id)
         .map(|session| session.prompt_len)
     else {
-        return answer(json!({ "rewound": false, "reason": "unknown session" }), receipt);
+        return answer(
+            json!({ "rewound": false, "reason": "unknown session" }),
+            receipt,
+        );
     };
     if req.n_tokens != prompt_len {
         return answer(
@@ -2191,9 +2193,11 @@ const PRESERVED_MARKERS: &[&str] = &[
 fn preserved_marker_tokens(engine: &LlmEngine) -> std::collections::HashSet<i32> {
     PRESERVED_MARKERS
         .iter()
-        .filter_map(|marker| match engine.tokenize(marker, false, true).as_slice() {
-            [token] if engine.token_to_piece_bytes(*token, false).is_empty() => Some(*token),
-            _ => None,
-        })
+        .filter_map(
+            |marker| match engine.tokenize(marker, false, true).as_slice() {
+                [token] if engine.token_to_piece_bytes(*token, false).is_empty() => Some(*token),
+                _ => None,
+            },
+        )
         .collect()
 }

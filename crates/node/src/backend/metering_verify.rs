@@ -33,11 +33,16 @@ pub(crate) const MAX_AUDIT_CHUNKS: usize = 32;
 
 pub(crate) fn decode_tokens(b64: &str) -> Result<Vec<i32>, String> {
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|e| format!("tokens: {e}"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| format!("tokens: {e}"))?;
     if bytes.len() % 4 != 0 {
         return Err("tokens: not whole i32 values".into());
     }
-    Ok(bytes.chunks_exact(4).map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
 }
 
 static ONE_AT_A_TIME: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
@@ -104,9 +109,12 @@ pub(crate) struct ReexecuteVerdict {
 /// Finished and running jobs, by id. A peer call cannot wait minutes, so
 /// `node.reexecute` answers a job id at once and the ledger polls
 /// `node.reexecute_status`. Kept for an hour.
-fn jobs() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Option<Value>)>> {
-    static JOBS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Option<Value>)>>> =
-        std::sync::OnceLock::new();
+fn jobs(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Option<Value>)>>
+{
+    static JOBS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Option<Value>)>>,
+    > = std::sync::OnceLock::new();
     JOBS.get_or_init(Default::default)
 }
 
@@ -114,11 +122,14 @@ const JOB_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// `node.reexecute`: validates, starts the job and answers `{job}`.
 pub(crate) async fn reexecute(state: &GatewayState, params: &Value) -> Result<Value, String> {
-    let request: ReexecuteRequest = serde_json::from_value(params.clone()).map_err(|e| format!("invalid request: {e}"))?;
+    let request: ReexecuteRequest =
+        serde_json::from_value(params.clone()).map_err(|e| format!("invalid request: {e}"))?;
     validate(&request)?;
     let tokens = decode_tokens(&request.tokens)?;
     if request.wants_readings() && request.engine.as_deref().is_some_and(|e| e != "llama.cpp") {
-        return Ok(json!({ "job": finished_job(json!(void("validators re-execute llama.cpp work only".into()))) }));
+        return Ok(
+            json!({ "job": finished_job(json!(void("validators re-execute llama.cpp work only".into()))) }),
+        );
     }
     if let Some(engine) = request.engine.clone().filter(|e| e != "llama.cpp") {
         let enabled = request.calibration
@@ -143,9 +154,11 @@ pub(crate) async fn reexecute(state: &GatewayState, params: &Value) -> Result<Va
             None => json!(void("the verifier does not hold this model".into())),
             Some((model_path, total)) => {
                 let _permit = ONE_AT_A_TIME.acquire().await;
-                tokio::task::spawn_blocking(move || json!(run(&request, &tokens, &model_path, total)))
-                    .await
-                    .unwrap_or_else(|e| json!(void(format!("the re-execution crashed: {e}"))))
+                tokio::task::spawn_blocking(move || {
+                    json!(run(&request, &tokens, &model_path, total))
+                })
+                .await
+                .unwrap_or_else(|e| json!(void(format!("the re-execution crashed: {e}"))))
             }
         };
         if let Ok(mut jobs) = jobs().lock() {
@@ -161,7 +174,12 @@ pub(crate) async fn reexecute(state: &GatewayState, params: &Value) -> Result<Va
 /// codec (the same `to_network`/`from_network` as the real stage link), and
 /// this node asks the audited stage for its rows as prompt pieces of the
 /// whole sequence, the protocol its later stage uses.
-async fn start_plugin_audit(state: &GatewayState, code: String, request: ReexecuteRequest, tokens: Vec<i32>) -> String {
+async fn start_plugin_audit(
+    state: &GatewayState,
+    code: String,
+    request: ReexecuteRequest,
+    tokens: Vec<i32>,
+) -> String {
     let id = uuid::Uuid::new_v4().simple().to_string();
     if let Ok(mut jobs) = jobs().lock() {
         jobs.insert(id.clone(), (std::time::Instant::now(), None));
@@ -204,7 +222,11 @@ struct StageAudit {
 
 impl StageAudit {
     fn new(state: &GatewayState, code: &str) -> Self {
-        Self { plugins: state.plugins.clone(), code: code.to_string(), ids: Default::default() }
+        Self {
+            plugins: state.plugins.clone(),
+            code: code.to_string(),
+            ids: Default::default(),
+        }
     }
 
     async fn query(&self, op: &str, params: Value) -> Result<Value, String> {
@@ -226,7 +248,8 @@ impl StageAudit {
         context: usize,
     ) -> Result<(u16, String), String> {
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let mut node = crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
+        let mut node =
+            crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
         node.model_path = model_path.to_string();
         node.model_label = std::path::Path::new(model_path)
             .file_name()
@@ -247,24 +270,36 @@ impl StageAudit {
         };
         let (gpus, devices) = crate::plugin_engine::node_gpus().await;
         let load = crate::plugin_engine::load_params(&node, &gpus, &devices, Some(&link));
-        let started = self.query("engine.audit.start", json!({ "id": id, "load": load })).await?;
+        let started = self
+            .query("engine.audit.start", json!({ "id": id, "load": load }))
+            .await?;
         if started["status"] != "accepted" {
-            return Err(started["error"].as_str().unwrap_or("the audit engine was refused").to_string());
+            return Err(started["error"]
+                .as_str()
+                .unwrap_or("the audit engine was refused")
+                .to_string());
         }
         self.ids.lock().map_err(|e| e.to_string())?.push(id.clone());
         let deadline = std::time::Instant::now() + AUDIT_LOAD;
         loop {
-            let status = self.query("engine.audit.status", json!({ "id": id })).await?;
+            let status = self
+                .query("engine.audit.status", json!({ "id": id }))
+                .await?;
             match status["status"]["state"].as_str() {
                 Some("ready") => {
-                    let port = status["link"]["port"].as_u64().and_then(|p| u16::try_from(p).ok());
+                    let port = status["link"]["port"]
+                        .as_u64()
+                        .and_then(|p| u16::try_from(p).ok());
                     let token = status["link"]["token"].as_str().map(str::to_string);
                     if let (Some(port), Some(token)) = (port, token) {
                         return Ok((port, token));
                     }
                 }
                 Some("error") => {
-                    return Err(status["status"]["detail"].as_str().unwrap_or("the audit stage failed").to_string())
+                    return Err(status["status"]["detail"]
+                        .as_str()
+                        .unwrap_or("the audit stage failed")
+                        .to_string())
                 }
                 _ => {}
             }
@@ -275,7 +310,13 @@ impl StageAudit {
         }
     }
 
-    async fn run(&self, r: &ReexecuteRequest, tokens: &[i32], model_path: &str, total: u32) -> ReexecuteVerdict {
+    async fn run(
+        &self,
+        r: &ReexecuteRequest,
+        tokens: &[i32],
+        model_path: &str,
+        total: u32,
+    ) -> ReexecuteVerdict {
         let mut prev: Option<(u16, String)> = None;
         for (index, [first, last]) in r.ranges.iter().copied().enumerate().take(r.audited + 1) {
             // A later audit stage reaches its earlier one through a relay that
@@ -283,20 +324,30 @@ impl StageAudit {
             let link = match prev.take() {
                 None => None,
                 Some((port, token)) => {
-                    let dtype = r.wire_out.get(index - 1).map(String::as_str).unwrap_or("f16");
-                    let dtype = crate::wire::WireDtype::parse(dtype).unwrap_or(crate::wire::WireDtype::F16);
+                    let dtype = r
+                        .wire_out
+                        .get(index - 1)
+                        .map(String::as_str)
+                        .unwrap_or("f16");
+                    let dtype =
+                        crate::wire::WireDtype::parse(dtype).unwrap_or(crate::wire::WireDtype::F16);
                     match codec_relay(port, dtype).await {
                         Ok(relay_port) => Some((relay_port, token)),
                         Err(e) => return void(format!("relay: {e}")),
                     }
                 }
             };
-            match self.start_stage(model_path, first, last, total, link, tokens.len() + 64).await {
+            match self
+                .start_stage(model_path, first, last, total, link, tokens.len() + 64)
+                .await
+            {
                 Ok(served) => prev = Some(served),
                 Err(e) => return void(format!("audit stage {first}..{last}: {e}")),
             }
         }
-        let Some((port, token)) = prev else { return void("no audit stage".into()) };
+        let Some((port, token)) = prev else {
+            return void("no audit stage".into());
+        };
         let params = r.params.unwrap_or_default();
         // A stage answers a prompt piece with its prompt rows and a verify
         // window with its window rows, two different tensors (Strata's window
@@ -338,18 +389,29 @@ impl StageAudit {
 /// codec in `dtype`. Returns the port the later stage connects to.
 async fn codec_relay(prev_port: u16, dtype: crate::wire::WireDtype) -> Result<u16, String> {
     use crate::plugin_stage_link::{from_network, read_frame, to_network, write_frame};
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.map_err(|e| e.to_string())?;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     tokio::spawn(async move {
-        let Ok((mut later, _)) = listener.accept().await else { return };
-        let Ok(mut earlier) = tokio::net::TcpStream::connect(("127.0.0.1", prev_port)).await else { return };
+        let Ok((mut later, _)) = listener.accept().await else {
+            return;
+        };
+        let Ok(mut earlier) = tokio::net::TcpStream::connect(("127.0.0.1", prev_port)).await else {
+            return;
+        };
         loop {
-            let Ok(Some(request)) = read_frame(&mut later).await else { break };
+            let Ok(Some(request)) = read_frame(&mut later).await else {
+                break;
+            };
             if write_frame(&mut earlier, &request).await.is_err() {
                 break;
             }
-            let Ok(Some(answer)) = read_frame(&mut earlier).await else { break };
-            let answer = match to_network(answer.clone(), dtype).and_then(|net| from_network(&net)) {
+            let Ok(Some(answer)) = read_frame(&mut earlier).await else {
+                break;
+            };
+            let answer = match to_network(answer.clone(), dtype).and_then(|net| from_network(&net))
+            {
                 Ok(decoded) => decoded,
                 Err(_) => answer,
             };
@@ -365,7 +427,9 @@ async fn codec_relay(prev_port: u16, dtype: crate::wire::WireDtype) -> Result<u1
 /// a new session, then prompt pieces. Returns the rows and their width.
 async fn prompt_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>, usize), String> {
     use crate::plugin_stage_link::{read_frame, write_frame};
-    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.map_err(|e| e.to_string())?;
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .map_err(|e| e.to_string())?;
     let mut call = |payload: Vec<u8>| {
         let mut frame = vec![1u8];
         frame.extend(payload);
@@ -373,13 +437,23 @@ async fn prompt_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>
     };
     let mut hello = vec![b'H'];
     hello.extend(token.as_bytes());
-    write_frame(&mut stream, &call(hello)).await.map_err(|e| e.to_string())?;
-    let answer = read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no hello")?;
+    write_frame(&mut stream, &call(hello))
+        .await
+        .map_err(|e| e.to_string())?;
+    let answer = read_frame(&mut stream)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no hello")?;
     let Some((_, width)) = crate::plugin_metering::hello_floats(&answer) else {
         return Err("the audited stage refused the hello".into());
     };
-    write_frame(&mut stream, &call(vec![b'Z'])).await.map_err(|e| e.to_string())?;
-    read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no answer to the reset")?;
+    write_frame(&mut stream, &call(vec![b'Z']))
+        .await
+        .map_err(|e| e.to_string())?;
+    read_frame(&mut stream)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no answer to the reset")?;
     let mut rows = Vec::with_capacity(tokens.len() * width);
     for (index, piece) in tokens.chunks(AUDIT_PIECE).enumerate() {
         let mut p = vec![b'P'];
@@ -389,9 +463,15 @@ async fn prompt_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>
             p.extend((*t as i64).to_le_bytes());
         }
         p.push(0);
-        write_frame(&mut stream, &call(p)).await.map_err(|e| e.to_string())?;
-        let answer = read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no rows")?;
-        let values = crate::plugin_metering::answer_rows(&answer).ok_or("an answer without rows")?;
+        write_frame(&mut stream, &call(p))
+            .await
+            .map_err(|e| e.to_string())?;
+        let answer = read_frame(&mut stream)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("no rows")?;
+        let values =
+            crate::plugin_metering::answer_rows(&answer).ok_or("an answer without rows")?;
         if values.len() != piece.len() * width {
             return Err("an answer of the wrong size".into());
         }
@@ -408,7 +488,9 @@ const AUDIT_WINDOW: usize = 4;
 /// their width.
 async fn window_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>, usize), String> {
     use crate::plugin_stage_link::{read_frame, write_frame};
-    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.map_err(|e| e.to_string())?;
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .map_err(|e| e.to_string())?;
     let call = |payload: Vec<u8>| {
         let mut frame = vec![1u8];
         frame.extend(payload);
@@ -416,17 +498,31 @@ async fn window_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>
     };
     let mut hello = vec![b'H'];
     hello.extend(token.as_bytes());
-    write_frame(&mut stream, &call(hello)).await.map_err(|e| e.to_string())?;
-    let answer = read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no hello")?;
+    write_frame(&mut stream, &call(hello))
+        .await
+        .map_err(|e| e.to_string())?;
+    let answer = read_frame(&mut stream)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no hello")?;
     let Some((width, prompt_width)) = crate::plugin_metering::hello_floats(&answer) else {
         return Err("the audited stage refused the hello".into());
     };
-    write_frame(&mut stream, &call(vec![b'Z'])).await.map_err(|e| e.to_string())?;
-    read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no answer to the reset")?;
+    write_frame(&mut stream, &call(vec![b'Z']))
+        .await
+        .map_err(|e| e.to_string())?;
+    read_frame(&mut stream)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no answer to the reset")?;
     let mut rows = Vec::with_capacity(tokens.len() * width);
     // The stage proves only the prompt part of each window row
     // (`plugin_metering::prompt_part`): keep the same part here.
-    let keep = if width > prompt_width && prompt_width > 0 { prompt_width } else { width };
+    let keep = if width > prompt_width && prompt_width > 0 {
+        prompt_width
+    } else {
+        width
+    };
     for (index, window) in tokens.chunks(AUDIT_WINDOW).enumerate() {
         let mut w = vec![b'W'];
         w.extend(((index * AUDIT_WINDOW) as i64).to_le_bytes());
@@ -434,17 +530,32 @@ async fn window_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>
         for t in window {
             w.extend(t.to_le_bytes());
         }
-        write_frame(&mut stream, &call(w)).await.map_err(|e| e.to_string())?;
-        let answer = read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no rows")?;
-        let values = crate::plugin_metering::answer_rows(&answer).ok_or("a window answer without rows")?;
+        write_frame(&mut stream, &call(w))
+            .await
+            .map_err(|e| e.to_string())?;
+        let answer = read_frame(&mut stream)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("no rows")?;
+        let values =
+            crate::plugin_metering::answer_rows(&answer).ok_or("a window answer without rows")?;
         if values.len() != window.len() * width {
             return Err("a window answer of the wrong size".into());
         }
-        rows.extend(values.chunks_exact(width).flat_map(|row| row[..keep].iter().copied()));
+        rows.extend(
+            values
+                .chunks_exact(width)
+                .flat_map(|row| row[..keep].iter().copied()),
+        );
         let mut c = vec![b'C'];
         c.extend((window.len() as u32).to_le_bytes());
-        write_frame(&mut stream, &call(c)).await.map_err(|e| e.to_string())?;
-        read_frame(&mut stream).await.map_err(|e| e.to_string())?.ok_or("no answer to the commit")?;
+        write_frame(&mut stream, &call(c))
+            .await
+            .map_err(|e| e.to_string())?;
+        read_frame(&mut stream)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("no answer to the commit")?;
     }
     Ok((rows, keep))
 }
@@ -522,7 +633,12 @@ pub(crate) fn rows_at(output: &[f32], width: usize, positions: &[u32]) -> Option
 
 /// A validator's readings of the audited hop's chunks (named by their
 /// positions) from its recomputed output, hex, in the verdict's `readings`.
-pub(crate) fn read_chunks(output: &[f32], width: usize, positions: &[Vec<u32>], params: &toploc::Params) -> ReexecuteVerdict {
+pub(crate) fn read_chunks(
+    output: &[f32],
+    width: usize,
+    positions: &[Vec<u32>],
+    params: &toploc::Params,
+) -> ReexecuteVerdict {
     let mut readings = Vec::with_capacity(positions.len());
     for chunk in positions {
         let Some(rows) = rows_at(output, width, chunk) else {
@@ -533,11 +649,21 @@ pub(crate) fn read_chunks(output: &[f32], width: usize, positions: &[Vec<u32>], 
             Err(e) => return void(format!("a chunk cannot be read: {e}")),
         }
     }
-    ReexecuteVerdict { pass: false, chunks: Vec::new(), void: None, readings: Some(json!(readings)) }
+    ReexecuteVerdict {
+        pass: false,
+        chunks: Vec::new(),
+        void: None,
+        readings: Some(json!(readings)),
+    }
 }
 
 /// Checks the audited hop's chunks against its recomputed output.
-pub(crate) fn check_chunks(output: &[f32], width: usize, chunks: &[String], params: &toploc::Params) -> ReexecuteVerdict {
+pub(crate) fn check_chunks(
+    output: &[f32],
+    width: usize,
+    chunks: &[String],
+    params: &toploc::Params,
+) -> ReexecuteVerdict {
     let mut verdicts = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         let Ok(leaf) = hex::decode(chunk) else {
@@ -561,7 +687,12 @@ pub(crate) fn check_chunks(output: &[f32], width: usize, chunks: &[String], para
             Err(e) => return failed(&format!("a proof does not open: {e}"), verdicts),
         }
     }
-    ReexecuteVerdict { pass: verdicts.iter().all(|v| v.pass), chunks: verdicts, void: None, readings: None }
+    ReexecuteVerdict {
+        pass: verdicts.iter().all(|v| v.pass),
+        chunks: verdicts,
+        void: None,
+        readings: None,
+    }
 }
 
 /// Chunk by chunk, the better of two readings of the sequence: a chunk
@@ -573,7 +704,11 @@ pub(crate) fn either_layout(a: ReexecuteVerdict, b: ReexecuteVerdict) -> Reexecu
     for i in 0..n {
         let pick = match (a.chunks.get(i), b.chunks.get(i)) {
             (Some(x), Some(y)) => {
-                if x.pass || (!y.pass && x.exp_mismatches <= y.exp_mismatches) { x.clone() } else { y.clone() }
+                if x.pass || (!y.pass && x.exp_mismatches <= y.exp_mismatches) {
+                    x.clone()
+                } else {
+                    y.clone()
+                }
             }
             (Some(x), None) => x.clone(),
             (None, Some(y)) => y.clone(),
@@ -582,29 +717,58 @@ pub(crate) fn either_layout(a: ReexecuteVerdict, b: ReexecuteVerdict) -> Reexecu
         chunks.push(pick);
     }
     let complete = chunks.len() == n && n > 0 && (a.chunks.len() == n || b.chunks.len() == n);
-    ReexecuteVerdict { pass: complete && chunks.iter().all(|c| c.pass), chunks, void: None, readings: None }
+    ReexecuteVerdict {
+        pass: complete && chunks.iter().all(|c| c.pass),
+        chunks,
+        void: None,
+        readings: None,
+    }
 }
 
 /// A proof that does not open, or names rows that do not exist, is the
 /// node's fault: a failed sample, not a void one.
 fn failed(reason: &str, chunks: Vec<toploc::Verdict>) -> ReexecuteVerdict {
     tracing::warn!("metering re-execution: {reason}");
-    ReexecuteVerdict { pass: false, chunks, void: None, readings: None }
+    ReexecuteVerdict {
+        pass: false,
+        chunks,
+        void: None,
+        readings: None,
+    }
 }
 
 fn void(reason: String) -> ReexecuteVerdict {
     tracing::warn!("metering re-execution void: {reason}");
-    ReexecuteVerdict { pass: false, chunks: vec![], void: Some(reason), readings: None }
+    ReexecuteVerdict {
+        pass: false,
+        chunks: vec![],
+        void: Some(reason),
+        readings: None,
+    }
 }
 
-fn run(r: &ReexecuteRequest, tokens: &[i32], model_path: &str, total: Option<u32>) -> ReexecuteVerdict {
+fn run(
+    r: &ReexecuteRequest,
+    tokens: &[i32],
+    model_path: &str,
+    total: Option<u32>,
+) -> ReexecuteVerdict {
     let params = r.params.unwrap_or_default();
     let total = total.unwrap_or(r.ranges.last().map(|x| x[1]).unwrap_or(0));
     let mut input: Option<(Vec<f32>, usize)> = None;
     for (index, [first, last]) in r.ranges.iter().copied().enumerate().take(r.audited + 1) {
         let is_first = first == 0;
         let is_last = last >= total || (index == r.audited && r.output_head);
-        let out = match run_range(model_path, first, last, total, is_first, is_last, tokens, input.take()) {
+        let out = match run_range(
+            model_path,
+            first,
+            last,
+            total,
+            is_first,
+            is_last,
+            tokens,
+            input.take(),
+        ) {
             Ok(out) => out,
             Err(e) => return void(format!("range {first}..{last}: {e}")),
         };
@@ -662,13 +826,29 @@ fn run_range(
         let dst = dir.join(format!("audit-{first}-{last}.gguf"));
         let end_inclusive = last - 1;
         if crate::plan::virtual_slices_enabled() {
-            crate::splitter::write_virtual_slice(std::path::Path::new(model_path), &dst, first, end_inclusive, is_first, is_last)?;
+            crate::splitter::write_virtual_slice(
+                std::path::Path::new(model_path),
+                &dst,
+                first,
+                end_inclusive,
+                is_first,
+                is_last,
+            )?;
         } else if !dst.exists() {
-            crate::splitter::split(std::path::Path::new(model_path), &dst, first, end_inclusive, is_first, is_last, |_| {})?;
+            crate::splitter::split(
+                std::path::Path::new(model_path),
+                &dst,
+                first,
+                end_inclusive,
+                is_first,
+                is_last,
+                |_| {},
+            )?;
         }
         dst
     };
-    let mut node = crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
+    let mut node =
+        crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
     node.model_path = slice.to_string_lossy().into_owned();
     node.start_layer = first;
     node.end_layer = last - 1;
@@ -683,7 +863,8 @@ fn run_range(
     // others by the residual they hand on (the capture callback).
     let engine_cfg = crate::runtime::engine_config_from_node(&node, !is_last)?;
     let cache = crate::llm::ModelCache::new();
-    let mut engine = crate::llm::LlmEngine::load_with_cache(&node.model_path, &engine_cfg, &cache, false)?;
+    let mut engine =
+        crate::llm::LlmEngine::load_with_cache(&node.model_path, &engine_cfg, &cache, false)?;
     let width = engine.n_embd;
     let mut batch = engine_cfg.n_batch.max(1) as usize;
     if is_last {
@@ -717,7 +898,16 @@ fn run_range(
                     let slice = &hidden[start * in_width..(start + n) * in_width];
                     let shape = vec![n, *in_width];
                     let ids = &tokens[start.min(tokens.len())..(start + n).min(tokens.len())];
-                    engine.decode_hidden_with_positions(slice, &shape, n, start as u32, 0, is_last, Some(ids), None)?;
+                    engine.decode_hidden_with_positions(
+                        slice,
+                        &shape,
+                        n,
+                        start as u32,
+                        0,
+                        is_last,
+                        Some(ids),
+                        None,
+                    )?;
                     output.extend(rows_of(&engine, n)?);
                 }
             }
@@ -754,7 +944,9 @@ mod tests {
     /// piece with rows that are the token id repeated `width` times.
     async fn fake_stage(width: u32) -> u16 {
         use crate::plugin_stage_link::{read_frame, write_frame};
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             let (mut s, _) = listener.accept().await.unwrap();
@@ -773,7 +965,9 @@ mod tests {
                         a.extend(1u32.to_le_bytes());
                         a.push(0);
                         for i in 0..n {
-                            let t = i32::from_le_bytes(frame[14 + 4 * i..18 + 4 * i].try_into().unwrap()) as f32;
+                            let t = i32::from_le_bytes(
+                                frame[14 + 4 * i..18 + 4 * i].try_into().unwrap(),
+                            ) as f32;
                             for _ in 0..width {
                                 a.extend((-t).to_le_bytes());
                             }
@@ -786,7 +980,9 @@ mod tests {
                         a.extend(1u32.to_le_bytes());
                         a.push(0);
                         for i in 0..n {
-                            let t = i64::from_le_bytes(frame[14 + 8 * i..22 + 8 * i].try_into().unwrap()) as f32;
+                            let t = i64::from_le_bytes(
+                                frame[14 + 8 * i..22 + 8 * i].try_into().unwrap(),
+                            ) as f32;
                             for _ in 0..width {
                                 a.extend(t.to_le_bytes());
                             }
@@ -813,13 +1009,38 @@ mod tests {
 
     #[test]
     fn a_chunk_passes_when_either_reading_matches() {
-        let v = |pass: bool, m: u32| toploc::Verdict { exp_mismatches: m, mant_err_mean: 1.0, mant_err_median: 1.0, pass };
-        let a = ReexecuteVerdict { pass: false, chunks: vec![v(true, 3), v(false, 90)], void: None, readings: None };
-        let b = ReexecuteVerdict { pass: false, chunks: vec![v(false, 100), v(true, 10)], void: None, readings: None };
+        let v = |pass: bool, m: u32| toploc::Verdict {
+            exp_mismatches: m,
+            mant_err_mean: 1.0,
+            mant_err_median: 1.0,
+            pass,
+        };
+        let a = ReexecuteVerdict {
+            pass: false,
+            chunks: vec![v(true, 3), v(false, 90)],
+            void: None,
+            readings: None,
+        };
+        let b = ReexecuteVerdict {
+            pass: false,
+            chunks: vec![v(false, 100), v(true, 10)],
+            void: None,
+            readings: None,
+        };
         let both = either_layout(a, b);
         assert!(both.pass);
-        let a = ReexecuteVerdict { pass: false, chunks: vec![v(true, 3), v(false, 90)], void: None, readings: None };
-        let b = ReexecuteVerdict { pass: false, chunks: vec![v(false, 100), v(false, 80)], void: None, readings: None };
+        let a = ReexecuteVerdict {
+            pass: false,
+            chunks: vec![v(true, 3), v(false, 90)],
+            void: None,
+            readings: None,
+        };
+        let b = ReexecuteVerdict {
+            pass: false,
+            chunks: vec![v(false, 100), v(false, 80)],
+            void: None,
+            readings: None,
+        };
         let neither = either_layout(a, b);
         assert!(!neither.pass);
         assert_eq!(neither.chunks[1].exp_mismatches, 80);
@@ -841,7 +1062,10 @@ mod tests {
         let tokens: Vec<i32> = vec![3, 301, 7];
         let (through, _) = prompt_rows(relay, "secret", &tokens).await.unwrap();
         // f8 cannot hold 301 exactly; the relay answers what the wire delivers.
-        let direct: Vec<f32> = tokens.iter().flat_map(|t| std::iter::repeat(*t as f32).take(64)).collect();
+        let direct: Vec<f32> = tokens
+            .iter()
+            .flat_map(|t| std::iter::repeat(*t as f32).take(64))
+            .collect();
         let expected = roundtrip(&direct, 64 * 3, "f8").unwrap();
         assert_eq!(through, expected);
     }
@@ -863,13 +1087,21 @@ mod tests {
 
     fn hidden(rows: usize, width: usize, seed: u32) -> Vec<f32> {
         (0..rows * width)
-            .map(|i| (((i as u32).wrapping_mul(2654435761) ^ seed.wrapping_mul(0x9E37_79B9)) >> 8 & 0xffff) as f32 / 3000.0 - 10.0)
+            .map(|i| {
+                (((i as u32).wrapping_mul(2654435761) ^ seed.wrapping_mul(0x9E37_79B9)) >> 8
+                    & 0xffff) as f32
+                    / 3000.0
+                    - 10.0
+            })
             .collect()
     }
 
     fn leaf(output: &[f32], width: usize, positions: &[u32]) -> String {
         let rows = rows_at(output, width, positions).unwrap();
-        hex::encode(toploc::encode_leaf(positions, &toploc::prove_chunk(&rows, 128).unwrap()))
+        hex::encode(toploc::encode_leaf(
+            positions,
+            &toploc::prove_chunk(&rows, 128).unwrap(),
+        ))
     }
 
     #[test]
@@ -877,7 +1109,10 @@ mod tests {
         let width = 256;
         let real = hidden(40, width, 1);
         let positions: Vec<u32> = (0..32).collect();
-        let chunks = vec![leaf(&real, width, &positions), leaf(&real, width, &[32, 33, 35])];
+        let chunks = vec![
+            leaf(&real, width, &positions),
+            leaf(&real, width, &[32, 33, 35]),
+        ];
         let params = toploc::Params::default();
         assert!(check_chunks(&real, width, &chunks, &params).pass);
         // Small numeric noise of another GPU still passes.
@@ -905,8 +1140,12 @@ mod tests {
         for dtype in ["f16", "f8", "i4g64"] {
             let ours = roundtrip(&values, width, dtype).unwrap();
             let wire = crate::wire::WireDtype::parse(dtype).unwrap();
-            let bytes = crate::wire::encode(&json!({"x": 1}), Some((&values, vec![3, width])), wire).unwrap();
-            let (_, Some((theirs, _))) = crate::wire::decode(&bytes).unwrap() else { panic!() };
+            let bytes =
+                crate::wire::encode(&json!({"x": 1}), Some((&values, vec![3, width])), wire)
+                    .unwrap();
+            let (_, Some((theirs, _))) = crate::wire::decode(&bytes).unwrap() else {
+                panic!()
+            };
             assert_eq!(ours, theirs, "{dtype}");
         }
     }
@@ -915,7 +1154,9 @@ mod tests {
     fn a_validator_returns_readings_and_never_takes_proofs() {
         let params = toploc::Params::for_engine("llama.cpp");
         let width = 256;
-        let output: Vec<f32> = (0..40 * width).map(|i| ((i * 7919) % 1009) as f32 / 37.0 - 13.0).collect();
+        let output: Vec<f32> = (0..40 * width)
+            .map(|i| ((i * 7919) % 1009) as f32 / 37.0 - 13.0)
+            .collect();
         let positions = vec![(0..32).collect::<Vec<u32>>(), (32..40).collect()];
         let v = read_chunks(&output, width, &positions, &params);
         let readings: Vec<String> = serde_json::from_value(v.readings.clone().unwrap()).unwrap();
@@ -924,9 +1165,14 @@ mod tests {
         let rows = rows_at(&output, width, &positions[0]).unwrap();
         let proof = toploc::prove_chunk(&rows, params.k).unwrap();
         let reading = toploc::Reading::decode(&hex::decode(&readings[0]).unwrap()).unwrap();
-        assert_eq!(toploc::check_reading(&proof, &reading, &params).unwrap(), toploc::check_chunk(&proof, &rows, &params).unwrap());
+        assert_eq!(
+            toploc::check_reading(&proof, &reading, &params).unwrap(),
+            toploc::check_chunk(&proof, &rows, &params).unwrap()
+        );
         // Positions past the sequence leave the job void.
-        assert!(read_chunks(&output, width, &[vec![99]], &params).void.is_some());
+        assert!(read_chunks(&output, width, &[vec![99]], &params)
+            .void
+            .is_some());
         // A request for readings that carries proofs is refused.
         let mut r = request(vec!["00".into()]);
         r.mode = Some("readings".into());
@@ -935,5 +1181,4 @@ mod tests {
         r.chunks.clear();
         assert!(validate(&r).is_ok());
     }
-
 }

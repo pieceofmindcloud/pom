@@ -43,8 +43,15 @@ async fn local_card() -> LobbyCard {
 /// What this node asks of a lobby in one exchange.
 enum Ask {
     Fetch,
-    Post { message_id: String, text: String },
-    Admission { role: crate::config::EnrollmentRole, home: Option<String>, validator: bool },
+    Post {
+        message_id: String,
+        text: String,
+    },
+    Admission {
+        role: crate::config::EnrollmentRole,
+        home: Option<String>,
+        validator: bool,
+    },
 }
 
 /// An admission request this node made to another network. `grant` is what an
@@ -183,7 +190,11 @@ async fn exchange(
             identity,
             card: card.clone(),
         },
-        Ask::Admission { role, home, validator } => LobbyRequest::Admission {
+        Ask::Admission {
+            role,
+            home,
+            validator,
+        } => LobbyRequest::Admission {
             identity,
             card: card.clone(),
             role,
@@ -628,18 +639,17 @@ pub(super) async fn decide_admission(
         return super::apply_decision(&state, decision).await;
     }
     let node_id = decision.node_id.trim().to_string();
-    let banned = decision.decision == "forget"
-        && super::is_approved_member(&state, &node_id)
-        && match super::ban(&state, &node_id).await {
-            Ok(_) => true,
-            Err(error) => {
-                return (
+    let banned =
+        decision.decision == "forget"
+            && super::is_approved_member(&state, &node_id)
+            && match super::ban(&state, &node_id).await {
+                Ok(_) => true,
+                Err(error) => return (
                     StatusCode::CONFLICT,
                     Json(json!({ "error": format!("{error:#}"), "reason": "revocation_refused" })),
                 )
-                    .into_response()
-            }
-        };
+                    .into_response(),
+            };
     let response = super::forward_decision(&state, &decision).await;
     if banned && !response.status().is_success() {
         // The ban already holds; the principal catches up from the

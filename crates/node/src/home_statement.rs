@@ -48,7 +48,10 @@ pub(crate) struct HomeClaims {
 }
 
 fn header() -> String {
-    format!(r#"{{"alg":"EdDSA","typ":"{}-home-network/v1"}}"#, crate::brand::slug())
+    format!(
+        r#"{{"alg":"EdDSA","typ":"{}-home-network/v1"}}"#,
+        crate::brand::slug()
+    )
 }
 
 fn now() -> i64 {
@@ -77,7 +80,11 @@ pub(crate) fn issue_for(
         net: document.anchor.cluster_id.clone(),
         principal: node_id.to_string(),
         principal_key: key_hex,
-        history: document.primary_history.iter().map(|p| p.pubkey.clone()).collect(),
+        history: document
+            .primary_history
+            .iter()
+            .map(|p| p.pubkey.clone())
+            .collect(),
         iat: now,
         exp: now + TTL_SECS,
     };
@@ -96,8 +103,19 @@ pub(crate) fn issue_for_member(
     if document.primary.pubkey != hex::encode(key.verifying_key().as_bytes()) {
         bail!("only the home network's principal signs its statements");
     }
-    let history = document.primary_history.iter().map(|p| p.pubkey.clone()).collect();
-    sign_member(key, &document.anchor.cluster_id, history, node_id, node_key, now)
+    let history = document
+        .primary_history
+        .iter()
+        .map(|p| p.pubkey.clone())
+        .collect();
+    sign_member(
+        key,
+        &document.anchor.cluster_id,
+        history,
+        node_id,
+        node_key,
+        now,
+    )
 }
 
 fn sign_member(
@@ -128,11 +146,16 @@ fn sign_member(
 /// Opens a statement presented by the caller `caller_node` (proved by the
 /// transport): signed by the principal it names, for that caller, in date.
 pub(crate) fn verify(token: &str, caller_node: &str, now: i64) -> Result<HomeClaims> {
-    let claims: HomeClaims = metering_core::token::open(token, &header(), |c: &HomeClaims| c.principal_key.clone())?;
-    if metering_core::node_id_of_pubkey_hex(&claims.principal_key).as_deref() != Some(claims.principal.as_str()) {
+    let claims: HomeClaims =
+        metering_core::token::open(token, &header(), |c: &HomeClaims| c.principal_key.clone())?;
+    if metering_core::node_id_of_pubkey_hex(&claims.principal_key).as_deref()
+        != Some(claims.principal.as_str())
+    {
         bail!("the statement's principal is not its key's");
     }
-    if metering_core::node_id_of_pubkey_hex(&claims.node_key).as_deref() != Some(claims.node.as_str()) {
+    if metering_core::node_id_of_pubkey_hex(&claims.node_key).as_deref()
+        != Some(claims.node.as_str())
+    {
         bail!("the statement's node is not its key's");
     }
     if claims.node != caller_node {
@@ -158,8 +181,14 @@ pub(crate) fn own(state: &crate::gateway::GatewayState) -> Option<String> {
         }
     }
     // Visiting: the home network is in standby. Otherwise the live chain is home.
-    let document = crate::webui::standby::standby_trust_document().unwrap_or_else(|| state.admin_trust.document());
-    if let Ok(token) = issue_for(&document, &state.authority_signing_key, &state.network.node_id, now) {
+    let document = crate::webui::standby::standby_trust_document()
+        .unwrap_or_else(|| state.admin_trust.document());
+    if let Ok(token) = issue_for(
+        &document,
+        &state.authority_signing_key,
+        &state.network.node_id,
+        now,
+    ) {
         if let Ok(mut slot) = OWN.lock() {
             *slot = Some((token.clone(), now + TTL_SECS));
         }
@@ -202,7 +231,8 @@ pub(crate) fn may_hold_statement(
     if crate::admin_trust::is_admin_node(&trust.document(), node_id) {
         return true;
     }
-    chat.admitted_role(node_id, trust.revoked_node_at(node_id)) == Some(crate::config::EnrollmentRole::Worker)
+    chat.admitted_role(node_id, trust.revoked_node_at(node_id))
+        == Some(crate::config::EnrollmentRole::Worker)
 }
 
 /// The lobby's `HomeStatement` answer: a statement for `node_id` (key
@@ -227,7 +257,11 @@ pub(crate) fn issue_for_lobby(
 /// On the principal, at an admission request: the account the candidate's
 /// home statement names, kept on its admission record. A statement for
 /// another node, forged or expired names nothing.
-pub(crate) fn note_admission(chat: &crate::network_chat::NetworkChat, node_id: &str, home: Option<&str>) {
+pub(crate) fn note_admission(
+    chat: &crate::network_chat::NetworkChat,
+    node_id: &str,
+    home: Option<&str>,
+) {
     if let Some(claims) = home.and_then(|t| verify(t, node_id, now()).ok()) {
         chat.set_admission_account(node_id, account_of(&claims));
     }
@@ -241,7 +275,11 @@ pub(crate) async fn internal_issue(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let refuse = |code: &str| {
-        (axum::http::StatusCode::FORBIDDEN, axum::Json(serde_json::json!({ "error": code }))).into_response()
+        (
+            axum::http::StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({ "error": code })),
+        )
+            .into_response()
     };
     let Some(caller) = auth.principal().cloned() else {
         return refuse("signature_required");
@@ -252,10 +290,18 @@ pub(crate) async fn internal_issue(
     let revoked = state.admin_trust.revoked_node_at(&caller.node_id).is_some()
         && !may_hold_statement(&state.network_chat, &state.admin_trust, &caller.node_id);
     let worker = async {
-        let peer = state.network.alive_peers().await.into_iter().find(|p| p.node_id == caller.node_id);
+        let peer = state
+            .network
+            .alive_peers()
+            .await
+            .into_iter()
+            .find(|p| p.node_id == caller.node_id);
         match peer {
             Some(peer) => {
-                state.network.is_member_key(&caller.node_id, &caller.pubkey).await
+                state
+                    .network
+                    .is_member_key(&caller.node_id, &caller.pubkey)
+                    .await
                     && !crate::gateway::peer_is_visitor(&state, &peer)
             }
             None => false,
@@ -268,7 +314,13 @@ pub(crate) async fn internal_issue(
     if !member {
         return refuse("not_a_member");
     }
-    match issue_for_member(&document, &state.authority_signing_key, &caller.node_id, &caller.pubkey, now()) {
+    match issue_for_member(
+        &document,
+        &state.authority_signing_key,
+        &caller.node_id,
+        &caller.pubkey,
+        now(),
+    ) {
         Ok(token) => axum::Json(serde_json::json!({ "statement": token })).into_response(),
         Err(_) => refuse("not_the_principal"),
     }
@@ -281,21 +333,34 @@ fn fresh_enough(state: &crate::gateway::GatewayState) -> bool {
         .is_some_and(|c| c.exp - now() > MEMBER_TTL_SECS / 2)
 }
 
-async fn renew_through_lobby(state: &crate::gateway::GatewayState, home: &crate::admin_trust::AdminTrustDocument) {
-    let Some(key) = crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&home.primary.pubkey) else {
+async fn renew_through_lobby(
+    state: &crate::gateway::GatewayState,
+    home: &crate::admin_trust::AdminTrustDocument,
+) {
+    let Some(key) = crate::pkarr_node::PkarrNode::public_key_uri_from_hex(&home.primary.pubkey)
+    else {
         return;
     };
-    let Ok(client) = crate::network_lobby::client().await else { return };
-    let request = crate::network_lobby::LobbyRequest::HomeStatement { identity: client.proof() };
+    let Ok(client) = crate::network_lobby::client().await else {
+        return;
+    };
+    let request = crate::network_lobby::LobbyRequest::HomeStatement {
+        identity: client.proof(),
+    };
     match client.request(&key, request).await {
         Ok(answer) => match answer.statement {
             Some(token) if verify(&token, &state.network.node_id, now()).is_ok() => {
                 let _ = state.database.save_local_setting(STORED, &token);
                 tracing::info!("home statement: renewed from the home principal's lobby");
             }
-            _ => tracing::warn!("home statement: the home principal refused: {:?}", answer.error),
+            _ => tracing::warn!(
+                "home statement: the home principal refused: {:?}",
+                answer.error
+            ),
         },
-        Err(error) => tracing::debug!("home statement: the home principal is out of reach: {error:#}"),
+        Err(error) => {
+            tracing::debug!("home statement: the home principal is out of reach: {error:#}")
+        }
     }
 }
 
@@ -321,11 +386,22 @@ pub(crate) fn spawn_keeper(state: crate::gateway::GatewayState) {
             if fresh_enough(&state) {
                 continue;
             }
-            let Some(peer) = state.network.alive_peers().await.into_iter().find(|p| p.node_id == document.primary.node_id) else {
+            let Some(peer) = state
+                .network
+                .alive_peers()
+                .await
+                .into_iter()
+                .find(|p| p.node_id == document.primary.node_id)
+            else {
                 continue;
             };
             let answer = state
-                .control_post_json(&peer, "/api/internal/home-statement", &serde_json::json!({}), std::time::Duration::from_secs(5))
+                .control_post_json(
+                    &peer,
+                    "/api/internal/home-statement",
+                    &serde_json::json!({}),
+                    std::time::Duration::from_secs(5),
+                )
                 .await;
             let body = match answer {
                 Ok(answer) => answer.json::<serde_json::Value>().await.unwrap_or_default(),
@@ -377,7 +453,10 @@ mod tests {
         let k = key(3);
         let token = statement(&k, 100);
         let claims = verify(&token, &id(&k), 200).unwrap();
-        assert_eq!(account_of(&claims), format!("net:{}", hex::encode(k.verifying_key().as_bytes())));
+        assert_eq!(
+            account_of(&claims),
+            format!("net:{}", hex::encode(k.verifying_key().as_bytes()))
+        );
     }
 
     #[test]
@@ -409,9 +488,13 @@ mod tests {
         assert_eq!(opened.principal, id(&principal));
         // What the principal issues for a member opens the same way.
         let member_key = hex::encode(member.verifying_key().as_bytes());
-        let issued = sign_member(&principal, "home", vec![], &id(&member), &member_key, 10).unwrap();
+        let issued =
+            sign_member(&principal, "home", vec![], &id(&member), &member_key, 10).unwrap();
         let opened = verify(&issued, &id(&member), 20).unwrap();
-        assert_eq!((opened.exp, opened.principal.as_str()), (10 + MEMBER_TTL_SECS, id(&principal).as_str()));
+        assert_eq!(
+            (opened.exp, opened.principal.as_str()),
+            (10 + MEMBER_TTL_SECS, id(&principal).as_str())
+        );
         // A key that is not the node's is refused.
         assert!(sign_member(&principal, "home", vec![], &id(&principal), &member_key, 10).is_err());
         // The member's own key cannot sign as the principal.

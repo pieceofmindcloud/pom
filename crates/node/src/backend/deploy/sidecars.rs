@@ -301,7 +301,11 @@ pub(super) fn attach_sidecars(
 
     // The projector goes where the prompt is read: llama.cpp's pipeline enters at layer 0, a plugin's staged split
     // serves from its last stage (`plugin_stage_link`).
-    let reader = if vision_on_tail { tail.as_ref() } else { head.as_ref() };
+    let reader = if vision_on_tail {
+        tail.as_ref()
+    } else {
+        head.as_ref()
+    };
     if vision_on {
         if let (Some(reader), Some((mode, file, from_link))) = (
             reader,
@@ -321,10 +325,15 @@ pub(super) fn attach_sidecars(
                     plan.mmproj_reason = None;
                 }
                 // the other machines that hold the whole model answer too: each gets the projector
-                let whole = |step: &Step| plan.total_layers.is_some_and(|total| step.end_layer + 1 == total);
+                let whole = |step: &Step| {
+                    plan.total_layers
+                        .is_some_and(|total| step.end_layer + 1 == total)
+                };
                 if whole(reader) {
                     for other in plan.steps.iter().filter(|step| {
-                        step.start_layer == 0 && whole(step) && step.target_node_id != reader.target_node_id
+                        step.start_layer == 0
+                            && whole(step)
+                            && step.target_node_id != reader.target_node_id
                     }) {
                         out.vision_heads.push(resolve_slot(
                             SidecarKind::Mmproj,
@@ -357,7 +366,11 @@ pub(super) fn attach_sidecars(
         }
     }
 
-    for slot in [&out.vision, &out.mtp].into_iter().flatten().chain(&out.vision_heads) {
+    for slot in [&out.vision, &out.mtp]
+        .into_iter()
+        .flatten()
+        .chain(&out.vision_heads)
+    {
         if let Some(problem) = &slot.problem {
             plan.blocked.get_or_insert(problem.clone());
         }

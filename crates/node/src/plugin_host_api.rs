@@ -498,10 +498,12 @@ pub(crate) async fn peer_call(
         } else {
             params = json!({ "local": true });
         }
-        Some(match crate::metering::node_op(&state, role, op, &params).await {
-            Ok(reply) => reply,
-            Err(error) => json!({ "error": error }),
-        })
+        Some(
+            match crate::metering::node_op(&state, role, op, &params).await {
+                Ok(reply) => reply,
+                Err(error) => json!({ "error": error }),
+            },
+        )
     } else if node_id == state.network.node_id {
         let caller = json!({
             "node_id": state.network.node_id,

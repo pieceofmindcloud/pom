@@ -51,9 +51,16 @@ pub(crate) enum Request {
     /// Continue after these ids (the prefix the stage already holds).
     Resume(Vec<i32>),
     /// A prompt piece.
-    Prompt { pos0: u32, tokens: Vec<i32> },
+    Prompt {
+        pos0: u32,
+        tokens: Vec<i32>,
+    },
     /// A verify window; `keep` is the previous window's commit folded in.
-    Window { pos0: u32, tokens: Vec<i32>, keep: Option<u32> },
+    Window {
+        pos0: u32,
+        tokens: Vec<i32>,
+        keep: Option<u32>,
+    },
     /// The previous window's first `n` tokens kept.
     Commit(u32),
     /// The later stage's hello.
@@ -62,11 +69,13 @@ pub(crate) enum Request {
 }
 
 fn u32_at(b: &[u8], at: usize) -> Option<u32> {
-    b.get(at..at + 4).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]))
+    b.get(at..at + 4)
+        .map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]))
 }
 
 fn i64_at(b: &[u8], at: usize) -> Option<i64> {
-    b.get(at..at + 8).map(|x| i64::from_le_bytes(x.try_into().unwrap()))
+    b.get(at..at + 8)
+        .map(|x| i64::from_le_bytes(x.try_into().unwrap()))
 }
 
 /// Reads a request frame (the link envelope's kind byte, then the payload).
@@ -80,19 +89,31 @@ pub(crate) fn parse_request(frame: &[u8]) -> Request {
             b'Z' => Request::Zero,
             b'R' => {
                 let n = u32_at(p, 1)? as usize;
-                Request::Resume((0..n).map(|i| u32_at(p, 5 + 4 * i).map(|v| v as i32)).collect::<Option<_>>()?)
+                Request::Resume(
+                    (0..n)
+                        .map(|i| u32_at(p, 5 + 4 * i).map(|v| v as i32))
+                        .collect::<Option<_>>()?,
+                )
             }
             b'P' => {
                 let pos0 = i64_at(p, 1)? as u32;
                 let n = u32_at(p, 9)? as usize;
-                let tokens = (0..n).map(|i| i64_at(p, 13 + 8 * i).map(|v| v as i32)).collect::<Option<_>>()?;
+                let tokens = (0..n)
+                    .map(|i| i64_at(p, 13 + 8 * i).map(|v| v as i32))
+                    .collect::<Option<_>>()?;
                 Request::Prompt { pos0, tokens }
             }
             b'W' | b'V' => {
                 let pos0 = i64_at(p, 1)? as u32;
                 let t = u32_at(p, 9)? as usize;
-                let tokens = (0..t).map(|i| u32_at(p, 13 + 4 * i).map(|v| v as i32)).collect::<Option<_>>()?;
-                let keep = if p[0] == b'V' { Some(u32_at(p, 13 + 4 * t)?) } else { None };
+                let tokens = (0..t)
+                    .map(|i| u32_at(p, 13 + 4 * i).map(|v| v as i32))
+                    .collect::<Option<_>>()?;
+                let keep = if p[0] == b'V' {
+                    Some(u32_at(p, 13 + 4 * t)?)
+                } else {
+                    None
+                };
                 Request::Window { pos0, tokens, keep }
             }
             b'C' => Request::Commit(u32_at(p, 1)?),
@@ -114,7 +135,12 @@ pub(crate) fn answer_rows(frame: &[u8]) -> Option<Vec<f32>> {
     if values.len() % 4 != 0 || values.is_empty() {
         return None;
     }
-    Some(values.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Some(
+        values
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+    )
 }
 
 fn f32_bytes(values: &[f32]) -> Vec<u8> {
@@ -152,7 +178,10 @@ struct HeldWindow {
 
 impl StageMeter {
     fn new() -> Self {
-        Self { t0: crate::metering::now_ms(), ..Default::default() }
+        Self {
+            t0: crate::metering::now_ms(),
+            ..Default::default()
+        }
     }
 
     fn place(&mut self, at: u32, tokens: &[i32]) {
@@ -185,7 +214,13 @@ impl StageMeter {
 
     /// A request this machine's engine served, with its answer rows as the
     /// later machine decodes them. `first` says this machine holds layer 0.
-    pub(crate) fn served(&mut self, request: &Request, rows: Option<&[f32]>, dtype: &str, first: bool) {
+    pub(crate) fn served(
+        &mut self,
+        request: &Request,
+        rows: Option<&[f32]>,
+        dtype: &str,
+        first: bool,
+    ) {
         self.served_in(request, rows, dtype, first, false)
     }
 
@@ -194,7 +229,14 @@ impl StageMeter {
     /// verify windows (`'W'`/`'V'`), committed like decode windows; the tag
     /// only decides whether the kept positions count as prompt (it lags at the
     /// turn from prompt to decode, which the commit makes harmless).
-    pub(crate) fn served_in(&mut self, request: &Request, rows: Option<&[f32]>, dtype: &str, first: bool, prompt_phase: bool) {
+    pub(crate) fn served_in(
+        &mut self,
+        request: &Request,
+        rows: Option<&[f32]>,
+        dtype: &str,
+        first: bool,
+        prompt_phase: bool,
+    ) {
         match request {
             Request::Zero => {
                 self.held = None;
@@ -212,8 +254,11 @@ impl StageMeter {
                     self.in_chain.absorb_tokens(*pos0, tokens);
                     self.place(*pos0, tokens);
                 }
-                if let Some(rows) = rows.filter(|r| !tokens.is_empty() && r.len() % tokens.len() == 0) {
-                    self.proofs.push_rows(rows, rows.len() / tokens.len(), *pos0);
+                if let Some(rows) =
+                    rows.filter(|r| !tokens.is_empty() && r.len() % tokens.len() == 0)
+                {
+                    self.proofs
+                        .push_rows(rows, rows.len() / tokens.len(), *pos0);
                 }
             }
             Request::Window { pos0, tokens, keep } => {
@@ -242,7 +287,9 @@ impl StageMeter {
         }
         if let Some(rows) = rows {
             let n = match request {
-                Request::Prompt { tokens, .. } | Request::Window { tokens, .. } => tokens.len() as u32,
+                Request::Prompt { tokens, .. } | Request::Window { tokens, .. } => {
+                    tokens.len() as u32
+                }
                 _ => 0,
             };
             self.out_chain.absorb(0..n, &f32_bytes(rows));
@@ -288,16 +335,21 @@ pub(crate) fn hello_floats(answer: &[u8]) -> Option<(usize, usize)> {
         return None;
     }
     let end = answer.len();
-    Some((u32_at(answer, end - 12)? as usize, u32_at(answer, end - 8)? as usize))
+    Some((
+        u32_at(answer, end - 12)? as usize,
+        u32_at(answer, end - 8)? as usize,
+    ))
 }
 
 /// The prompt part of window rows (`n` rows), when the stage's widths are known.
 pub(crate) fn prompt_part(rows: &[f32], n: usize) -> std::borrow::Cow<'_, [f32]> {
     let widths = ROW_FLOATS.lock().ok().and_then(|w| *w);
     match widths {
-        Some((wf, pf)) if n > 0 && wf > pf && rows.len() == n * wf => {
-            std::borrow::Cow::Owned(rows.chunks_exact(wf).flat_map(|r| r[..pf].iter().copied()).collect())
-        }
+        Some((wf, pf)) if n > 0 && wf > pf && rows.len() == n * wf => std::borrow::Cow::Owned(
+            rows.chunks_exact(wf)
+                .flat_map(|r| r[..pf].iter().copied())
+                .collect(),
+        ),
         _ => std::borrow::Cow::Borrowed(rows),
     }
 }
@@ -318,7 +370,12 @@ fn with_meter(deploy: &str, f: impl FnOnce(&mut StageMeter)) {
 
 /// The earlier stage's side: `frame` is the request its engine read, and
 /// `network_answer` the answer as it leaves for the later machine.
-pub(crate) fn on_served(cfg: &crate::runtime::NodeConfig, frame: &[u8], network_answer: &[u8], prompt_phase: bool) {
+pub(crate) fn on_served(
+    cfg: &crate::runtime::NodeConfig,
+    frame: &[u8],
+    network_answer: &[u8],
+    prompt_phase: bool,
+) {
     if crate::metering::context().is_none() {
         return;
     }
@@ -344,7 +401,9 @@ pub(crate) fn on_served(cfg: &crate::runtime::NodeConfig, frame: &[u8], network_
     if crate::brand::env("METERING_TRACE").is_ok_and(|v| v == "1") {
         let shape = match &request {
             Request::Prompt { pos0, tokens } => format!("P pos {pos0} n {}", tokens.len()),
-            Request::Window { pos0, tokens, keep } => format!("W pos {pos0} n {} keep {keep:?}", tokens.len()),
+            Request::Window { pos0, tokens, keep } => {
+                format!("W pos {pos0} n {} keep {keep:?}", tokens.len())
+            }
             Request::Commit(k) => format!("C {k}"),
             Request::Resume(ids) => format!("R {}", ids.len()),
             Request::Zero => "Z".into(),
@@ -352,7 +411,9 @@ pub(crate) fn on_served(cfg: &crate::runtime::NodeConfig, frame: &[u8], network_
         };
         tracing::info!(target: "pom::metering", "served {shape} prompt_phase {prompt_phase} rows {}", rows.as_ref().map_or(0, |r| r.len()));
     }
-    with_meter(&cfg.deploy_id, |m| m.served_in(&request, rows.as_deref(), dtype, first, prompt_phase));
+    with_meter(&cfg.deploy_id, |m| {
+        m.served_in(&request, rows.as_deref(), dtype, first, prompt_phase)
+    });
 }
 
 /// The later stage's side: its engine's request and the earlier stage's
@@ -361,7 +422,9 @@ pub(crate) fn on_relayed(cfg: &crate::runtime::NodeConfig, frame: &[u8], answer:
     if crate::metering::context().is_none() {
         return;
     }
-    let Some(rows) = answer_rows(answer) else { return };
+    let Some(rows) = answer_rows(answer) else {
+        return;
+    };
     let request = parse_request(frame);
     let dtype = cfg.hidden_state_dtype.as_str();
     with_meter(&cfg.deploy_id, |m| m.relayed(&request, &rows, dtype));
@@ -373,7 +436,11 @@ pub(crate) fn on_done(deploy: &str, done: &Value) {
 }
 
 /// Signs the turn's receipt for the gateway's nonce and starts a new turn.
-pub(crate) fn close(cfg: &crate::runtime::NodeConfig, code: &str, bnd: &str) -> Option<(String, Vec<i32>)> {
+pub(crate) fn close(
+    cfg: &crate::runtime::NodeConfig,
+    code: &str,
+    bnd: &str,
+) -> Option<(String, Vec<i32>)> {
     let ctx = crate::metering::context()?;
     let mut meter = {
         let mut slot = METERS.lock().ok()?;
@@ -428,8 +495,16 @@ pub(crate) async fn metering_route(
     if let Err(response) = crate::plugin_engine::check_peer_call(&auth, &state, &code).await {
         return response;
     }
-    let Some(cfg) = state.runtime.config().await.filter(|c| c.deploy_id == deploy) else {
-        return (StatusCode::CONFLICT, axum::Json(json!({"error": "this machine does not serve that deployment"})))
+    let Some(cfg) = state
+        .runtime
+        .config()
+        .await
+        .filter(|c| c.deploy_id == deploy)
+    else {
+        return (
+            StatusCode::CONFLICT,
+            axum::Json(json!({"error": "this machine does not serve that deployment"})),
+        )
             .into_response();
     };
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
@@ -442,7 +517,8 @@ pub(crate) async fn metering_route(
         if !tokens.is_empty() {
             use base64::Engine;
             let bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
-            answer["metering_tokens"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+            answer["metering_tokens"] =
+                json!(base64::engine::general_purpose::STANDARD.encode(bytes));
         }
     }
     axum::Json(answer).into_response()
@@ -490,10 +566,20 @@ mod tests {
         r.extend(5i32.to_le_bytes());
         r.extend(6i32.to_le_bytes());
         assert_eq!(parse_request(&bytes_frame(r)), Request::Resume(vec![5, 6]));
-        assert_eq!(parse_request(&prompt(3, &[7, 8])), Request::Prompt { pos0: 3, tokens: vec![7, 8] });
+        assert_eq!(
+            parse_request(&prompt(3, &[7, 8])),
+            Request::Prompt {
+                pos0: 3,
+                tokens: vec![7, 8]
+            }
+        );
         assert_eq!(
             parse_request(&window(b'V', 9, &[1, 2], Some(1))),
-            Request::Window { pos0: 9, tokens: vec![1, 2], keep: Some(1) }
+            Request::Window {
+                pos0: 9,
+                tokens: vec![1, 2],
+                keep: Some(1)
+            }
         );
         let mut c = vec![b'C'];
         c.extend(4u32.to_le_bytes());
@@ -517,19 +603,42 @@ mod tests {
     fn a_first_stage_counts_links_and_keeps_its_sequence() {
         let mut m = StageMeter::new();
         let rows = vec![0.5f32; 2 * 64];
-        m.served(&parse_request(&prompt(0, &[7, 8])), Some(&rows), "f16", true);
+        m.served(
+            &parse_request(&prompt(0, &[7, 8])),
+            Some(&rows),
+            "f16",
+            true,
+        );
         // A plain decode step, committed.
-        m.served(&parse_request(&window(b'W', 2, &[9], None)), Some(&vec![0.1; 64]), "f16", true);
+        m.served(
+            &parse_request(&window(b'W', 2, &[9], None)),
+            Some(&vec![0.1; 64]),
+            "f16",
+            true,
+        );
         let mut c = vec![b'C'];
         c.extend(1u32.to_le_bytes());
         m.served(&parse_request(&bytes_frame(c)), None, "f16", true);
         // A verify window keeping 1 of 3, then one keeping both of its 2.
-        m.served(&parse_request(&window(b'W', 3, &[10, 11, 12], None)), Some(&vec![0.1; 192]), "f16", true);
-        m.served(&parse_request(&window(b'V', 4, &[11, 13], Some(1))), Some(&vec![0.1; 128]), "f16", true);
+        m.served(
+            &parse_request(&window(b'W', 3, &[10, 11, 12], None)),
+            Some(&vec![0.1; 192]),
+            "f16",
+            true,
+        );
+        m.served(
+            &parse_request(&window(b'V', 4, &[11, 13], Some(1))),
+            Some(&vec![0.1; 128]),
+            "f16",
+            true,
+        );
         m.commit(2, true);
         assert_eq!(m.computed.prefill, 2);
         assert_eq!(m.computed.decode, 1);
-        assert_eq!((m.computed.verify_accepted, m.computed.verify_rejected), (3, 2));
+        assert_eq!(
+            (m.computed.verify_accepted, m.computed.verify_rejected),
+            (3, 2)
+        );
         assert_eq!(m.in_chain, LinkChain::of_tokens(0, &[7, 8]));
         assert_eq!(m.seq, vec![7, 8, 9, 10, 11, 13]);
         assert_eq!(m.wire.output, "f16");
@@ -539,10 +648,22 @@ mod tests {
     fn a_prompt_read_as_windows_is_metered_and_proved_as_prompt() {
         let mut m = StageMeter::new();
         let rows = vec![0.25f32; 3 * 64];
-        m.served_in(&parse_request(&window(b'W', 0, &[5, 6, 7], None)), Some(&rows), "f8", true, true);
+        m.served_in(
+            &parse_request(&window(b'W', 0, &[5, 6, 7], None)),
+            Some(&rows),
+            "f8",
+            true,
+            true,
+        );
         // Counted at its commit, folded into the next window.
         assert_eq!(m.computed.prefill, 0);
-        m.served_in(&parse_request(&window(b'V', 3, &[8, 9], Some(3))), Some(&vec![0.25; 128]), "f8", true, true);
+        m.served_in(
+            &parse_request(&window(b'V', 3, &[8, 9], Some(3))),
+            Some(&vec![0.25; 128]),
+            "f8",
+            true,
+            true,
+        );
         assert_eq!(m.computed.prefill, 3);
         assert_eq!(m.in_chain, LinkChain::of_tokens(0, &[5, 6, 7]));
         // The tag lags into the decode: a window keeping 1 of 2 counts 1.
@@ -560,7 +681,12 @@ mod tests {
             // 40 windows of 4 tokens, each keeping 2: 80 kept rows.
             for w in 0..40u32 {
                 let rows = vec![(w as f32).sin(); 4 * 64];
-                m.served(&parse_request(&window(b'W', (w * 2) as i64, &[1, 2, 3, 4], None)), Some(&rows), "f16", false);
+                m.served(
+                    &parse_request(&window(b'W', (w * 2) as i64, &[1, 2, 3, 4], None)),
+                    Some(&rows),
+                    "f16",
+                    false,
+                );
                 let mut c = vec![b'C'];
                 c.extend(2u32.to_le_bytes());
                 m.served(&parse_request(&bytes_frame(c)), None, "f16", false);
@@ -611,10 +737,13 @@ mod tests {
             engine_answer.push(0);
             engine_answer.extend(f32_bytes(&values));
             let meta = json!({ "meta": "00" });
-            let encoded = crate::wire::encode(&meta, Some((&values, vec![1, values.len()])), dtype).unwrap();
+            let encoded =
+                crate::wire::encode(&meta, Some((&values, vec![1, values.len()])), dtype).unwrap();
             let mut network = vec![KIND_TENSOR];
             network.extend(&encoded);
-            let (_, Some((received, _))) = crate::wire::decode(&encoded).unwrap() else { panic!() };
+            let (_, Some((received, _))) = crate::wire::decode(&encoded).unwrap() else {
+                panic!()
+            };
             let mut later_side = vec![KIND_TENSOR];
             later_side.extend(1u32.to_le_bytes());
             later_side.push(0);
@@ -634,6 +763,9 @@ mod tests {
     fn the_serving_stage_counts_from_its_done_line() {
         let mut m = StageMeter::new();
         m.done(&json!({"prompt_tokens": 40, "cached_tokens": 10, "completion_tokens": 7}));
-        assert_eq!((m.computed.prefill, m.cached, m.computed.decode), (30, 10, 7));
+        assert_eq!(
+            (m.computed.prefill, m.cached, m.computed.decode),
+            (30, 10, 7)
+        );
     }
 }

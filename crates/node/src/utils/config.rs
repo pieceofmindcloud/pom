@@ -335,7 +335,8 @@ impl NetworkSettings {
 /// Public networks need the coarse geographic key because discovery groups by
 /// country and city before measuring peer latency.
 pub fn validate_network_settings(settings: &NetworkSettings) -> Result<()> {
-    if settings.payments.enabled && settings.inference_access != InferenceAccess::MemberGatewayOnly {
+    if settings.payments.enabled && settings.inference_access != InferenceAccess::MemberGatewayOnly
+    {
         anyhow::bail!("charging visitors needs inference access through network members only");
     }
     if settings.visibility == NetworkVisibility::Public {
@@ -1410,7 +1411,10 @@ mod tests {
         use super::RelayPolicy;
         let settings: NetworkSettings = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(settings.relay_policy, RelayPolicy::All);
-        for (text, policy) in [("members", RelayPolicy::Members), ("none", RelayPolicy::None)] {
+        for (text, policy) in [
+            ("members", RelayPolicy::Members),
+            ("none", RelayPolicy::None),
+        ] {
             let settings: NetworkSettings =
                 serde_json::from_value(serde_json::json!({ "relay_policy": text })).unwrap();
             assert_eq!(settings.relay_policy, policy);
@@ -1707,7 +1711,8 @@ mod tests {
         );
 
         let configured: Config =
-            serde_json::from_str(r#"{"profile":"worker","cluster_logs_min_level":"debug"}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"worker","cluster_logs_min_level":"debug"}"#)
+                .unwrap();
         assert_eq!(
             configured.cluster_logs_min_level,
             crate::cluster_logs::ClusterLogLevel::Debug
@@ -1842,9 +1847,10 @@ mod tests {
 
     #[test]
     fn relay_peers_are_read_from_the_config_and_empty_stays_out_of_it() {
-        let cfg: Config =
-            serde_json::from_str(r#"{"profile":"worker","relay_peers":["https://relay.example.org"]}"#)
-                .unwrap();
+        let cfg: Config = serde_json::from_str(
+            r#"{"profile":"worker","relay_peers":["https://relay.example.org"]}"#,
+        )
+        .unwrap();
         assert_eq!(cfg.relay_peers, vec!["https://relay.example.org"]);
 
         let cfg: Config = serde_json::from_str(r#"{"profile":"worker"}"#).unwrap();
@@ -1932,7 +1938,8 @@ mod tests {
         assert!(closed.accepted_enrollments.0.is_empty());
 
         let only_visitor =
-            AcceptedEnrollments(vec![EnrollmentRole::Visitor, EnrollmentRole::Visitor]).normalized();
+            AcceptedEnrollments(vec![EnrollmentRole::Visitor, EnrollmentRole::Visitor])
+                .normalized();
         assert_eq!(
             serde_json::to_value(&only_visitor).unwrap(),
             serde_json::json!(["visitor"])
@@ -2068,10 +2075,13 @@ mod tests {
     /// is not written back.
     #[test]
     fn an_old_config_with_the_tls_switch_still_parses() {
-        let cfg: Config =
-            serde_json::from_str(r#"{"profile":"worker","connection_key":"k","tls_required":false}"#)
-                .unwrap();
-        assert!(!serde_json::to_string(&cfg).unwrap().contains("tls_required"));
+        let cfg: Config = serde_json::from_str(
+            r#"{"profile":"worker","connection_key":"k","tls_required":false}"#,
+        )
+        .unwrap();
+        assert!(!serde_json::to_string(&cfg)
+            .unwrap()
+            .contains("tls_required"));
     }
 
     #[test]
@@ -2083,7 +2093,8 @@ mod tests {
 
     #[test]
     fn a_blank_shard_dir_falls_back_instead_of_writing_to_the_root() {
-        let cfg: Config = serde_json::from_str(r#"{"profile":"worker","shard_dir":"   "}"#).unwrap();
+        let cfg: Config =
+            serde_json::from_str(r#"{"profile":"worker","shard_dir":"   "}"#).unwrap();
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
     }
 

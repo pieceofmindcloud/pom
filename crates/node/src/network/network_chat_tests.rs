@@ -393,7 +393,10 @@ async fn deciding_a_candidate_erases_its_thread_and_queues_it_for_the_admins() {
     assert!(chat.accept(closed.clone()).unwrap());
     assert!(chat.lobby_threads(10).unwrap().is_empty());
     // No member originates one, and the bare lobby room takes no text.
-    let error = chat.validate_original(&closed, "principal").await.unwrap_err();
+    let error = chat
+        .validate_original(&closed, "principal")
+        .await
+        .unwrap_err();
     assert_eq!(error.to_string(), "lobby_closed_not_allowed");
     let bare = ChatAction::text_message(crate::network_lobby::LOBBY_ROOM, "member", "hi");
     let error = chat.validate_original(&bare, "member").await.unwrap_err();

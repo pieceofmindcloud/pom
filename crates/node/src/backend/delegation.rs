@@ -42,7 +42,12 @@ use std::time::Duration;
 use tower::ServiceExt;
 
 pub(crate) const DELEGATE_PATH: &str = "/v1/gateway/delegate";
-const ROUTES: [&str; 4] = ["/v1/chat/completions", "/v1/completions", "/v1/messages", "/api/generate"];
+const ROUTES: [&str; 4] = [
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/v1/messages",
+    "/api/generate",
+];
 /// A delegated generation may run as long as a local one.
 const DELEGATE_TIMEOUT: Duration = Duration::from_secs(1800);
 const MAX_BODY: usize = 32 << 20;
@@ -84,14 +89,21 @@ pub(crate) fn install_router(router: axum::Router) {
 }
 
 fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
-    (status, Json(json!({ "error": { "code": code, "message": message } }))).into_response()
+    (
+        status,
+        Json(json!({ "error": { "code": code, "message": message } })),
+    )
+        .into_response()
 }
 
 // ── Visitor ─────────────────────────────────────────────────────────────────
 
 /// Entry nodes for this visitor: members announcing delegation that the
 /// policy allows, nearest first.
-pub(crate) async fn entry_nodes(state: &GatewayState, allowed: EntryNodes) -> Vec<crate::network::PeerInfo> {
+pub(crate) async fn entry_nodes(
+    state: &GatewayState,
+    allowed: EntryNodes,
+) -> Vec<crate::network::PeerInfo> {
     let document = state.admin_trust.document();
     let rtt = crate::route_plan::book().rtt_map(crate::route_plan::Plane::Gateway);
     let mut peers: Vec<_> = state
@@ -100,7 +112,11 @@ pub(crate) async fn entry_nodes(state: &GatewayState, allowed: EntryNodes) -> Ve
         .await
         .into_iter()
         .filter(|p| p.node_id != state.network.node_id)
-        .filter(|p| p.inference_frame_capabilities.iter().any(|c| c == crate::pipeline::CAP_GATEWAY_DELEGATE))
+        .filter(|p| {
+            p.inference_frame_capabilities
+                .iter()
+                .any(|c| c == crate::pipeline::CAP_GATEWAY_DELEGATE)
+        })
         .filter(|p| !crate::gateway::peer_is_visitor(state, p))
         .filter(|p| match allowed {
             EntryNodes::Admins => crate::admin_trust::is_admin_node(&document, &p.node_id),
@@ -116,7 +132,11 @@ pub(crate) async fn entry_nodes(state: &GatewayState, allowed: EntryNodes) -> Ve
 }
 
 /// The visitor's side, a middleware on the whole router.
-pub(crate) async fn visitor_layer(State(state): State<GatewayState>, request: Request, next: Next) -> Response {
+pub(crate) async fn visitor_layer(
+    State(state): State<GatewayState>,
+    request: Request,
+    next: Next,
+) -> Response {
     if request.method() != Method::POST
         || !ROUTES.contains(&request.uri().path())
         || request.extensions().get::<Delegated>().is_some()
@@ -130,32 +150,58 @@ pub(crate) async fn visitor_layer(State(state): State<GatewayState>, request: Re
     }
     let (mut parts, body) = request.into_parts();
     // The client's key is this node's: checked here, never sent on.
-    if let Err(rejection) = <crate::auth::ApiKeyAuth as axum::extract::FromRequestParts<GatewayState>>::from_request_parts(&mut parts, &state).await {
+    if let Err(rejection) = <crate::auth::ApiKeyAuth as axum::extract::FromRequestParts<
+        GatewayState,
+    >>::from_request_parts(&mut parts, &state)
+    .await
+    {
         return rejection.into_response();
     }
     let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
         Ok(bytes) => bytes,
-        Err(_) => return refuse(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large", "the request body is too large"),
+        Err(_) => {
+            return refuse(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "body_too_large",
+                "the request body is too large",
+            )
+        }
     };
     let entries = entry_nodes(&state, settings.entry_nodes).await;
     if entries.is_empty() {
         if settings.inference_access == InferenceAccess::MemberGateway {
-            return next.run(Request::from_parts(parts, Body::from(bytes))).await;
+            return next
+                .run(Request::from_parts(parts, Body::from(bytes)))
+                .await;
         }
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, "no_entry_node", "no entry node of the network is in sight");
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no_entry_node",
+            "no entry node of the network is in sight",
+        );
     }
     let Ok(client_body) = serde_json::from_slice::<Value>(&bytes) else {
-        return refuse(StatusCode::BAD_REQUEST, "invalid_json", "the request body is not JSON");
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "invalid_json",
+            "the request body is not JSON",
+        );
     };
     let payload = json!({
         "route": parts.uri.path(),
         "body": client_body,
         "home": crate::home_statement::own(&state),
     });
-    let model = payload["body"]["model"].as_str().unwrap_or_default().to_string();
+    let model = payload["body"]["model"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     let mut tried = Vec::new();
     for peer in entries {
-        match state.control_post_json(&peer, DELEGATE_PATH, &payload, DELEGATE_TIMEOUT).await {
+        match state
+            .control_post_json(&peer, DELEGATE_PATH, &payload, DELEGATE_TIMEOUT)
+            .await
+        {
             Ok(answer) => return relay(answer, Some((state.clone(), model))),
             Err(error) => tried.push(json!({ "node": peer.node_id, "error": error.to_string() })),
         }
@@ -183,35 +229,47 @@ fn relay(answer: reqwest::Response, spend: Option<(GatewayState, String)>) -> Re
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, "no-cache")
         .body(Body::from_stream(tap_payment(answer.bytes_stream(), spend)))
-        .unwrap_or_else(|_| refuse(StatusCode::BAD_GATEWAY, "relay", "the entry node's answer could not be relayed"))
+        .unwrap_or_else(|_| {
+            refuse(
+                StatusCode::BAD_GATEWAY,
+                "relay",
+                "the entry node's answer could not be relayed",
+            )
+        })
 }
 
 /// Passes the body through, keeping its tail; at the end, records the
 /// payment the tail reports.
-fn tap_payment<S>(stream: S, spend: Option<(GatewayState, String)>) -> impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>>
+fn tap_payment<S>(
+    stream: S,
+    spend: Option<(GatewayState, String)>,
+) -> impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>>
 where
     S: futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
 {
     const TAIL: usize = 64 << 10;
-    futures::stream::unfold((stream, Vec::<u8>::new(), spend), |(mut stream, mut tail, spend)| async move {
-        use futures::StreamExt;
-        match stream.next().await {
-            Some(Ok(chunk)) => {
-                tail.extend_from_slice(&chunk);
-                if tail.len() > TAIL {
-                    tail.drain(..tail.len() - TAIL);
+    futures::stream::unfold(
+        (stream, Vec::<u8>::new(), spend),
+        |(mut stream, mut tail, spend)| async move {
+            use futures::StreamExt;
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    tail.extend_from_slice(&chunk);
+                    if tail.len() > TAIL {
+                        tail.drain(..tail.len() - TAIL);
+                    }
+                    Some((Ok(chunk), (stream, tail, spend)))
                 }
-                Some((Ok(chunk), (stream, tail, spend)))
-            }
-            Some(Err(error)) => Some((Err(error), (stream, tail, spend))),
-            None => {
-                if let (Some((state, model)), Some(payment)) = (spend, last_payment(&tail)) {
-                    record_spend(&state, &model, &payment);
+                Some(Err(error)) => Some((Err(error), (stream, tail, spend))),
+                None => {
+                    if let (Some((state, model)), Some(payment)) = (spend, last_payment(&tail)) {
+                        record_spend(&state, &model, &payment);
+                    }
+                    None
                 }
-                None
             }
-        }
-    })
+        },
+    )
 }
 
 /// The last `"payment":{...}` object in `text`.
@@ -235,7 +293,10 @@ pub(crate) fn last_payment(text: &[u8]) -> Option<Value> {
 }
 
 fn record_spend(state: &GatewayState, model: &str, payment: &Value) {
-    let (Some(account), Some(charged)) = (payment["account"].as_str(), payment["charged_micro"].as_i64()) else {
+    let (Some(account), Some(charged)) = (
+        payment["account"].as_str(),
+        payment["charged_micro"].as_i64(),
+    ) else {
         return;
     };
     let host = state.admin_trust.document().primary.node_id;
@@ -274,16 +335,26 @@ pub(crate) fn request_size(body: &Value) -> (i64, i64) {
     let ceiling = ["max_completion_tokens", "max_tokens"]
         .iter()
         .find_map(|k| body.get(*k).and_then(Value::as_i64))
-        .or_else(|| body.get("options").and_then(|o| o.get("num_predict")).and_then(Value::as_i64))
+        .or_else(|| {
+            body.get("options")
+                .and_then(|o| o.get("num_predict"))
+                .and_then(Value::as_i64)
+        })
         .filter(|n| *n > 0)
         .unwrap_or(DEFAULT_MAX_TOKENS);
     (prompt, ceiling)
 }
 
 /// The price of `model` in the network's settings, if charged.
-pub(crate) fn price_of(settings: &crate::config::NetworkSettings, model: &str) -> Option<crate::payments::DeploymentPricing> {
+pub(crate) fn price_of(
+    settings: &crate::config::NetworkSettings,
+    model: &str,
+) -> Option<crate::payments::DeploymentPricing> {
     // `<model>@<deploy_id>` picks a deployment of the same model: same price.
-    let price = settings.payments.prices.get(crate::deployment::split_selector(model).0)?;
+    let price = settings
+        .payments
+        .prices
+        .get(crate::deployment::split_selector(model).0)?;
     Some(crate::payments::DeploymentPricing {
         price_in_micro_per_1k: price.in_micro_per_1k,
         price_out_micro_per_1k: price.out_micro_per_1k,
@@ -292,25 +363,52 @@ pub(crate) fn price_of(settings: &crate::config::NetworkSettings, model: &str) -
 }
 
 /// `POST /v1/gateway/delegate`.
-pub(crate) async fn delegate_route(auth: crate::auth::InternalNodeAuth, State(state): State<GatewayState>, Json(ask): Json<DelegateRequest>) -> Response {
+pub(crate) async fn delegate_route(
+    auth: crate::auth::InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Json(ask): Json<DelegateRequest>,
+) -> Response {
     let Some(principal) = auth.principal() else {
-        return refuse(StatusCode::FORBIDDEN, "signed_call_required", "a signed peer call is required");
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "signed_call_required",
+            "a signed peer call is required",
+        );
     };
     let caller_node = principal.node_id.clone();
-    let peer = state.network.alive_peers().await.into_iter().find(|p| p.node_id == caller_node);
-    if !peer.as_ref().is_some_and(|p| crate::gateway::peer_is_visitor(&state, p)) {
-        return refuse(StatusCode::CONFLICT, "plan_locally", "only a visitor delegates; a member plans its own requests");
+    let peer = state
+        .network
+        .alive_peers()
+        .await
+        .into_iter()
+        .find(|p| p.node_id == caller_node);
+    if !peer
+        .as_ref()
+        .is_some_and(|p| crate::gateway::peer_is_visitor(&state, p))
+    {
+        return refuse(
+            StatusCode::CONFLICT,
+            "plan_locally",
+            "only a visitor delegates; a member plans its own requests",
+        );
     }
     if !ROUTES.contains(&ask.route.as_str()) {
-        return refuse(StatusCode::BAD_REQUEST, "unknown_route", "this route is not delegated");
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "unknown_route",
+            "this route is not delegated",
+        );
     }
     let settings = crate::payments::runtime::settings(&state).await;
-    let home = ask
-        .home
-        .as_deref()
-        .and_then(|token| crate::home_statement::verify(token, &caller_node, chrono::Utc::now().timestamp()).ok());
+    let home = ask.home.as_deref().and_then(|token| {
+        crate::home_statement::verify(token, &caller_node, chrono::Utc::now().timestamp()).ok()
+    });
     let charge = if settings.payments.enabled {
-        let model = ask.body.get("model").and_then(Value::as_str).unwrap_or_default();
+        let model = ask
+            .body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         match price_of(&settings, model) {
             None => None,
             Some(pricing) => {
@@ -323,9 +421,18 @@ pub(crate) async fn delegate_route(auth: crate::auth::InternalNodeAuth, State(st
                         json!({}),
                     );
                 };
-                match gate(&state, &crate::home_statement::account_of(home), &pricing, &ask.body).await {
+                match gate(
+                    &state,
+                    &crate::home_statement::account_of(home),
+                    &pricing,
+                    &ask.body,
+                )
+                .await
+                {
                     Ok(charge) => Some(charge),
-                    Err((status, code, message, extra)) => return speak(&ask.route, status, code, &message, extra),
+                    Err((status, code, message, extra)) => {
+                        return speak(&ask.route, status, code, &message, extra)
+                    }
                 }
             }
         }
@@ -342,16 +449,27 @@ pub(crate) async fn delegate_route(auth: crate::auth::InternalNodeAuth, State(st
         if let Some(charge) = &charge {
             crate::payments::runtime::release(&charge.account, charge.hold_micro);
         }
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, "not_ready", "the entry node is starting");
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not_ready",
+            "the entry node is starting",
+        );
     };
     let mut request = match Request::builder()
         .method(Method::POST)
         .uri(&ask.route)
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::to_vec(&ask.body).unwrap_or_default()))
-    {
+        .body(Body::from(
+            serde_json::to_vec(&ask.body).unwrap_or_default(),
+        )) {
         Ok(request) => request,
-        Err(_) => return refuse(StatusCode::BAD_REQUEST, "bad_request", "the delegated request is malformed"),
+        Err(_) => {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "the delegated request is malformed",
+            )
+        }
     };
     request.extensions_mut().insert(Delegated { caller });
     let held = charge.clone();
@@ -373,7 +491,13 @@ pub(crate) async fn delegate_route(auth: crate::auth::InternalNodeAuth, State(st
 
 /// A refusal in the vocabulary of the route the client called, with
 /// `extra`'s fields (the x402 `accepts` envelope, the account) beside it.
-pub(crate) fn speak(route: &str, status: StatusCode, code: &str, message: &str, extra: Value) -> Response {
+pub(crate) fn speak(
+    route: &str,
+    status: StatusCode,
+    code: &str,
+    message: &str,
+    extra: Value,
+) -> Response {
     let mut body = match route {
         "/v1/messages" => json!({ "type": "error", "error": { "type": code, "message": message } }),
         "/api/generate" => json!({ "error": message, "code": code }),
@@ -399,7 +523,9 @@ async fn gate(
     let payments = crate::payments::runtime::state();
     let attempt = || payments.gate(account, Some(pricing), prompt, ceiling);
     let mut result = attempt();
-    if matches!(result, Err(crate::payments::GateError::Challenge(_))) && !crate::payments::runtime::is_principal(state) {
+    if matches!(result, Err(crate::payments::GateError::Challenge(_)))
+        && !crate::payments::runtime::is_principal(state)
+    {
         let want = crate::payments::hold_micro(pricing, prompt, ceiling).saturating_mul(4);
         if crate::payments::runtime::lease(state, account, want).await > 0 {
             result = attempt();
@@ -413,9 +539,14 @@ async fn gate(
         }),
         Err(crate::payments::GateError::Challenge(challenge)) => {
             let mut accepts = challenge.body["accepts"].clone();
-            accepts[0]["payTo"] = json!(format!("pk:{}", state.admin_trust.document().primary.node_id));
+            accepts[0]["payTo"] = json!(format!(
+                "pk:{}",
+                state.admin_trust.document().primary.node_id
+            ));
             let lacking = accepts[0]["maxAmountRequired"].as_i64().unwrap_or(0)
-                - accepts[0]["metadata"]["balance_micro"].as_i64().unwrap_or(0);
+                - accepts[0]["metadata"]["balance_micro"]
+                    .as_i64()
+                    .unwrap_or(0);
             Err((
                 StatusCode::PAYMENT_REQUIRED,
                 "payment_required",
@@ -435,13 +566,22 @@ async fn gate(
 /// The settlement of a delegated generation at its summary (called from
 /// `gateway::spawn_logged_generation_with_stops`): the executed prompt minus
 /// what the cache spared, and the generated tokens.
-pub(crate) fn settle(state: &GatewayState, charge: &Charge, summary: &crate::gateway::GenSummary) -> Value {
+pub(crate) fn settle(
+    state: &GatewayState,
+    charge: &Charge,
+    summary: &crate::gateway::GenSummary,
+) -> Value {
     let (prompt, cached) = summary
         .trace
         .as_ref()
         .map(|t| (t.input_tokens as i64, t.cached_tokens as i64))
         .unwrap_or((0, 0));
-    let bill = crate::payments::bill_micro(&charge.pricing, prompt, cached, summary.tokens_generated as i64);
+    let bill = crate::payments::bill_micro(
+        &charge.pricing,
+        prompt,
+        cached,
+        summary.tokens_generated as i64,
+    );
     // The metering bundle lines the charge up with the payouts of its cycle.
     let detail = summary
         .metering_bundle
@@ -509,7 +649,15 @@ mod tests {
             iat: 0,
             exp: chrono::Utc::now().timestamp() + 3600,
         };
-        metering_core::token::sign(&format!(r#"{{"alg":"EdDSA","typ":"{}-home-network/v1"}}"#, crate::brand::slug()), &claims, k).unwrap()
+        metering_core::token::sign(
+            &format!(
+                r#"{{"alg":"EdDSA","typ":"{}-home-network/v1"}}"#,
+                crate::brand::slug()
+            ),
+            &claims,
+            k,
+        )
+        .unwrap()
     }
 
     async fn entry_state(visitor: &ed25519_dalek::SigningKey, charge: bool) -> GatewayState {
@@ -521,7 +669,10 @@ mod tests {
         settings.payments.enabled = charge;
         settings.payments.prices.insert(
             "priced".into(),
-            crate::config::ModelPrice { in_micro_per_1k: 1_000_000, out_micro_per_1k: 2_000_000 },
+            crate::config::ModelPrice {
+                in_micro_per_1k: 1_000_000,
+                out_micro_per_1k: 2_000_000,
+            },
         );
         state.database.save_network_settings(&settings).unwrap();
         state
@@ -544,10 +695,18 @@ mod tests {
     async fn only_a_signed_visitor_delegates() {
         let visitor = key(41);
         let state = entry_state(&visitor, false).await;
-        let unsigned = delegate_route(crate::auth::InternalNodeAuth { principal: None }, State(state.clone()), Json(ask("m", None))).await;
+        let unsigned = delegate_route(
+            crate::auth::InternalNodeAuth { principal: None },
+            State(state.clone()),
+            Json(ask("m", None)),
+        )
+        .await;
         assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
         let member = key(42);
-        let (status, body) = code_of(delegate_route(signed(&member), State(state.clone()), Json(ask("m", None))).await).await;
+        let (status, body) = code_of(
+            delegate_route(signed(&member), State(state.clone()), Json(ask("m", None))).await,
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["error"]["code"], "plan_locally");
     }
@@ -556,7 +715,10 @@ mod tests {
     async fn a_charged_model_needs_the_home_network() {
         let visitor = key(43);
         let state = entry_state(&visitor, true).await;
-        let (status, body) = code_of(delegate_route(signed(&visitor), State(state), Json(ask("priced", None))).await).await;
+        let (status, body) = code_of(
+            delegate_route(signed(&visitor), State(state), Json(ask("priced", None))).await,
+        )
+        .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["error"]["code"], "home_statement_required");
         assert_eq!(body["error"]["type"], "home_statement_required");
@@ -567,9 +729,17 @@ mod tests {
         let visitor = key(44);
         let state = entry_state(&visitor, true).await;
         // This test node is the principal of its own chain: the merchant.
-        let account = crate::payments::network_account(&hex::encode(visitor.verifying_key().as_bytes()));
-        let (status, body) =
-            code_of(delegate_route(signed(&visitor), State(state.clone()), Json(ask("priced", Some(home(&visitor))))).await).await;
+        let account =
+            crate::payments::network_account(&hex::encode(visitor.verifying_key().as_bytes()));
+        let (status, body) = code_of(
+            delegate_route(
+                signed(&visitor),
+                State(state.clone()),
+                Json(ask("priced", Some(home(&visitor)))),
+            )
+            .await,
+        )
+        .await;
         assert_eq!(status, StatusCode::PAYMENT_REQUIRED, "{body}");
         assert_eq!(body["account"], account);
         assert_eq!(body["accepts"][0]["scheme"], "pom-credit");
@@ -577,29 +747,53 @@ mod tests {
         // Each route answers in its own vocabulary.
         let mut messages = ask("priced", Some(home(&visitor)));
         messages.route = "/v1/messages".into();
-        let (_, anthropic) = code_of(delegate_route(signed(&visitor), State(state.clone()), Json(messages)).await).await;
-        assert_eq!((anthropic["type"].as_str(), anthropic["error"]["type"].as_str()), (Some("error"), Some("payment_required")));
+        let (_, anthropic) =
+            code_of(delegate_route(signed(&visitor), State(state.clone()), Json(messages)).await)
+                .await;
+        assert_eq!(
+            (
+                anthropic["type"].as_str(),
+                anthropic["error"]["type"].as_str()
+            ),
+            (Some("error"), Some("payment_required"))
+        );
         crate::payments::runtime::state().grant(&account, 1_000_000_000);
-        let answer = delegate_route(signed(&visitor), State(state.clone()), Json(ask("priced", Some(home(&visitor))))).await;
+        let answer = delegate_route(
+            signed(&visitor),
+            State(state.clone()),
+            Json(ask("priced", Some(home(&visitor)))),
+        )
+        .await;
         // Admitted by the gate; with no router in this test the request
         // cannot run, and the hold is given back.
         assert_ne!(answer.status(), StatusCode::PAYMENT_REQUIRED);
-        assert_eq!(crate::payments::runtime::state().book().reserved(&account), 0);
+        assert_eq!(
+            crate::payments::runtime::state().book().reserved(&account),
+            0
+        );
         // A free model is not gated at all.
-        let free = delegate_route(signed(&visitor), State(state), Json(ask("free", Some(home(&visitor))))).await;
+        let free = delegate_route(
+            signed(&visitor),
+            State(state),
+            Json(ask("free", Some(home(&visitor)))),
+        )
+        .await;
         assert_ne!(free.status(), StatusCode::PAYMENT_REQUIRED);
     }
 
     #[test]
     fn the_hold_reads_the_prompt_and_the_ceiling_the_client_asked_for() {
-        let (p, c) = request_size(&json!({"messages": [{"role": "user", "content": "x".repeat(400)}], "max_tokens": 64}));
+        let (p, c) = request_size(
+            &json!({"messages": [{"role": "user", "content": "x".repeat(400)}], "max_tokens": 64}),
+        );
         assert!(p >= 100);
         assert_eq!(c, 64);
         let (_, c) = request_size(&json!({"prompt": "hi"}));
         assert_eq!(c, DEFAULT_MAX_TOKENS);
         let (_, c) = request_size(&json!({"prompt": "hi", "options": {"num_predict": 9}}));
         assert_eq!(c, 9);
-        let (_, c) = request_size(&json!({"messages": [], "max_completion_tokens": 7, "max_tokens": 100}));
+        let (_, c) =
+            request_size(&json!({"messages": [], "max_completion_tokens": 7, "max_tokens": 100}));
         assert_eq!(c, 7);
     }
 
@@ -624,21 +818,53 @@ data: [DONE]"#;
         let id = id_of(&visitor);
         state
             .network_chat
-            .request_admission(&id, Default::default(), crate::config::EnrollmentRole::Visitor)
+            .request_admission(
+                &id,
+                Default::default(),
+                crate::config::EnrollmentRole::Visitor,
+            )
             .unwrap();
         // Another node's statement names nothing.
         crate::home_statement::note_admission(&state.network_chat, &id, Some(&home(&key(46))));
-        assert!(state.network_chat.admission_of(&id).unwrap().account.is_none());
+        assert!(state
+            .network_chat
+            .admission_of(&id)
+            .unwrap()
+            .account
+            .is_none());
         crate::home_statement::note_admission(&state.network_chat, &id, Some(&home(&visitor)));
-        let account = crate::payments::network_account(&hex::encode(visitor.verifying_key().as_bytes()));
-        assert_eq!(state.network_chat.admission_of(&id).unwrap().account.as_deref(), Some(account.as_str()));
+        let account =
+            crate::payments::network_account(&hex::encode(visitor.verifying_key().as_bytes()));
+        assert_eq!(
+            state
+                .network_chat
+                .admission_of(&id)
+                .unwrap()
+                .account
+                .as_deref(),
+            Some(account.as_str())
+        );
 
-        let decision = crate::webui::AdmissionDecision { node_id: id.clone(), decision: "approve".into(), grant_micro: Some(5_000) };
+        let decision = crate::webui::AdmissionDecision {
+            node_id: id.clone(),
+            decision: "approve".into(),
+            grant_micro: Some(5_000),
+        };
         let response = crate::webui::apply_decision(&state, decision).await;
         assert!(response.status().is_success());
-        assert_eq!(crate::payments::runtime::state().book().balance(&account), 5_000);
-        let overview = testkit::body_of(crate::payments::runtime::overview(State(state)).await).await;
-        let listed = overview["accounts"].as_array().unwrap().iter().find(|a| a["account"] == account.as_str()).cloned().unwrap();
+        assert_eq!(
+            crate::payments::runtime::state().book().balance(&account),
+            5_000
+        );
+        let overview =
+            testkit::body_of(crate::payments::runtime::overview(State(state)).await).await;
+        let listed = overview["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["account"] == account.as_str())
+            .cloned()
+            .unwrap();
         assert_eq!(listed["visitors"][0]["node_id"], id.as_str());
     }
 
@@ -650,25 +876,68 @@ data: [DONE]"#;
         let state = testkit::state_with("home-principal", vec![]).await;
         let id = id_of(&member);
         let chat = &state.network_chat;
-        assert!(!crate::home_statement::may_hold_statement(chat, &state.admin_trust, &id));
-        chat.request_admission(&id, Default::default(), crate::config::EnrollmentRole::Worker).unwrap();
-        let decision = crate::webui::AdmissionDecision { node_id: id.clone(), decision: "approve".into(), grant_micro: None };
-        assert!(crate::webui::apply_decision(&state, decision).await.status().is_success());
-        assert!(crate::home_statement::may_hold_statement(chat, &state.admin_trust, &id));
+        assert!(!crate::home_statement::may_hold_statement(
+            chat,
+            &state.admin_trust,
+            &id
+        ));
+        chat.request_admission(
+            &id,
+            Default::default(),
+            crate::config::EnrollmentRole::Worker,
+        )
+        .unwrap();
+        let decision = crate::webui::AdmissionDecision {
+            node_id: id.clone(),
+            decision: "approve".into(),
+            grant_micro: None,
+        };
+        assert!(crate::webui::apply_decision(&state, decision)
+            .await
+            .status()
+            .is_success());
+        assert!(crate::home_statement::may_hold_statement(
+            chat,
+            &state.admin_trust,
+            &id
+        ));
         crate::webui::ban(&state, &id).await.unwrap();
-        assert!(!crate::home_statement::may_hold_statement(chat, &state.admin_trust, &id));
+        assert!(!crate::home_statement::may_hold_statement(
+            chat,
+            &state.admin_trust,
+            &id
+        ));
         // A visitor of this network is not its member: its home is elsewhere.
         let visitor = id_of(&key(48));
-        chat.request_admission(&visitor, Default::default(), crate::config::EnrollmentRole::Visitor).unwrap();
-        let decision = crate::webui::AdmissionDecision { node_id: visitor.clone(), decision: "approve".into(), grant_micro: None };
+        chat.request_admission(
+            &visitor,
+            Default::default(),
+            crate::config::EnrollmentRole::Visitor,
+        )
+        .unwrap();
+        let decision = crate::webui::AdmissionDecision {
+            node_id: visitor.clone(),
+            decision: "approve".into(),
+            grant_micro: None,
+        };
         crate::webui::apply_decision(&state, decision).await;
-        assert!(!crate::home_statement::may_hold_statement(chat, &state.admin_trust, &visitor));
+        assert!(!crate::home_statement::may_hold_statement(
+            chat,
+            &state.admin_trust,
+            &visitor
+        ));
     }
 
     #[test]
     fn a_deployment_selector_pays_its_models_price() {
         let mut settings = crate::config::NetworkSettings::default();
-        settings.payments.prices.insert("m".into(), crate::config::ModelPrice { in_micro_per_1k: 1, out_micro_per_1k: 2 });
+        settings.payments.prices.insert(
+            "m".into(),
+            crate::config::ModelPrice {
+                in_micro_per_1k: 1,
+                out_micro_per_1k: 2,
+            },
+        );
         assert!(price_of(&settings, "m@d-0123abcd").is_some());
     }
 
@@ -677,7 +946,10 @@ data: [DONE]"#;
         let mut settings = crate::config::NetworkSettings::default();
         settings.payments.prices.insert(
             "m".into(),
-            crate::config::ModelPrice { in_micro_per_1k: 10, out_micro_per_1k: 20 },
+            crate::config::ModelPrice {
+                in_micro_per_1k: 10,
+                out_micro_per_1k: 20,
+            },
         );
         assert_eq!(price_of(&settings, "m").unwrap().price_out_micro_per_1k, 20);
         assert!(price_of(&settings, "free").is_none());

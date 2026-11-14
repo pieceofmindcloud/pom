@@ -409,7 +409,9 @@ pub(crate) async fn plugin_proxy(
     if let Some(user) = crate::user_session::user_of(request.extensions()).cloned() {
         let workspace = crate::user_session::user_workspace(&state, &user).await;
         if let Ok(value) = HeaderValue::from_str(&crate::user_session::user_folder(&user)) {
-            request.headers_mut().insert(HeaderName::from_static(USER_HEADER), value);
+            request
+                .headers_mut()
+                .insert(HeaderName::from_static(USER_HEADER), value);
         }
         if let Ok(value) = HeaderValue::from_str(&workspace.to_string_lossy()) {
             request

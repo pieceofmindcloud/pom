@@ -618,14 +618,16 @@ async fn auto_head(
         false
     };
     if let Some((model, key)) = conversation {
-        if let Some(holder) = crate::plugin_session::holder_of(model, key).filter(|head| heads.contains(head)) {
+        if let Some(holder) =
+            crate::plugin_session::holder_of(model, key).filter(|head| heads.contains(head))
+        {
             if keeps(&holder, &format!("the conversation {key}")) {
                 return Some(holder);
             }
         }
         // a new conversation that begins with most of a prompt a head read recently: that head reuses what it read
-        if let Some(holder) =
-            crate::plugin_session::holder_of_prompt_start(model, prompt).filter(|head| heads.contains(head))
+        if let Some(holder) = crate::plugin_session::holder_of_prompt_start(model, prompt)
+            .filter(|head| heads.contains(head))
         {
             if keeps(&holder, "the start of this prompt") {
                 return Some(holder);
@@ -646,15 +648,25 @@ async fn auto_head(
                     && cache_prompt.starts_with(&snapshot.prompt)
             })
             .max_by_key(|snapshot| snapshot.prompt.len())
-            .and_then(|snapshot| snapshot.key.hops.first().and_then(|hop| hop.split('@').next().map(str::to_owned)));
+            .and_then(|snapshot| {
+                snapshot
+                    .key
+                    .hops
+                    .first()
+                    .and_then(|hop| hop.split('@').next().map(str::to_owned))
+            });
         if let Some(head) = held.filter(|head| heads.contains(head)) {
             info!("first stage: the session is already on {head}");
             return Some(head);
         }
     }
     let turn = crate::pipeline::next_head_turn(model);
-    let chosen = crate::fastest::rotate_head(&heads, turn, |head| queue.get(head).copied().unwrap_or(0))?;
-    info!("first stage by rotation over {} heads: {chosen}", heads.len());
+    let chosen =
+        crate::fastest::rotate_head(&heads, turn, |head| queue.get(head).copied().unwrap_or(0))?;
+    info!(
+        "first stage by rotation over {} heads: {chosen}",
+        heads.len()
+    );
     Some(chosen)
 }
 
@@ -764,7 +776,12 @@ pub(super) async fn generate_stream_inner(
     let step_budget = crate::relay::StepBudget::default();
     crate::relay::with_step_budget(
         step_budget.clone(),
-        Box::pin(generate_measured_stream(input, tx, cancellation, step_budget)),
+        Box::pin(generate_measured_stream(
+            input,
+            tx,
+            cancellation,
+            step_budget,
+        )),
     )
     .await
 }
@@ -2276,7 +2293,15 @@ async fn generate_measured_stream(
     // below (`crate::metering`).
     let meter = MeterCollect::start(&state, &plan);
     if let Some(retained_tokens) = retained_prefix_tokens {
-        if rewind_sessions(&plan, &session_id, retained_tokens, &state.peer_http, meter.as_ref()).await {
+        if rewind_sessions(
+            &plan,
+            &session_id,
+            retained_tokens,
+            &state.peer_http,
+            meter.as_ref(),
+        )
+        .await
+        {
             if let Some(lease) = lease.take() {
                 lease.commit(cache_prompt.clone(), retained_tokens);
             }
@@ -2412,7 +2437,11 @@ async fn build_shared_prefix(
         "shared system part ({} bytes) read on its own in {} ms: {}",
         root_prompt.len(),
         started.elapsed().as_millis(),
-        if done { "ok" } else { "failed, the request reads it cold" }
+        if done {
+            "ok"
+        } else {
+            "failed, the request reads it cold"
+        }
     );
     done
 }
@@ -2683,8 +2712,7 @@ pub(super) async fn rewind_sessions(
             if let Some(meter) = meter {
                 meter.record(index, body);
             }
-        })
-        {
+        }) {
             Ok(body)
                 if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
                     && body.get("n_past").and_then(|v| v.as_u64())
@@ -2771,23 +2799,29 @@ pub(super) async fn release_sessions_metered(
 /// GPU work metering of a turn a split plugin engine served
 /// (`crate::plugin_metering`): every stage signs its receipt for the bundle
 /// nonce, and the gateway assembles the bundle as for a pipeline.
-async fn collect_plugin_receipts(state: &GatewayState, plan: &PipelinePlan, code: &str) -> Option<(String, u64)> {
+async fn collect_plugin_receipts(
+    state: &GatewayState,
+    plan: &PipelinePlan,
+    code: &str,
+) -> Option<(String, u64)> {
     let meter = MeterCollect::start(state, plan)?;
     let body = serde_json::json!({ "metering_bundle": meter.bnd() });
     let peers = state.network.alive_peers().await;
     for (index, step) in plan.steps.iter().enumerate() {
         let answer = if step.node_id == state.network.node_id {
             match state.runtime.config().await {
-                Some(cfg) => crate::plugin_metering::close(&cfg, code, meter.bnd()).map(|(receipt, tokens)| {
-                    use base64::Engine;
-                    let bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
-                    serde_json::json!({
-                        "receipt": receipt,
-                        "metering_tokens": if tokens.is_empty() { None } else {
-                            Some(base64::engine::general_purpose::STANDARD.encode(bytes))
-                        },
-                    })
-                }),
+                Some(cfg) => crate::plugin_metering::close(&cfg, code, meter.bnd()).map(
+                    |(receipt, tokens)| {
+                        use base64::Engine;
+                        let bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+                        serde_json::json!({
+                            "receipt": receipt,
+                            "metering_tokens": if tokens.is_empty() { None } else {
+                                Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+                            },
+                        })
+                    },
+                ),
                 None => None,
             }
         } else {
@@ -2795,7 +2829,10 @@ async fn collect_plugin_receipts(state: &GatewayState, plan: &PipelinePlan, code
                 Some(peer) => match state
                     .control_post_json_routed(
                         peer,
-                        &format!("/api/internal/plugins/{code}/engine/metering/{}", peer.deploy_id),
+                        &format!(
+                            "/api/internal/plugins/{code}/engine/metering/{}",
+                            peer.deploy_id
+                        ),
                         &body,
                         SESSION_LIFECYCLE_TIMEOUT,
                     )
@@ -2877,7 +2914,14 @@ impl MeterCollect {
             .collect();
         let answers = self.answers.into_inner().unwrap_or_default();
         let tokens = self.tokens.into_inner().ok().flatten().unwrap_or_default();
-        crate::metering::finish_bundle(&state.database, &self.ticket, &steps, &answers, &tokens, &[])
+        crate::metering::finish_bundle(
+            &state.database,
+            &self.ticket,
+            &steps,
+            &answers,
+            &tokens,
+            &[],
+        )
     }
 }
 
@@ -3347,8 +3391,8 @@ async fn route_audit_event_to_local_store<F>(
 #[cfg(test)]
 mod audit_replication_tests {
     use super::*;
-    use crate::reqlog::{AuditCompletion, AuditEvent, AuditRequest, Caller};
     use crate::p2p::EndpointId;
+    use crate::reqlog::{AuditCompletion, AuditEvent, AuditRequest, Caller};
     use std::collections::{HashMap, HashSet};
 
     // Representative reproduction from the admins' point of view:
@@ -3363,7 +3407,13 @@ mod audit_replication_tests {
     #[tokio::test]
     async fn plugin_accepted_inference_log_reaches_every_admin_peer() {
         let network = Arc::new(
-            crate::network::Network::testkit("admin-source".into(), "source-key".into(), vec![], None, None)
+            crate::network::Network::testkit(
+                "admin-source".into(),
+                "source-key".into(),
+                vec![],
+                None,
+                None,
+            )
             .await
             .expect("isolated network"),
         );
@@ -3519,7 +3569,9 @@ pub fn spawn_logged_generation_with_stops(
     // A visitor's charged request (`crate::delegation`): settled at the end.
     let charge = crate::delegation::current_charge();
     let charge_state = input.state.clone();
-    tokio::spawn(crate::metering::CONSUMER.scope(consumer, generate_stream_with_stops(input, inner_tx)));
+    tokio::spawn(
+        crate::metering::CONSUMER.scope(consumer, generate_stream_with_stops(input, inner_tx)),
+    );
 
     tokio::spawn(async move {
         let mut generated: u32 = 0;

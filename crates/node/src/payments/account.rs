@@ -46,8 +46,14 @@ mod tests {
 
     #[test]
     fn account_ids_round_trip_and_bare_ids_are_keys() {
-        assert_eq!(AccountId::parse(&network_account("ab12")), AccountId::Network("ab12".into()));
-        assert_eq!(AccountId::parse(&key_account("k1")), AccountId::Key("k1".into()));
+        assert_eq!(
+            AccountId::parse(&network_account("ab12")),
+            AccountId::Network("ab12".into())
+        );
+        assert_eq!(
+            AccountId::parse(&key_account("k1")),
+            AccountId::Key("k1".into())
+        );
         assert_eq!(AccountId::parse("k1"), AccountId::Key("k1".into()));
         assert_eq!(AccountId::Network("ab12".into()).as_string(), "net:ab12");
     }

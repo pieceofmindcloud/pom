@@ -264,7 +264,10 @@ pub(super) async fn node_info(
         kv_cache_disk(dir.as_deref())
     };
     let plugin_services = crate::plugin_services::node_services(&state.plugins).await;
-    let load = state.loads.load(&state.network.node_id).await
+    let load = state
+        .loads
+        .load(&state.network.node_id)
+        .await
         .saturating_add(plugin_serving_load(config.as_ref()));
     Json(NodeInfo {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
@@ -465,7 +468,12 @@ pub(super) async fn save_admin_access(
 
     let (restart, password_configured, invalidate_sessions) = {
         let mut cfg = state.auth.write().await;
-        if cfg.admin_access_token.clone().filter(|hash| !hash.is_empty()) != existing_hash {
+        if cfg
+            .admin_access_token
+            .clone()
+            .filter(|hash| !hash.is_empty())
+            != existing_hash
+        {
             return (
                 StatusCode::CONFLICT,
                 Json(json!({ "error": "the password preference changed; try again" })),
@@ -574,7 +582,9 @@ pub(super) async fn change_admin_password(
     let (existing_hash, is_default) = {
         let cfg = state.auth.read().await;
         (
-            cfg.admin_access_token.clone().filter(|hash| !hash.is_empty()),
+            cfg.admin_access_token
+                .clone()
+                .filter(|hash| !hash.is_empty()),
             cfg.admin_password_default,
         )
     };
@@ -604,7 +614,12 @@ pub(super) async fn change_admin_password(
 
     {
         let mut cfg = state.auth.write().await;
-        if cfg.admin_access_token.clone().filter(|hash| !hash.is_empty()) != existing_hash {
+        if cfg
+            .admin_access_token
+            .clone()
+            .filter(|hash| !hash.is_empty())
+            != existing_hash
+        {
             return (
                 StatusCode::CONFLICT,
                 Json(json!({ "error": "the password changed meanwhile; try again" })),
@@ -746,7 +761,10 @@ pub(super) fn drop_discarded(
 /// unchanged file always agrees. A slice indexed before its manifest was written
 /// (the slicer writes the `.pom` last) does not: copying the old entry back kept
 /// it a nameless loose slice, shown by its hash, through every rescan.
-fn same_inventory_facts(fresh: &catalog::DiscoveredModel, enriched: &catalog::DiscoveredModel) -> bool {
+fn same_inventory_facts(
+    fresh: &catalog::DiscoveredModel,
+    enriched: &catalog::DiscoveredModel,
+) -> bool {
     fresh.name == enriched.name
         && fresh.shard_group == enriched.shard_group
         && fresh.model_label == enriched.model_label
@@ -1091,7 +1109,10 @@ pub(super) async fn resolve_deployment_slice_file(
 /// The local whole GGUF the catalog lists under `model_label`, with its
 /// layer count when the header told it. Used by the metering verifier
 /// (`crate::metering_verify`), which cuts ranges from it.
-pub(crate) async fn whole_model_by_label(state: &GatewayState, model_label: &str) -> Option<(String, Option<u32>)> {
+pub(crate) async fn whole_model_by_label(
+    state: &GatewayState,
+    model_label: &str,
+) -> Option<(String, Option<u32>)> {
     let catalog = local_catalog(state).await;
     catalog
         .models
@@ -1862,7 +1883,8 @@ async fn forward_network_chat_to_primary(
     let primary = state.admin_trust.current_primary();
     let Some(peer) = state.all_peers().await.into_iter().find(|peer| {
         peer.node_id == primary.node_id
-            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(primary.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref()
+                == Some(primary.peer_id.as_str())
             && peer.pubkey == primary.pubkey
             && peer.gateway_port.is_some()
     }) else {
@@ -1931,7 +1953,8 @@ pub(super) async fn models(State(state): State<GatewayState>) -> impl IntoRespon
 /// The body of `GET /api/ui/models`.
 pub(super) async fn models_answer(state: &GatewayState) -> serde_json::Value {
     let catalog = local_catalog(state).await;
-    let hf_sources = crate::model_provider_backend::installed_sources(state.model_dirs().await).await;
+    let hf_sources =
+        crate::model_provider_backend::installed_sources(state.model_dirs().await).await;
     json!({
         "hf_sources": hf_sources,
         // Not `sysmon`: that one is the raw operating system hostname and
@@ -2110,7 +2133,8 @@ mod tests {
     /// never the machine's mount points or devices.
     #[tokio::test]
     async fn members_see_one_volume_made_of_the_slice_volumes() {
-        let root = std::env::temp_dir().join(format!("pom-volumes-{}", uuid::Uuid::new_v4().simple()));
+        let root =
+            std::env::temp_dir().join(format!("pom-volumes-{}", uuid::Uuid::new_v4().simple()));
         let models = root.join("models");
         let shards = root.join("shards");
         std::fs::create_dir_all(&models).unwrap();
@@ -2129,7 +2153,10 @@ mod tests {
         // volume hold no slice folder and stay out.
         assert_eq!(shared.disks.len(), 1);
         assert_eq!((shared.disk.total_mb, shared.disk.free_mb), (100, 30));
-        assert_eq!((shared.disks[0].total_mb, shared.disks[0].free_mb), (100, 30));
+        assert_eq!(
+            (shared.disks[0].total_mb, shared.disks[0].free_mb),
+            (100, 30)
+        );
         assert!(shared.disk.mount_point.is_empty() && shared.disk.device.is_empty());
         let json = serde_json::to_string(&shared).unwrap();
         for leaked in ["/private-data", "/dev/secret", "/dev/models", "/dev/root"] {
@@ -2143,12 +2170,18 @@ mod tests {
     #[tokio::test]
     async fn only_another_node_gets_the_summary() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
-        let own = node_info(HeaderMap::new(), State(state.clone())).await.0.system;
+        let own = node_info(HeaderMap::new(), State(state.clone()))
+            .await
+            .0
+            .system;
         let raw = sysmon::sample().await;
         assert_eq!(own.disks.len(), raw.disks.len());
 
         let mut headers = HeaderMap::new();
-        headers.insert(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1".parse().unwrap());
+        headers.insert(
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER,
+            "1".parse().unwrap(),
+        );
         let shared = node_info(headers, State(state)).await.0.system;
         assert_eq!(shared.disks.len(), 1);
         assert!(shared.disk.mount_point.is_empty() && shared.disk.device.is_empty());
@@ -2158,7 +2191,10 @@ mod tests {
     fn only_a_node_to_node_call_gets_the_shared_view() {
         let mut headers = HeaderMap::new();
         assert!(!asked_by_another_node(&headers));
-        headers.insert(crate::auth::INTERNAL_NODE_REQUEST_HEADER, "1".parse().unwrap());
+        headers.insert(
+            crate::auth::INTERNAL_NODE_REQUEST_HEADER,
+            "1".parse().unwrap(),
+        );
         assert!(asked_by_another_node(&headers));
         let mut signed = HeaderMap::new();
         signed.insert(crate::auth::CONTROL_SIGNATURE_HEADER, "x".parse().unwrap());
@@ -2196,13 +2232,15 @@ mod tests {
         }
     }
 
-
     #[test]
     fn a_panel_password_must_be_long_and_mixed_and_never_the_default() {
         assert_eq!(admin_password_weakness("admin"), Some("default_password"));
         assert_eq!(admin_password_weakness("Ab1!short"), Some("too_short"));
         assert_eq!(admin_password_weakness("alllowercase"), Some("too_simple"));
-        assert_eq!(admin_password_weakness("lowerUPPERonly"), Some("too_simple"));
+        assert_eq!(
+            admin_password_weakness("lowerUPPERonly"),
+            Some("too_simple")
+        );
         assert_eq!(admin_password_weakness("lower1UPPER"), None);
         assert_eq!(admin_password_weakness("only lower 42"), None);
     }
@@ -3211,7 +3249,9 @@ pub(super) async fn network_chat_action(
     if !key_holds || request.action.sender_node_id() != state.network.node_id {
         return (
             StatusCode::FORBIDDEN,
-            Json(crate::network_chat::ChatResponse::rejected("api_key_invalid")),
+            Json(crate::network_chat::ChatResponse::rejected(
+                "api_key_invalid",
+            )),
         )
             .into_response();
     }

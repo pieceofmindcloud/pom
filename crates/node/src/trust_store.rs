@@ -84,7 +84,11 @@ fn system_wide() -> bool {
 
 /// Whether this build can install the CA on this system at all.
 pub fn supported() -> bool {
-    cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux"))
+    cfg!(any(
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "linux"
+    ))
 }
 
 fn declined_path() -> PathBuf {
@@ -114,14 +118,32 @@ fn remember(ca: &LocalCa, report: &InstallReport) {
 /// The name the CA goes by in the stores: the product, plus the start of its
 /// fingerprint so two machines' CAs never share one.
 fn nickname(ca: &LocalCa) -> String {
-    let short: String = ca.fingerprint_sha256().replace(':', "").chars().take(8).collect();
-    format!("{} local CA {}", crate::brand::name(), short.to_ascii_lowercase())
+    let short: String = ca
+        .fingerprint_sha256()
+        .replace(':', "")
+        .chars()
+        .take(8)
+        .collect();
+    format!(
+        "{} local CA {}",
+        crate::brand::name(),
+        short.to_ascii_lowercase()
+    )
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn file_stem(ca: &LocalCa) -> String {
-    let short: String = ca.fingerprint_sha256().replace(':', "").chars().take(8).collect();
-    format!("{}-local-ca-{}", crate::brand::slug(), short.to_ascii_lowercase())
+    let short: String = ca
+        .fingerprint_sha256()
+        .replace(':', "")
+        .chars()
+        .take(8)
+        .collect();
+    format!(
+        "{}-local-ca-{}",
+        crate::brand::slug(),
+        short.to_ascii_lowercase()
+    )
 }
 
 /// Runs a tool and says whether it succeeded, with its output for the report.
@@ -154,10 +176,16 @@ pub fn state(ca: &LocalCa) -> TrustState {
 /// system's dialog is open, so it runs off the async runtime.
 pub fn install(ca: &LocalCa) -> InstallReport {
     if !supported() {
-        return InstallReport::new(Outcome::Unavailable, "this system has no supported trust store");
+        return InstallReport::new(
+            Outcome::Unavailable,
+            "this system has no supported trust store",
+        );
     }
     let report = if state(ca) == TrustState::Trusted {
-        InstallReport::new(Outcome::AlreadyTrusted, "this machine already trusts the CA")
+        InstallReport::new(
+            Outcome::AlreadyTrusted,
+            "this machine already trusts the CA",
+        )
     } else {
         platform::install(ca, &crate::web_ca::ca_cert_path())
     };
@@ -174,7 +202,9 @@ pub fn auto_install() {
     let ca = match LocalCa::load_or_create() {
         Ok(ca) => ca,
         Err(error) => {
-            tracing::warn!("local CA unavailable, the interface stays on an untrusted certificate: {error:#}");
+            tracing::warn!(
+                "local CA unavailable, the interface stays on an untrusted certificate: {error:#}"
+            );
             return;
         }
     };
@@ -200,12 +230,18 @@ mod platform {
     const SECURITY: &str = "/usr/bin/security";
 
     fn login_keychain() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Keychains/login.keychain-db"))
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Keychains/login.keychain-db"))
     }
 
     pub fn state(_ca: &LocalCa, cert: &Path) -> TrustState {
         // Evaluating the root itself succeeds only when it is a trusted anchor.
-        let (ok, _) = run(Command::new(SECURITY).arg("verify-cert").arg("-c").arg(cert).arg("-L").arg("-q"));
+        let (ok, _) = run(Command::new(SECURITY)
+            .arg("verify-cert")
+            .arg("-c")
+            .arg(cert)
+            .arg("-L")
+            .arg("-q"));
         if ok {
             TrustState::Trusted
         } else {
@@ -217,14 +253,15 @@ mod platform {
         let Some(keychain) = login_keychain() else {
             return InstallReport::new(Outcome::Unavailable, "no HOME to find the login keychain");
         };
-        let (ok, detail) = run(
-            Command::new(SECURITY)
-                .args(["add-trusted-cert", "-r", "trustRoot", "-k"])
-                .arg(&keychain)
-                .arg(cert),
-        );
+        let (ok, detail) = run(Command::new(SECURITY)
+            .args(["add-trusted-cert", "-r", "trustRoot", "-k"])
+            .arg(&keychain)
+            .arg(cert));
         if ok {
-            InstallReport::new(Outcome::Installed, "added to the login keychain as a trusted root")
+            InstallReport::new(
+                Outcome::Installed,
+                "added to the login keychain as a trusted root",
+            )
         } else {
             InstallReport::new(Outcome::Declined, detail)
         }
@@ -250,7 +287,9 @@ mod platform {
         let Some(serial) = serial(ca) else {
             return TrustState::Unknown;
         };
-        let (ok, _) = run(Command::new(certutil()).args(["-user", "-store", "Root"]).arg(serial));
+        let (ok, _) = run(Command::new(certutil())
+            .args(["-user", "-store", "Root"])
+            .arg(serial));
         if ok {
             TrustState::Trusted
         } else {
@@ -260,7 +299,9 @@ mod platform {
 
     pub fn install(_ca: &LocalCa, cert: &Path) -> InstallReport {
         // Windows itself asks "Do you want to install this certificate?".
-        let (ok, detail) = run(Command::new(certutil()).args(["-user", "-addstore", "Root"]).arg(cert));
+        let (ok, detail) = run(Command::new(certutil())
+            .args(["-user", "-addstore", "Root"])
+            .arg(cert));
         if ok {
             InstallReport::new(Outcome::Installed, "added to the current user's root store")
         } else {
@@ -277,9 +318,17 @@ mod platform {
     /// rebuilds it: Debian and Ubuntu, then Fedora and Arch.
     fn system_store() -> Option<(PathBuf, &'static str, &'static str)> {
         [
-            ("/usr/local/share/ca-certificates", "crt", "update-ca-certificates"),
+            (
+                "/usr/local/share/ca-certificates",
+                "crt",
+                "update-ca-certificates",
+            ),
             ("/etc/pki/ca-trust/source/anchors", "pem", "update-ca-trust"),
-            ("/etc/ca-certificates/trust-source/anchors", "crt", "update-ca-trust"),
+            (
+                "/etc/ca-certificates/trust-source/anchors",
+                "crt",
+                "update-ca-trust",
+            ),
         ]
         .into_iter()
         .find(|(dir, _, tool)| Path::new(dir).is_dir() && find_tool(tool).is_some())
@@ -325,19 +374,19 @@ mod platform {
     }
 
     fn nss_trusts(certutil: &Path, db: &Path, nick: &str) -> bool {
-        let (ok, _) = run(
-            Command::new(certutil)
-                .arg("-L")
-                .arg("-d")
-                .arg(format!("sql:{}", db.display()))
-                .arg("-n")
-                .arg(nick),
-        );
+        let (ok, _) = run(Command::new(certutil)
+            .arg("-L")
+            .arg("-d")
+            .arg(format!("sql:{}", db.display()))
+            .arg("-n")
+            .arg(nick));
         ok
     }
 
     pub fn state(ca: &LocalCa, _cert: &Path) -> TrustState {
-        let system = system_store().filter(|_| system_wide()).map(|_| system_trusts(ca));
+        let system = system_store()
+            .filter(|_| system_wide())
+            .map(|_| system_trusts(ca));
         let nick = nickname(ca);
         let browsers = find_tool("certutil").map(|certutil| {
             nss_databases()
@@ -362,28 +411,24 @@ mod platform {
                     if std::fs::create_dir_all(&db).is_err() {
                         continue;
                     }
-                    let _ = run(
-                        Command::new(&certutil)
-                            .arg("-N")
-                            .arg("-d")
-                            .arg(format!("sql:{}", db.display()))
-                            .arg("--empty-password"),
-                    );
+                    let _ = run(Command::new(&certutil)
+                        .arg("-N")
+                        .arg("-d")
+                        .arg(format!("sql:{}", db.display()))
+                        .arg("--empty-password"));
                 }
                 if nss_trusts(&certutil, &db, &nick) {
                     continue;
                 }
-                let (ok, _) = run(
-                    Command::new(&certutil)
-                        .arg("-A")
-                        .arg("-d")
-                        .arg(format!("sql:{}", db.display()))
-                        .args(["-t", "C,,"])
-                        .arg("-n")
-                        .arg(&nick)
-                        .arg("-i")
-                        .arg(cert),
-                );
+                let (ok, _) = run(Command::new(&certutil)
+                    .arg("-A")
+                    .arg("-d")
+                    .arg(format!("sql:{}", db.display()))
+                    .args(["-t", "C,,"])
+                    .arg("-n")
+                    .arg(&nick)
+                    .arg("-i")
+                    .arg(cert));
                 if ok {
                     done.push("browsers");
                 }
@@ -395,14 +440,12 @@ mod platform {
                 return finish(done, "no pkexec to ask for the system store");
             };
             // The paths travel as arguments, never inside the script.
-            let (ok, detail) = run(
-                Command::new(pkexec)
-                    .args(["/bin/sh", "-c", "install -m 0644 \"$1\" \"$2\" && \"$3\""])
-                    .arg("sh")
-                    .arg(cert)
-                    .arg(&target)
-                    .arg(find_tool(tool).unwrap_or_else(|| PathBuf::from(tool))),
-            );
+            let (ok, detail) = run(Command::new(pkexec)
+                .args(["/bin/sh", "-c", "install -m 0644 \"$1\" \"$2\" && \"$3\""])
+                .arg("sh")
+                .arg(cert)
+                .arg(&target)
+                .arg(find_tool(tool).unwrap_or_else(|| PathBuf::from(tool))));
             if ok {
                 done.push("system");
             } else {
@@ -423,7 +466,10 @@ mod platform {
         if done.is_empty() {
             InstallReport::new(Outcome::Unavailable, nothing)
         } else {
-            InstallReport::new(Outcome::Installed, format!("added to the {} store", done.join(" and ")))
+            InstallReport::new(
+                Outcome::Installed,
+                format!("added to the {} store", done.join(" and ")),
+            )
         }
     }
 }
@@ -437,6 +483,9 @@ mod platform {
     }
 
     pub fn install(_ca: &LocalCa, _cert: &Path) -> InstallReport {
-        InstallReport::new(Outcome::Unavailable, "this system has no supported trust store")
+        InstallReport::new(
+            Outcome::Unavailable,
+            "this system has no supported trust store",
+        )
     }
 }

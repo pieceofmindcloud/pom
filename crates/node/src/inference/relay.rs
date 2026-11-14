@@ -9,10 +9,10 @@
 //! encode/decode path instead of drifting apart.
 
 use crate::infer_tunnel::{TunnelOutbound, TunnelOutboundSender, TunnelRequest};
+use crate::p2p::EndpointId;
 use crate::wire::{self, FrameEncoding, TensorShape, WireDtype};
 use anyhow::{anyhow, Result};
 use axum::body::Bytes;
-use crate::p2p::EndpointId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -772,7 +772,9 @@ async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
                 for item in &items {
                     crate::metering::note_forward(
                         Some(item.session_id.as_str()),
-                        item.tensor.as_ref().map(|(v, s)| (v.as_slice(), s.as_slice())),
+                        item.tensor
+                            .as_ref()
+                            .map(|(v, s)| (v.as_slice(), s.as_slice())),
                         item.dtype,
                     );
                 }
@@ -1154,7 +1156,11 @@ fn encode_frame_body_profiled(
     _encoding: FrameEncoding,
     use_batch_frame: bool,
 ) -> Result<(Vec<u8>, wire::WireEncodeTiming)> {
-    note_metered_forward(meta, tensor.as_ref().map(|(v, s)| (*v, s.as_slice())), dtype);
+    note_metered_forward(
+        meta,
+        tensor.as_ref().map(|(v, s)| (*v, s.as_slice())),
+        dtype,
+    );
     if use_batch_frame {
         wire::encode_batch_single_profiled(meta, tensor, dtype)
     } else {
@@ -1165,7 +1171,11 @@ fn encode_frame_body_profiled(
 /// GPU work metering: the tensor this frame carries to the next hop
 /// (`crate::metering::note_forward`).
 fn note_metered_forward(meta: &Value, tensor: Option<(&[f32], &[usize])>, dtype: WireDtype) {
-    crate::metering::note_forward(meta.get("session_id").and_then(Value::as_str), tensor, dtype);
+    crate::metering::note_forward(
+        meta.get("session_id").and_then(Value::as_str),
+        tensor,
+        dtype,
+    );
 }
 
 fn can_use_single_link(path: &str) -> bool {
@@ -1179,7 +1189,11 @@ fn encode_link_single_profiled(
     tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
 ) -> Result<(Vec<u8>, wire::WireEncodeTiming)> {
-    note_metered_forward(meta, tensor.as_ref().map(|(v, s)| (*v, s.as_slice())), dtype);
+    note_metered_forward(
+        meta,
+        tensor.as_ref().map(|(v, s)| (*v, s.as_slice())),
+        dtype,
+    );
     let session_id = meta
         .get("session_id")
         .and_then(Value::as_str)
@@ -2538,16 +2552,8 @@ async fn send_bytes_via_tunnel(
     let response = match tokio::time::timeout(TUNNEL_BYTES_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: p2p tunnel failure: {error}")),
-        Ok(Err(_)) => {
-            return Err(anyhow!(
-                "{peer_label}: p2p tunnel closed without answering"
-            ))
-        }
-        Err(_) => {
-            return Err(anyhow!(
-                "{peer_label}: p2p tunnel did not answer in time"
-            ))
-        }
+        Ok(Err(_)) => return Err(anyhow!("{peer_label}: p2p tunnel closed without answering")),
+        Err(_) => return Err(anyhow!("{peer_label}: p2p tunnel did not answer in time")),
     };
 
     if !(200..300).contains(&response.status) {
@@ -3395,10 +3401,7 @@ mod tests {
     fn a_declared_step_budget_raises_the_decode_deadline_up_to_its_ceiling() {
         let fixed = frame_deadline(1, 0, 1);
         let slow = json!({"token_id": 7, STEP_BUDGET_KEY: 40_000});
-        assert_eq!(
-            frame_deadline_for(&slow, None),
-            Duration::from_secs(40)
-        );
+        assert_eq!(frame_deadline_for(&slow, None), Duration::from_secs(40));
         // Never below the fixed deadline, never past the ceiling.
         let fast = json!({"token_id": 7, STEP_BUDGET_KEY: 1});
         assert_eq!(frame_deadline_for(&fast, None), fixed);

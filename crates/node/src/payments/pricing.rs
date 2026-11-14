@@ -45,8 +45,10 @@ fn floor_mul_div_1000(a: i64, b: i64) -> i64 {
 ///
 /// `effective` is the request ceiling, not one continuation leg.
 pub fn hold_micro(pricing: &DeploymentPricing, prompt_est: i64, effective: i64) -> i64 {
-    ceil_mul_div_1000(prompt_est, pricing.price_in_micro_per_1k)
-        .saturating_add(floor_mul_div_1000(effective, pricing.price_out_micro_per_1k))
+    ceil_mul_div_1000(prompt_est, pricing.price_in_micro_per_1k).saturating_add(floor_mul_div_1000(
+        effective,
+        pricing.price_out_micro_per_1k,
+    ))
 }
 
 /// Settlement: executed token counts, with cached prompt tokens not billed.
@@ -59,8 +61,9 @@ pub fn bill_micro(
     let billed_prompt = prompt_tokens
         .saturating_sub(non_negative(cached_tokens))
         .max(1);
-    floor_mul_div_1000(billed_prompt, pricing.price_in_micro_per_1k)
-        .saturating_add(floor_mul_div_1000(completion_tokens, pricing.price_out_micro_per_1k))
+    floor_mul_div_1000(billed_prompt, pricing.price_in_micro_per_1k).saturating_add(
+        floor_mul_div_1000(completion_tokens, pricing.price_out_micro_per_1k),
+    )
 }
 
 /// Minimum funding for a deployment: the worst live-session hold, raised by the

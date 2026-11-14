@@ -36,12 +36,26 @@ pub enum PaymentWrite {
 }
 
 impl PaymentWrite {
-    pub fn settle(account: &str, amount_micro: i64, deploy_id: Option<String>, detail_json: Option<String>) -> Self {
-        Self::Settle { key_id: account.to_string(), amount_micro, deploy_id, detail_json }
+    pub fn settle(
+        account: &str,
+        amount_micro: i64,
+        deploy_id: Option<String>,
+        detail_json: Option<String>,
+    ) -> Self {
+        Self::Settle {
+            key_id: account.to_string(),
+            amount_micro,
+            deploy_id,
+            detail_json,
+        }
     }
 
     pub fn grant(account: &str, delta_micro: i64, detail_json: Option<String>) -> Self {
-        Self::Grant { key_id: account.to_string(), delta_micro, detail_json }
+        Self::Grant {
+            key_id: account.to_string(),
+            delta_micro,
+            detail_json,
+        }
     }
 
     fn key_id(&self) -> &str {
@@ -64,9 +78,7 @@ impl PaymentWrite {
     fn amount_micro(&self) -> i64 {
         match self {
             Self::Grant { delta_micro, .. } => *delta_micro,
-            Self::Settle { amount_micro, .. } | Self::Refund { amount_micro, .. } => {
-                *amount_micro
-            }
+            Self::Settle { amount_micro, .. } | Self::Refund { amount_micro, .. } => *amount_micro,
         }
     }
 
@@ -238,8 +250,11 @@ fn apply_write(tx: &Connection, write: &PaymentWrite) -> Result<()> {
 /// book starts with the settled balances and nothing reserved.
 pub fn load_balances(database: &PomDb, book: &BalanceBook) -> Result<usize> {
     let balances = database.with_write("load payment balances", |connection| {
-        let mut statement = connection.prepare("SELECT key_id, balance_micro FROM x402_accounts")?;
-        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+        let mut statement =
+            connection.prepare("SELECT key_id, balance_micro FROM x402_accounts")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
         let mut loaded = Vec::new();
         for row in rows {
             loaded.push(row?);

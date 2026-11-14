@@ -115,7 +115,12 @@ impl MeterTable {
             crate::metering::context()?;
             let cap = (max_sessions as usize).max(1) * METERS_PER_SLOT;
             if self.meters.len() >= cap {
-                if let Some(oldest) = self.meters.iter().min_by_key(|(_, m)| m.t0).map(|(k, _)| k.clone()) {
+                if let Some(oldest) = self
+                    .meters
+                    .iter()
+                    .min_by_key(|(_, m)| m.t0)
+                    .map(|(k, _)| k.clone())
+                {
                     self.meters.remove(&oldest);
                 }
             }
@@ -135,17 +140,34 @@ impl MeterTable {
 
     /// The head's input: the prompt token ids of a chunk, after `prefix`
     /// (the cached prompt before it), so the kept sequence starts at 0.
-    pub(crate) fn input_tokens(&mut self, sid: &str, max_sessions: u32, first_pos: u32, tokens: &[i32], prefix: &[i32]) {
+    pub(crate) fn input_tokens(
+        &mut self,
+        sid: &str,
+        max_sessions: u32,
+        first_pos: u32,
+        tokens: &[i32],
+        prefix: &[i32],
+    ) {
         if let Some(m) = self.open(sid, max_sessions) {
             m.in_chain.absorb_tokens(first_pos, tokens);
-            Self::place(&mut m.seq, 0, &prefix[..prefix.len().min(first_pos as usize)]);
+            Self::place(
+                &mut m.seq,
+                0,
+                &prefix[..prefix.len().min(first_pos as usize)],
+            );
             Self::place(&mut m.seq, first_pos, tokens);
         }
     }
 
     /// The head's decode input, fed at `first_pos`. Not in the input chain:
     /// these are the model's own outputs, committed by the tail.
-    pub(crate) fn fed_tokens(&mut self, sid: &str, max_sessions: u32, first_pos: u32, tokens: &[i32]) {
+    pub(crate) fn fed_tokens(
+        &mut self,
+        sid: &str,
+        max_sessions: u32,
+        first_pos: u32,
+        tokens: &[i32],
+    ) {
         if let Some(m) = self.open(sid, max_sessions) {
             Self::place(&mut m.seq, first_pos, tokens);
         }
@@ -159,7 +181,15 @@ impl MeterTable {
     }
 
     /// A later hop's input: the decoded hidden state of `rows` positions.
-    pub(crate) fn input_tensor(&mut self, sid: &str, max_sessions: u32, _first_pos: u32, rows: u32, values: &[f32], dtype: WireDtype) {
+    pub(crate) fn input_tensor(
+        &mut self,
+        sid: &str,
+        max_sessions: u32,
+        _first_pos: u32,
+        rows: u32,
+        values: &[f32],
+        dtype: WireDtype,
+    ) {
         if let Some(m) = self.open(sid, max_sessions) {
             let bytes = f32_bytes(values);
             // Positions stay out of hidden-state links: the two ends see the
@@ -174,8 +204,18 @@ impl MeterTable {
     /// output before encoding and its row width) is given only for rows a
     /// verifier can reproduce: prefill and plain decode steps, not the
     /// speculative batches whose rejected rows never reach the final sequence.
-    pub(crate) fn output(&mut self, sid: &str, first_pos: u32, rows: u32, encoded: &[u8], dtype: WireDtype, hidden: Option<(&[f32], usize)>) {
-        let Some(m) = self.meters.get_mut(sid) else { return };
+    pub(crate) fn output(
+        &mut self,
+        sid: &str,
+        first_pos: u32,
+        rows: u32,
+        encoded: &[u8],
+        dtype: WireDtype,
+        hidden: Option<(&[f32], usize)>,
+    ) {
+        let Some(m) = self.meters.get_mut(sid) else {
+            return;
+        };
         let decoded = match wire::decode(encoded) {
             Ok((_, Some((values, _)))) => f32_bytes(&values),
             _ => encoded.to_vec(),
@@ -198,7 +238,14 @@ impl MeterTable {
         }
     }
 
-    pub(crate) fn prefill(&mut self, sid: &str, max_sessions: u32, computed: u32, cached: u32, ms: u64) {
+    pub(crate) fn prefill(
+        &mut self,
+        sid: &str,
+        max_sessions: u32,
+        computed: u32,
+        cached: u32,
+        ms: u64,
+    ) {
         if let Some(m) = self.open(sid, max_sessions) {
             m.computed.prefill += computed;
             m.cached += cached;
@@ -238,7 +285,12 @@ impl MeterTable {
 
     /// Closes the meter of `sid` and, when the gateway named a bundle, signs
     /// its receipt. Returns the receipt and the head's computed sequence.
-    pub(crate) fn close(&mut self, sid: &str, bnd: Option<String>, slice: &SliceRef) -> Option<(String, Vec<i32>)> {
+    pub(crate) fn close(
+        &mut self,
+        sid: &str,
+        bnd: Option<String>,
+        slice: &SliceRef,
+    ) -> Option<(String, Vec<i32>)> {
         let mut m = self.meters.remove(sid)?;
         let bnd = bnd?;
         let ctx = crate::metering::context()?;
@@ -269,7 +321,10 @@ impl MeterTable {
             drafted: m.drafted,
             cached: m.cached,
             in_chain: m.in_chain.digest(),
-            out_chain: m.out_chain_digest.take().unwrap_or_else(|| m.out_chain.digest()),
+            out_chain: m
+                .out_chain_digest
+                .take()
+                .unwrap_or_else(|| m.out_chain.digest()),
             summ,
             chunks,
             shard: slice.shard,
@@ -289,25 +344,50 @@ impl InferState {
         let prefix: Vec<i32> = self
             .sessions
             .get(sid)
-            .map(|s| s.prompt_tokens.iter().take(first_pos as usize).copied().collect())
+            .map(|s| {
+                s.prompt_tokens
+                    .iter()
+                    .take(first_pos as usize)
+                    .copied()
+                    .collect()
+            })
             .unwrap_or_default();
-        self.meters.input_tokens(sid, self.max_sessions, first_pos, tokens, &prefix);
+        self.meters
+            .input_tokens(sid, self.max_sessions, first_pos, tokens, &prefix);
     }
 
     pub(crate) fn meter_fed_tokens(&mut self, sid: &str, first_pos: u32, tokens: &[i32]) {
-        self.meters.fed_tokens(sid, self.max_sessions, first_pos, tokens);
+        self.meters
+            .fed_tokens(sid, self.max_sessions, first_pos, tokens);
     }
 
     pub(crate) fn meter_truncate(&mut self, sid: &str, n_past: u32) {
         self.meters.truncate(sid, n_past);
     }
 
-    pub(crate) fn meter_input_tensor(&mut self, sid: &str, first_pos: u32, rows: u32, values: &[f32], dtype: WireDtype) {
-        self.meters.input_tensor(sid, self.max_sessions, first_pos, rows, values, dtype);
+    pub(crate) fn meter_input_tensor(
+        &mut self,
+        sid: &str,
+        first_pos: u32,
+        rows: u32,
+        values: &[f32],
+        dtype: WireDtype,
+    ) {
+        self.meters
+            .input_tensor(sid, self.max_sessions, first_pos, rows, values, dtype);
     }
 
-    pub(crate) fn meter_output(&mut self, sid: &str, first_pos: u32, rows: u32, encoded: &[u8], dtype: WireDtype, hidden: Option<(&[f32], usize)>) {
-        self.meters.output(sid, first_pos, rows, encoded, dtype, hidden);
+    pub(crate) fn meter_output(
+        &mut self,
+        sid: &str,
+        first_pos: u32,
+        rows: u32,
+        encoded: &[u8],
+        dtype: WireDtype,
+        hidden: Option<(&[f32], usize)>,
+    ) {
+        self.meters
+            .output(sid, first_pos, rows, encoded, dtype, hidden);
     }
 
     /// On the last stage, before a decode: llama.cpp's embeddings output on
@@ -315,7 +395,8 @@ impl InferState {
     /// otherwise. Changed only when it differs; a context that cannot give
     /// per-token rows stays off and its receipts carry no proofs, as before.
     pub(crate) fn meter_tail_ready(&mut self) {
-        let want = crate::metering::context().is_some() && self.engine.output_embeddings_supported();
+        let want =
+            crate::metering::context().is_some() && self.engine.output_embeddings_supported();
         if want != self.tail_embeddings {
             match self.engine.set_output_embeddings(want) {
                 Ok(()) => self.tail_embeddings = want,
@@ -343,7 +424,8 @@ impl InferState {
     }
 
     pub(crate) fn meter_prefill(&mut self, sid: &str, computed: u32, cached: u32, ms: u64) {
-        self.meters.prefill(sid, self.max_sessions, computed, cached, ms);
+        self.meters
+            .prefill(sid, self.max_sessions, computed, cached, ms);
     }
 
     pub(crate) fn meter_step(&mut self, sid: &str, width: u32, ms: u64) {
@@ -358,13 +440,21 @@ impl InferState {
         self.meters.rollback(sid, accept_count, batch_width);
     }
 
-    pub(crate) fn meter_close(&mut self, sid: &str, bnd: Option<String>) -> Option<(String, Vec<i32>)> {
+    pub(crate) fn meter_close(
+        &mut self,
+        sid: &str,
+        bnd: Option<String>,
+    ) -> Option<(String, Vec<i32>)> {
         let slice = SliceRef {
             model_label: &self.model_label,
             model_path: &self.model_path,
             start_layer: self.start_layer,
             end_layer: self.end_layer,
-            shard: self.tp.as_ref().filter(|tp| tp.size > 1).map(|tp| [tp.rank, tp.size]),
+            shard: self
+                .tp
+                .as_ref()
+                .filter(|tp| tp.size > 1)
+                .map(|tp| [tp.rank, tp.size]),
         };
         self.meters.close(sid, bnd, &slice)
     }
@@ -378,12 +468,23 @@ mod tests {
     use crate::metering::with_test_context as with_context;
 
     fn slice() -> SliceRef<'static> {
-        SliceRef { model_label: "m", model_path: "/nonexistent", start_layer: 0, end_layer: 9, shard: None }
+        SliceRef {
+            model_label: "m",
+            model_path: "/nonexistent",
+            start_layer: 0,
+            end_layer: 9,
+            shard: None,
+        }
     }
 
     fn frame(values: &[f32], rows: usize, dtype: WireDtype) -> Vec<u8> {
         let width = values.len() / rows;
-        wire::encode(&json!({"done": false}), Some((values, vec![rows, width])), dtype).unwrap()
+        wire::encode(
+            &json!({"done": false}),
+            Some((values, vec![rows, width])),
+            dtype,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -414,11 +515,17 @@ mod tests {
             assert_eq!(r.bnd, "bundle1");
             assert_eq!(r.range, [0, 10]);
             assert_eq!((r.computed.prefill, r.computed.decode), (3, 1));
-            assert_eq!((r.computed.verify_accepted, r.computed.verify_rejected), (1, 2));
+            assert_eq!(
+                (r.computed.verify_accepted, r.computed.verify_rejected),
+                (1, 2)
+            );
             assert_eq!(r.cached, 2);
             assert_eq!(seq, vec![5, 6, 7, 8, 9, 10, 11]);
             // The head's input chain covers the computed prompt only.
-            assert_eq!(r.in_chain, metering_core::chain::LinkChain::of_tokens(2, &[7, 8, 9]).digest());
+            assert_eq!(
+                r.in_chain,
+                metering_core::chain::LinkChain::of_tokens(2, &[7, 8, 9]).digest()
+            );
         });
     }
 
@@ -431,13 +538,23 @@ mod tests {
             let before = t.meters["s"].out_chain.digest();
             // One post-norm row per plain decode step, at its own position.
             for pos in 10..10 + 40u32 {
-                let row: Vec<f32> = (0..width).map(|i| ((i as u32 * 31 + pos) % 97) as f32 / 9.0 - 5.0).collect();
+                let row: Vec<f32> = (0..width)
+                    .map(|i| ((i as u32 * 31 + pos) % 97) as f32 / 9.0 - 5.0)
+                    .collect();
                 t.tail_rows("s", pos, &row, width);
             }
-            assert_eq!(t.meters["s"].out_chain.digest(), before, "the tail's rows are no output frame");
+            assert_eq!(
+                t.meters["s"].out_chain.digest(),
+                before,
+                "the tail's rows are no output frame"
+            );
             let r = open_receipt(&t.close("s", Some("b".into()), &slice()).unwrap().0).unwrap();
             assert!(r.summ.is_some(), "the last stage's receipt is provable");
-            assert_eq!(r.chunks, Some(1), "40 rows make one full chunk; the partial one is dropped");
+            assert_eq!(
+                r.chunks,
+                Some(1),
+                "40 rows make one full chunk; the partial one is dropped"
+            );
         });
     }
 
@@ -468,18 +585,29 @@ mod tests {
     #[test]
     fn sender_output_and_receiver_input_link_for_every_wire_format() {
         with_context(|| {
-            for dtype in [WireDtype::F32, WireDtype::F16, WireDtype::F8, WireDtype::I4G64] {
+            for dtype in [
+                WireDtype::F32,
+                WireDtype::F16,
+                WireDtype::F8,
+                WireDtype::I4G64,
+            ] {
                 let mut a = MeterTable::default();
                 let mut b = MeterTable::default();
                 let rows = 4;
-                let values: Vec<f32> = (0..rows * 128).map(|i| ((i * 37) % 101) as f32 / 7.0 - 7.0).collect();
+                let values: Vec<f32> = (0..rows * 128)
+                    .map(|i| ((i * 37) % 101) as f32 / 7.0 - 7.0)
+                    .collect();
                 let bytes = frame(&values, rows, dtype);
                 a.prefill("s", 4, rows as u32, 0, 0);
                 a.output("s", 0, rows as u32, &bytes, dtype, Some((&values, 128)));
-                let (_, Some((received, _))) = wire::decode(&bytes).unwrap() else { panic!() };
+                let (_, Some((received, _))) = wire::decode(&bytes).unwrap() else {
+                    panic!()
+                };
                 b.input_tensor("s", 4, 0, rows as u32, &received, dtype);
-                let ra = open_receipt(&a.close("s", Some("b".into()), &slice()).unwrap().0).unwrap();
-                let rb = open_receipt(&b.close("s", Some("b".into()), &slice()).unwrap().0).unwrap();
+                let ra =
+                    open_receipt(&a.close("s", Some("b".into()), &slice()).unwrap().0).unwrap();
+                let rb =
+                    open_receipt(&b.close("s", Some("b".into()), &slice()).unwrap().0).unwrap();
                 assert_eq!(ra.out_chain, rb.in_chain, "{dtype:?}");
                 assert_eq!(ra.wire.output, dtype.as_str());
             }
@@ -513,10 +641,16 @@ mod tests {
 
     #[test]
     fn bundle_nonce_is_read_only_when_well_formed() {
-        assert_eq!(bundle_nonce(&json!({"metering_bundle": "ab12"})).as_deref(), Some("ab12"));
+        assert_eq!(
+            bundle_nonce(&json!({"metering_bundle": "ab12"})).as_deref(),
+            Some("ab12")
+        );
         assert_eq!(bundle_nonce(&json!({})), None);
         assert_eq!(bundle_nonce(&json!({"metering_bundle": ""})), None);
         assert_eq!(bundle_nonce(&json!({"metering_bundle": "a b"})), None);
-        assert_eq!(bundle_nonce(&json!({"metering_bundle": "x".repeat(65)})), None);
+        assert_eq!(
+            bundle_nonce(&json!({"metering_bundle": "x".repeat(65)})),
+            None
+        );
     }
 }

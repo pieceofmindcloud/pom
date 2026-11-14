@@ -2102,10 +2102,7 @@ impl PluginRuntime {
         }
         // A query that times out (the plugin is busy) must not hide an installed plugin's menu: the last valid
         // manifest, kept in memory and in the database, stands in until the next answer.
-        let Some(value) = self
-            .query_audit("ui.manifest", serde_json::json!({}))
-            .await
-        else {
+        let Some(value) = self.query_audit("ui.manifest", serde_json::json!({})).await else {
             let raw = self.ui_manifest_raw.lock().await.clone()?;
             return crate::plugin_ui::PluginUiManifest::parse(&self.code, raw).ok();
         };
@@ -4113,7 +4110,8 @@ pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
                 Ok(()) => {
                     // The image components this node serves, again: after a
                     // restart, or a plugin closed and reopened since.
-                    let call = crate::components::live_plugins(std::sync::Arc::clone(&state.plugins));
+                    let call =
+                        crate::components::live_plugins(std::sync::Arc::clone(&state.plugins));
                     crate::components::restore(&state.database, &call).await;
                     REFRESH
                 }
@@ -4753,7 +4751,8 @@ const PLUGIN_CATALOG_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// The store URL for a listing, or `None` when the query is out of bounds.
 /// Only these three parameters are passed on.
 fn plugin_catalog_url(base: &str, query: &PluginCatalogQuery) -> Option<String> {
-    let mut url = reqwest::Url::parse(&format!("{}/v1/plugins", base.trim_end_matches('/'))).ok()?;
+    let mut url =
+        reqwest::Url::parse(&format!("{}/v1/plugins", base.trim_end_matches('/'))).ok()?;
     {
         let mut pairs = url.query_pairs_mut();
         if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
@@ -7001,7 +7000,10 @@ mod tests {
     fn host_context_carries_the_model_dirs() {
         let dirs = vec!["/models/a".to_owned(), "/models/b".to_owned()];
         let context = host_context_payload(8080, "sk-test", "/data/workspace", &dirs);
-        assert_eq!(context["model_dirs"], serde_json::json!(["/models/a", "/models/b"]));
+        assert_eq!(
+            context["model_dirs"],
+            serde_json::json!(["/models/a", "/models/b"])
+        );
     }
 
     #[test]

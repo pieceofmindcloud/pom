@@ -84,6 +84,8 @@ mod crash;
 mod db;
 #[path = "backend/decisions.rs"]
 mod decisions;
+#[path = "backend/delegation.rs"]
+mod delegation;
 #[path = "backend/deploy/mod.rs"]
 mod deploy;
 #[path = "models/deployment.rs"]
@@ -113,6 +115,7 @@ mod gateway;
 mod geo;
 mod gpu_arbiter;
 mod gpu_identity;
+mod home_statement;
 #[path = "models/huggingface.rs"]
 mod huggingface;
 #[path = "network/identity.rs"]
@@ -148,6 +151,10 @@ mod macos_status;
 mod membership;
 #[path = "backend/messages.rs"]
 mod messages;
+#[path = "backend/metering.rs"]
+mod metering;
+#[path = "backend/metering_verify.rs"]
+mod metering_verify;
 #[path = "models/model.rs"]
 mod model;
 #[path = "models/provider.rs"]
@@ -171,6 +178,8 @@ mod ollama;
 mod openai;
 #[path = "network/p2p.rs"]
 mod p2p;
+#[path = "payments/mod.rs"]
+mod payments;
 #[path = "network/peer_client.rs"]
 pub mod peer_client;
 #[path = "routing/pipeline.rs"]
@@ -186,14 +195,14 @@ mod plugin_github;
 #[path = "plugin_host.rs"]
 mod plugin_host;
 mod plugin_host_api;
+#[path = "inference/plugin_metering.rs"]
+mod plugin_metering;
 mod plugin_proxy;
 mod plugin_services;
 #[path = "inference/plugin_session.rs"]
 mod plugin_session;
 #[path = "inference/plugin_stage_link.rs"]
 mod plugin_stage_link;
-#[path = "inference/plugin_metering.rs"]
-mod plugin_metering;
 mod plugin_ui;
 #[path = "plugins.rs"]
 mod plugins;
@@ -225,15 +234,6 @@ pub mod quic;
 pub mod quic_policy;
 #[path = "backend/quota.rs"]
 mod quota;
-#[path = "backend/metering.rs"]
-mod metering;
-#[path = "payments/mod.rs"]
-mod payments;
-mod home_statement;
-#[path = "backend/delegation.rs"]
-mod delegation;
-#[path = "backend/metering_verify.rs"]
-mod metering_verify;
 mod rag;
 #[path = "inference/relay.rs"]
 mod relay;

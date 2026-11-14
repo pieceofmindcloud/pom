@@ -518,7 +518,9 @@ async fn handle_conn(
     let policy = tls.as_ref().map(|t| t.plain).unwrap_or(PlainPolicy::Refuse);
     let insecure_ui = plain_remote
         && policy == PlainPolicy::Redirect
-        && tls.as_ref().is_some_and(|t| t.plain_ui || insecure_admin_ui());
+        && tls
+            .as_ref()
+            .is_some_and(|t| t.plain_ui || insecure_admin_ui());
     if plain_remote && !insecure_ui {
         if policy == PlainPolicy::Refuse {
             warn!("refused plain text connection from {peer}: the cluster is on TLS");
@@ -543,7 +545,9 @@ async fn handle_conn(
             async move {
                 if insecure_ui
                     && (plain_action(req.uri().path()) == PlainAction::Refuse
-                        || req.headers().contains_key(crate::auth::CONTROL_SIGNATURE_HEADER))
+                        || req
+                            .headers()
+                            .contains_key(crate::auth::CONTROL_SIGNATURE_HEADER))
                 {
                     return Ok(refuse_plain().map(axum::body::Body::from));
                 }
@@ -708,8 +712,8 @@ mod integration {
                 let tls = tls.clone();
                 tokio::spawn(async move {
                     let remote = "192.0.2.1:12345".parse().unwrap();
-                    let _ =
-                        handle_conn(stream, remote, app, Some(tls.configs.clone()), Some(tls)).await;
+                    let _ = handle_conn(stream, remote, app, Some(tls.configs.clone()), Some(tls))
+                        .await;
                 });
             }
         });
@@ -820,9 +824,11 @@ mod integration {
         let addr = listener.local_addr().unwrap();
         let app = Router::new().route(
             "/whoami",
-            get(|caller: Option<axum::Extension<TransportPeer>>| async move {
-                caller.map_or_else(|| "none".to_string(), |caller| caller.0.node_id)
-            }),
+            get(
+                |caller: Option<axum::Extension<TransportPeer>>| async move {
+                    caller.map_or_else(|| "none".to_string(), |caller| caller.0.node_id)
+                },
+            ),
         );
         let tls = TlsServer::from_identity(id, true, &["127.0.0.1".to_string()]).unwrap();
         tokio::spawn(async move {
@@ -831,7 +837,11 @@ mod integration {
         addr
     }
 
-    async fn whoami(server: &Identity, addr: std::net::SocketAddr, own: Option<&Identity>) -> String {
+    async fn whoami(
+        server: &Identity,
+        addr: std::net::SocketAddr,
+        own: Option<&Identity>,
+    ) -> String {
         let own = own.map(|id| crate::tls::node_certificate(id).unwrap());
         let cfg = crate::tls::client_config_as(&server.node_id.0, own.as_ref()).unwrap();
         let http = reqwest::Client::builder()
@@ -854,9 +864,11 @@ mod integration {
         let addr = listener.local_addr().unwrap();
         let app = Router::new().route(
             "/handshake",
-            get(|handshake: Option<axum::Extension<TlsHandshake>>| async move {
-                handshake.map_or_else(|| "none".to_string(), |h| h.take_ms().to_string())
-            }),
+            get(
+                |handshake: Option<axum::Extension<TlsHandshake>>| async move {
+                    handshake.map_or_else(|| "none".to_string(), |h| h.take_ms().to_string())
+                },
+            ),
         );
         let tls = TlsServer::from_identity(id, true, &["127.0.0.1".to_string()]).unwrap();
         tokio::spawn(async move {
@@ -1455,10 +1467,16 @@ mod tests {
         // failure would not say why. The 403 does.
         assert_eq!(plain_action("/api/transfer/download"), PlainAction::Refuse);
         assert_eq!(plain_action("/v1/relay-result"), PlainAction::Refuse);
-        assert_eq!(plain_action("/v1/remote-stream-result"), PlainAction::Refuse);
+        assert_eq!(
+            plain_action("/v1/remote-stream-result"),
+            PlainAction::Refuse
+        );
         assert_eq!(plain_action("/v1/link"), PlainAction::Refuse);
         assert_eq!(plain_action("/handshake"), PlainAction::Refuse);
-        assert_eq!(plain_action("/api/internal/plugins/x/peer/y"), PlainAction::Refuse);
+        assert_eq!(
+            plain_action("/api/internal/plugins/x/peer/y"),
+            PlainAction::Refuse
+        );
         assert_eq!(plain_action("/v1/prefill"), PlainAction::Refuse);
         assert_eq!(plain_action("/v1/step"), PlainAction::Refuse);
     }
@@ -1489,13 +1507,20 @@ mod tests {
         );
         assert_eq!(plain_reply("ksia:8080", "/v1/relay-result"), (403, None));
         assert_eq!(plain_reply("ksia:8080", "/api/transfer/offer"), (403, None));
-        assert_eq!(plain_reply("ksia:8080", "/api/transfer/offers/answer"), (403, None));
+        assert_eq!(
+            plain_reply("ksia:8080", "/api/transfer/offers/answer"),
+            (403, None)
+        );
     }
 
     /// The transfer routes the screen polls are the operator's, not peer-only.
     #[test]
     fn the_screen_transfer_routes_are_not_peer_only() {
-        for path in ["/api/transfer/jobs", "/api/transfer/offers", "/api/transfer/pull"] {
+        for path in [
+            "/api/transfer/jobs",
+            "/api/transfer/offers",
+            "/api/transfer/pull",
+        ] {
             assert_eq!(plain_action(path), PlainAction::Redirect, "{path}");
         }
     }

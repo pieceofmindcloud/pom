@@ -440,8 +440,11 @@ serves, so components are a registry of their own.
   `image_files` with sizes, whether it publishes an `image` service and its
   status, its free VRAM/RAM from `/api/ui/node`) and answers, touching nothing,
   per stage the verdict of each chosen machine and of every machine
-  (`alternatives`): `does not run ComfyUI`, `ComfyUI is <status>` (`error`,
-  `waiting`), `does not hold <file>`, `holds another <file> (<size> bytes)`,
+  (`alternatives`): `does not run ComfyUI` (no `image` service: the image
+  plugin is not installed and running there), `ComfyUI is error`; a machine
+  whose ComfyUI is stopped or not installed yet (`waiting`) is accepted, and
+  the deploy's `component.serve` starts it there (installing it the first
+  time), `does not hold <file>`, `holds another <file> (<size> bytes)`,
   `<file> is a <category>, not a <component>` (a `checkpoint` fits all three),
   `does not hold the LoRA <file>`, `<file> is a <category>, not a LoRA` (a
   LoRA is never copied: every machine of the diffusion holds each one, found by

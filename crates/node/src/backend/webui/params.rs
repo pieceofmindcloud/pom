@@ -339,11 +339,10 @@ pub(super) async fn capacity_preview_endpoint(
     }
 
     let need_embeddings = cfg.needs_residual_export();
-    let engine_cfg =
-        match crate::runtime::engine_config_from_node(&cfg, need_embeddings) {
-            Ok(engine_cfg) => engine_cfg,
-            Err(e) => return bad_request(format!("invalid configuration: {e}")),
-        };
+    let engine_cfg = match crate::runtime::engine_config_from_node(&cfg, need_embeddings) {
+        Ok(engine_cfg) => engine_cfg,
+        Err(e) => return bad_request(format!("invalid configuration: {e}")),
+    };
 
     // This is the request, not a decision of the native engine. The real
     // load remains the authority on effective layers, context and the
@@ -481,22 +480,25 @@ pub(super) async fn capacity_preview_endpoint(
         .ok()
         .map(|(weights, kv, _)| (resident_bytes(first_layer, gpu_layers, weights), kv))
     };
-    let (gpu_layers_fit, cpu_layers, cpu_ram_bytes) = if dedicated.is_empty() || gpu_layers_local == 0 {
-        (None, None, None)
-    } else {
-        let in_vram = |gpu_layers: u32| {
-            cost_of(gpu_layers).map(|(weights, kv)| weights + if kv_in_vram { kv } else { 0 })
-        };
-        let fit = gpu_layers_that_fit(gpu_layers_local, free_vram, in_vram);
-        if fit >= gpu_layers_local {
+    let (gpu_layers_fit, cpu_layers, cpu_ram_bytes) =
+        if dedicated.is_empty() || gpu_layers_local == 0 {
             (None, None, None)
         } else {
-            let on_cpu = local_layer_count - fit;
-            let all = cost_of(local_layer_count).map(|(weights, _)| weights).unwrap_or(0);
-            let on_gpu = cost_of(fit).map(|(weights, _)| weights).unwrap_or(0);
-            (Some(fit), Some(on_cpu), Some(all.saturating_sub(on_gpu)))
-        }
-    };
+            let in_vram = |gpu_layers: u32| {
+                cost_of(gpu_layers).map(|(weights, kv)| weights + if kv_in_vram { kv } else { 0 })
+            };
+            let fit = gpu_layers_that_fit(gpu_layers_local, free_vram, in_vram);
+            if fit >= gpu_layers_local {
+                (None, None, None)
+            } else {
+                let on_cpu = local_layer_count - fit;
+                let all = cost_of(local_layer_count)
+                    .map(|(weights, _)| weights)
+                    .unwrap_or(0);
+                let on_gpu = cost_of(fit).map(|(weights, _)| weights).unwrap_or(0);
+                (Some(fit), Some(on_cpu), Some(all.saturating_sub(on_gpu)))
+            }
+        };
     let (fits, degraded) = capacity_verdict(
         raw_fits,
         cfg.fit_memory,

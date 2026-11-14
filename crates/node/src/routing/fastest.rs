@@ -754,9 +754,21 @@ mod tests {
     fn a_busy_head_is_passed_over_for_the_next_free_one() {
         let heads: Vec<String> = ["a", "b", "c"].iter().map(|h| h.to_string()).collect();
         let load = |h: &str| if h == "b" { 2 } else { 0 };
-        assert_eq!(rotate_head(&heads, 1, load).as_deref(), Some("c"), "b is busy: the next one in the rotation");
-        let all_busy = |h: &str| match h { "a" => 3, "b" => 1, _ => 2 };
-        assert_eq!(rotate_head(&heads, 0, all_busy).as_deref(), Some("b"), "all busy: the least loaded");
+        assert_eq!(
+            rotate_head(&heads, 1, load).as_deref(),
+            Some("c"),
+            "b is busy: the next one in the rotation"
+        );
+        let all_busy = |h: &str| match h {
+            "a" => 3,
+            "b" => 1,
+            _ => 2,
+        };
+        assert_eq!(
+            rotate_head(&heads, 0, all_busy).as_deref(),
+            Some("b"),
+            "all busy: the least loaded"
+        );
     }
 
     fn peer(node_id: &str, start: u32, end: u32) -> PeerInfo {

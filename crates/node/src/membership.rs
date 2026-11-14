@@ -146,8 +146,9 @@ pub(crate) fn verify(
     document: &AdminTrustDocument,
     now: i64,
 ) -> Result<MembershipClaims> {
-    let claims: MembershipClaims =
-        open_compact(token, HEADER, |claims: &MembershipClaims| claims.iss_key.clone())?;
+    let claims: MembershipClaims = open_compact(token, HEADER, |claims: &MembershipClaims| {
+        claims.iss_key.clone()
+    })?;
     if claims.net != document.anchor.cluster_id {
         bail!("the token belongs to another network");
     }
@@ -276,7 +277,10 @@ pub(crate) fn revoke(
 
 /// Whether `revocation` holds against `document`: this network, signed by
 /// an admin the chain names today, and not aimed at an admin.
-pub(crate) fn verify_revocation(revocation: &Revocation, document: &AdminTrustDocument) -> Result<()> {
+pub(crate) fn verify_revocation(
+    revocation: &Revocation,
+    document: &AdminTrustDocument,
+) -> Result<()> {
     if revocation.net != document.anchor.cluster_id {
         bail!("the revocation belongs to another network");
     }

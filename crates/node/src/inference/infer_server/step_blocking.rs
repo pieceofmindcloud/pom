@@ -269,7 +269,11 @@ pub(crate) fn step_blocking(
     timings.merge_engine_capture(&engine_timing);
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;
-    s.meter_step(&sid_key, n_tokens as u32, decode_started.elapsed().as_millis() as u64);
+    s.meter_step(
+        &sid_key,
+        n_tokens as u32,
+        decode_started.elapsed().as_millis() as u64,
+    );
 
     // Whichever hop decided it — computed just now (the head) or forwarded
     // from one that did (everyone else) — this is what the tail verifies
@@ -694,7 +698,14 @@ pub(crate) fn step_blocking(
     // A speculative batch's rows are not proved: its rejected rows never
     // reach the sequence a verifier re-executes.
     let provable = (n_tokens == 1).then_some((residual.values.as_slice(), width));
-    s.meter_output(&sid_key, n_past, n_tokens as u32, &bytes, wire_dtype, provable);
+    s.meter_output(
+        &sid_key,
+        n_past,
+        n_tokens as u32,
+        &bytes,
+        wire_dtype,
+        provable,
+    );
     timings.residual_wire_f16_encode_ns = timings
         .residual_wire_f16_encode_ns
         .saturating_add(wire_timing.f16_conversion_ns);

@@ -26,13 +26,19 @@ pub(super) fn in_flight() -> &'static std::sync::Mutex<HashMap<String, InFlightD
 }
 
 fn lock_in_flight() -> std::sync::MutexGuard<'static, HashMap<String, InFlightDeploy>> {
-    in_flight().lock().unwrap_or_else(|error| error.into_inner())
+    in_flight()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
 }
 
 /// Stops the deploys in flight that match: the task is aborted, the copies it
 /// asked for are cancelled on their targets and its job says why. Returns the
 /// `deploy_id`s it stopped. An empty `deploy_id` matches by `group`.
-pub(super) async fn abort_in_flight(state: &GatewayState, deploy_id: &str, group: &str) -> Vec<String> {
+pub(super) async fn abort_in_flight(
+    state: &GatewayState,
+    deploy_id: &str,
+    group: &str,
+) -> Vec<String> {
     let stopped: Vec<(String, InFlightDeploy)> = {
         let mut all = lock_in_flight();
         let ids: Vec<String> = all
@@ -57,10 +63,19 @@ pub(super) async fn abort_in_flight(state: &GatewayState, deploy_id: &str, group
         for (peer, transfer) in &entry.transfers {
             let path = format!("/api/transfer/jobs/{transfer}/cancel");
             if let Err(e) = state.control_post_empty(peer, &path, PEER_TIMEOUT).await {
-                warn!("could not cancel the copy {transfer} on {}: {e:#}", peer.hostname);
+                warn!(
+                    "could not cancel the copy {transfer} on {}: {e:#}",
+                    peer.hostname
+                );
             }
         }
-        set_job(&entry.job_id, "failed", "cancelled", "undeployed by the operator before it finished").await;
+        set_job(
+            &entry.job_id,
+            "failed",
+            "cancelled",
+            "undeployed by the operator before it finished",
+        )
+        .await;
         info!("deploy {id} stopped before it finished");
     }
     stopped.into_iter().map(|(id, _)| id).collect()
@@ -436,7 +451,8 @@ pub(super) async fn run(
             .find(|target| vision_reader(target.start_layer, target.end_layer, total, plugin))
             .ok_or_else(|| {
                 if plugin {
-                    "a deployment with vision needs a target that ends at the last layer".to_string()
+                    "a deployment with vision needs a target that ends at the last layer"
+                        .to_string()
                 } else {
                     "a deployment with vision needs a target that starts at layer 0".to_string()
                 }

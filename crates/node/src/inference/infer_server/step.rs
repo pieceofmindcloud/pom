@@ -653,7 +653,8 @@ pub(super) async fn remote_stream_producer(
                 return;
             }
         };
-        let response = handle_step(State(app.clone()), None, axum::http::HeaderMap::new(), body).await;
+        let response =
+            handle_step(State(app.clone()), None, axum::http::HeaderMap::new(), body).await;
         if !response.status().is_success() {
             let body = axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT)
                 .await

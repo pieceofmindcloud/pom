@@ -314,7 +314,11 @@ pub(crate) fn revocations_path_for(trust_path: &Path) -> PathBuf {
 fn load_revocations(trust_path: Option<&Path>) -> Arc<Mutex<RevocationLedger>> {
     let ledger = trust_path
         .map(revocations_path_for)
-        .and_then(|path| std::fs::read_to_string(&path).ok().map(|content| (path, content)))
+        .and_then(|path| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .map(|content| (path, content))
+        })
         .map(|(path, content)| {
             serde_json::from_str(&content).unwrap_or_else(|error| {
                 tracing::warn!("unreadable revocation list at {}: {error}", path.display());
@@ -1475,7 +1479,9 @@ pub(crate) fn is_admin_key(document: &AdminTrustDocument, node_id: &str, pubkey:
 pub(crate) fn is_admin_node(document: &AdminTrustDocument, node_id: &str) -> bool {
     std::iter::once(&document.primary)
         .chain(document.grants.iter().map(|grant| &grant.subject))
-        .any(|principal| principal.node_id == node_id && control_issuer_is_admin(document, principal))
+        .any(|principal| {
+            principal.node_id == node_id && control_issuer_is_admin(document, principal)
+        })
 }
 
 /// The counters that order two copies of a chain: principal transfers,

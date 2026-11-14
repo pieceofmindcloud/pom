@@ -5,8 +5,9 @@
 //! bounded writer keeps disk I/O out of the inference path.
 
 use crate::auth::ConnectionAuth;
-use anyhow::{Context, Result};
 use crate::p2p::Codec;
+use crate::p2p::EndpointId;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use axum::{
     extract::{Query, State},
@@ -15,7 +16,6 @@ use axum::{
     Json,
 };
 use futures::prelude::*;
-use crate::p2p::EndpointId;
 use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -333,31 +333,21 @@ impl Codec for AuditCodec {
     type Request = AuditEvent;
     type Response = AuditResponse;
 
-    async fn read_request<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Request>
+    async fn read_request<T>(&mut self, io: &mut T) -> std::io::Result<Self::Request>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_audit_msg(io).await
     }
 
-    async fn read_response<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Response>
+    async fn read_response<T>(&mut self, io: &mut T) -> std::io::Result<Self::Response>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_audit_msg(io).await
     }
 
-    async fn write_request<T>(
-        &mut self,
-        io: &mut T,
-        request: Self::Request,
-    ) -> std::io::Result<()>
+    async fn write_request<T>(&mut self, io: &mut T, request: Self::Request) -> std::io::Result<()>
     where
         T: AsyncWrite + Unpin + Send,
     {
@@ -375,7 +365,6 @@ impl Codec for AuditCodec {
         write_audit_msg(io, &response).await
     }
 }
-
 
 enum Command {
     Begin(AuditRequest),
@@ -1588,7 +1577,8 @@ mod tests {
         );
         assert_eq!(readable_node(&principal, None).await, None);
 
-        let secondary = crate::gateway::testkit::state_with_secondary_admin("secondary", vec![]).await;
+        let secondary =
+            crate::gateway::testkit::state_with_secondary_admin("secondary", vec![]).await;
         assert_eq!(readable_node(&secondary, None).await, None);
 
         let infer = crate::gateway::testkit::state_with("infer", vec![]).await;
@@ -1938,9 +1928,10 @@ mod tests {
 
     #[tokio::test]
     async fn local_audit_events_are_fanned_out_to_admin_peers() {
-        let network = crate::network::Network::testkit("worker".into(), "pk".into(), vec![], None, None)
-        .await
-        .expect("rede de teste");
+        let network =
+            crate::network::Network::testkit("worker".into(), "pk".into(), vec![], None, None)
+                .await
+                .expect("rede de teste");
         let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);
         admin.profile = crate::profile::NodeProfile::Admin;
         admin.endpoint_id = Some(crate::p2p::random_endpoint_id().to_string());

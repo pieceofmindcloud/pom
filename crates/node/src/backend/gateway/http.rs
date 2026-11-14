@@ -41,15 +41,42 @@ pub(crate) async fn start_gateway_with_ready(
             post(crate::delegation::delegate_route)
                 .layer(axum::extract::DefaultBodyLimit::max(32 << 20)),
         )
-        .route("/v1/gateway/balance", post(crate::payments::runtime::visitor_balance))
-        .route("/v1/gateway/credit-request", post(crate::payments::runtime::visitor_credit_request))
-        .route("/api/internal/payments/credit-request", post(crate::payments::runtime::credit_request_route))
-        .route("/api/internal/home-statement", post(crate::home_statement::internal_issue))
-        .route("/api/internal/payments/price", post(crate::payments::runtime::price_route))
-        .route("/api/internal/payments/return", post(crate::payments::runtime::return_route))
-        .route("/api/internal/payments/lease", post(crate::payments::runtime::lease_route))
-        .route("/api/internal/payments/settle", post(crate::payments::runtime::settle_route))
-        .route("/api/internal/payments/balance", post(crate::payments::runtime::balance_route))
+        .route(
+            "/v1/gateway/balance",
+            post(crate::payments::runtime::visitor_balance),
+        )
+        .route(
+            "/v1/gateway/credit-request",
+            post(crate::payments::runtime::visitor_credit_request),
+        )
+        .route(
+            "/api/internal/payments/credit-request",
+            post(crate::payments::runtime::credit_request_route),
+        )
+        .route(
+            "/api/internal/home-statement",
+            post(crate::home_statement::internal_issue),
+        )
+        .route(
+            "/api/internal/payments/price",
+            post(crate::payments::runtime::price_route),
+        )
+        .route(
+            "/api/internal/payments/return",
+            post(crate::payments::runtime::return_route),
+        )
+        .route(
+            "/api/internal/payments/lease",
+            post(crate::payments::runtime::lease_route),
+        )
+        .route(
+            "/api/internal/payments/settle",
+            post(crate::payments::runtime::settle_route),
+        )
+        .route(
+            "/api/internal/payments/balance",
+            post(crate::payments::runtime::balance_route),
+        )
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
         .route(crate::quic_policy::QUIC_POLICY_PATH, get(cluster_quic))

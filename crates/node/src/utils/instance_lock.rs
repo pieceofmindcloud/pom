@@ -31,7 +31,9 @@ pub(crate) enum Acquired {
     Lock(InstanceLock),
     /// Another process holds the lock. The port is the interface port it
     /// recorded, when it got that far and the platform lets the file be read.
-    HeldBy { gateway_port: Option<u16> },
+    HeldBy {
+        gateway_port: Option<u16>,
+    },
 }
 
 pub(crate) fn lock_path() -> PathBuf {

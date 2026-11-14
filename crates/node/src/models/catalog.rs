@@ -2112,7 +2112,10 @@ pub fn discover(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) fn gguf_header_fixture(metadata: &[(&str, u32)], strings: &[(&str, &str)]) -> Vec<u8> {
+    pub(crate) fn gguf_header_fixture(
+        metadata: &[(&str, u32)],
+        strings: &[(&str, &str)],
+    ) -> Vec<u8> {
         const GGUF_MAGIC: u32 = 0x4655_4747;
         const TYPE_UINT32: u32 = 4;
         const TYPE_STRING: u32 = 8;

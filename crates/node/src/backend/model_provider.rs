@@ -83,6 +83,11 @@ pub(crate) struct DownloadRequest {
     /// is skipped, not an error.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_files: Vec<String>,
+    /// The models folder to download into: one of this node's configured
+    /// folders, exactly as `storage.destinations` lists it. Absent: the first
+    /// configured folder, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
 }
 
 /// `?node_id=` on the download routes that name a download by id, and on the
@@ -220,9 +225,18 @@ pub(crate) struct GgufFileView {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct StorageResponse {
+    /// Free space of the default (first) models folder.
     pub available_bytes: Option<u64>,
     pub destination_available: bool,
     pub destination_paths: Vec<String>,
+    /// Every configured models folder with the free space of its own disk.
+    pub destinations: Vec<DestinationView>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct DestinationView {
+    pub path: String,
+    pub available_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -565,8 +579,8 @@ pub(crate) async fn forward_to_node(
                 .into_response();
         }
     };
-    let status = StatusCode::from_u16(response.status().as_u16())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let status =
+        StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let bytes = response.bytes().await.unwrap_or_default();
     (
         status,
@@ -655,7 +669,10 @@ async fn start_download(
             extra_ids.push(answer["download_id"].clone());
             continue;
         }
-        let code = answer["error"]["code"].as_str().unwrap_or("download_failed").to_string();
+        let code = answer["error"]["code"]
+            .as_str()
+            .unwrap_or("download_failed")
+            .to_string();
         if matches!(code.as_str(), "model_installed" | "download_in_progress") {
             skipped.push(json!({ "filename": filename, "code": code }));
         } else {
@@ -712,7 +729,16 @@ async fn start_one(state: GatewayState, request: DownloadRequest) -> Response {
     else {
         return provider_error(HfError::HfRepositoryNotFound);
     };
-    if let (Some(size), Some(free)) = (file.size_bytes, disk_free_bytes().await) {
+    let destinations = configured_model_destinations(state.model_dirs().await);
+    let Some(destination) =
+        requested_model_destination(&destinations, request.destination.as_deref())
+    else {
+        return conflict(
+            "destination_unavailable",
+            "the models folder is not configured on this machine".into(),
+        );
+    };
+    if let (Some(size), Some(free)) = (file.size_bytes, folder_free_bytes(&destination).await) {
         if free < size {
             return conflict(
                 "insufficient_space",
@@ -720,13 +746,6 @@ async fn start_one(state: GatewayState, request: DownloadRequest) -> Response {
             );
         }
     }
-    let destinations = configured_model_destinations(state.model_dirs().await);
-    let Some(destination) = configured_model_destination(&destinations) else {
-        return conflict(
-            "destination_unavailable",
-            "no models folder is configured".into(),
-        );
-    };
     if let Err(error) = tokio::fs::create_dir_all(&destination).await {
         return provider_error(HfError::Io {
             message: format!("could not prepare the models folder: {error}"),
@@ -855,13 +874,22 @@ async fn retry_download(
     let Some(repo_id) = job.repo_id else {
         return conflict("download_invalid", "download cannot be retried".into());
     };
+    let filename = job.filename.unwrap_or_default();
+    // The new attempt goes to the folder of the failed one.
+    let destination = job
+        .local_path
+        .as_deref()
+        .and_then(|path| path.strip_suffix(filename.as_str()))
+        .map(|folder| folder.trim_end_matches(['/', '\\']).to_string())
+        .filter(|folder| !folder.is_empty());
     let request = DownloadRequest {
         repo_id,
         revision: job.revision,
-        filename: job.filename.unwrap_or_default(),
+        filename,
         quantization: job.quantization,
         node_id: None,
         extra_files: Vec::new(),
+        destination,
     };
     let response = start_download(ConnectionAuth, State(state), Json(request)).await;
     // The new attempt replaces the old row: "Try again" used to add a second
@@ -1299,14 +1327,48 @@ async fn gguf_views(
 
 async fn storage_response(state: &GatewayState) -> StorageResponse {
     let destinations = configured_model_destinations(state.model_dirs().await);
-    StorageResponse {
-        available_bytes: disk_free_bytes().await,
-        destination_available: configured_model_destination(&destinations).is_some(),
-        destination_paths: destinations
-            .iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect(),
+    let mut views = Vec::with_capacity(destinations.len());
+    for path in &destinations {
+        views.push(DestinationView {
+            path: path.to_string_lossy().into_owned(),
+            available_bytes: folder_free_bytes(path).await,
+        });
     }
+    StorageResponse {
+        available_bytes: match views.first() {
+            Some(first) => first.available_bytes,
+            None => disk_free_bytes().await,
+        },
+        destination_available: configured_model_destination(&destinations).is_some(),
+        destination_paths: views.iter().map(|view| view.path.clone()).collect(),
+        destinations: views,
+    }
+}
+
+/// The folder a download goes to: the requested one when it is exactly one
+/// of the configured folders (a caller cannot name any other path), or the
+/// first configured folder when none is requested.
+fn requested_model_destination(
+    directories: &[PathBuf],
+    requested: Option<&str>,
+) -> Option<PathBuf> {
+    match requested.map(str::trim).filter(|value| !value.is_empty()) {
+        None => configured_model_destination(directories),
+        Some(requested) => directories
+            .iter()
+            .find(|path| !path.as_os_str().is_empty() && path.to_string_lossy() == requested)
+            .cloned(),
+    }
+}
+
+/// Free space of the disk that holds `folder` (its nearest existing parent
+/// when it does not exist yet).
+async fn folder_free_bytes(folder: &std::path::Path) -> Option<u64> {
+    let folder = folder.to_path_buf();
+    let free = tokio::task::spawn_blocking(move || crate::sysmon::sample_disk_at(&folder).free_mb)
+        .await
+        .ok()?;
+    (free > 0).then_some(free.saturating_mul(1_048_576))
 }
 
 fn configured_model_destinations(directories: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -1774,10 +1836,8 @@ mod tests {
     /// beside it: the failed row had no other button and stayed for good.
     #[tokio::test]
     async fn retrying_a_failed_download_replaces_its_row() {
-        let destination = std::env::temp_dir().join(format!(
-            "pom-model-retry-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let destination =
+            std::env::temp_dir().join(format!("pom-model-retry-{}", uuid::Uuid::new_v4().simple()));
         tokio::fs::create_dir_all(&destination).await.unwrap();
         let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
         state.auth.write().await.model_dirs =
@@ -1792,7 +1852,13 @@ mod tests {
         failed.filename = Some("model.gguf".into());
         webui::jobs().write().await.insert(old_id.clone(), failed);
 
-        let response = retry_download(ConnectionAuth, State(state), axum::extract::Path(old_id.clone()), Query(NodeQuery::default())).await;
+        let response = retry_download(
+            ConnectionAuth,
+            State(state),
+            axum::extract::Path(old_id.clone()),
+            Query(NodeQuery::default()),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         let new_id = crate::gateway::testkit::body_of(response).await["download_id"]
             .as_str()
@@ -1800,7 +1866,10 @@ mod tests {
             .to_string();
 
         let jobs = webui::jobs().read().await;
-        assert!(!jobs.contains_key(&old_id), "the failed row stayed beside the new one");
+        assert!(
+            !jobs.contains_key(&old_id),
+            "the failed row stayed beside the new one"
+        );
         assert!(jobs.contains_key(&new_id));
         drop(jobs);
         let _ = tokio::fs::remove_dir_all(destination).await;
@@ -1816,7 +1885,8 @@ mod tests {
         failed.state = "failed";
         failed.download_status = Some("failed");
         let running_id = uuid::Uuid::new_v4().simple().to_string();
-        let mut running = webui::new_job(&running_id, MODEL_DOWNLOAD_KIND, "running", "downloading");
+        let mut running =
+            webui::new_job(&running_id, MODEL_DOWNLOAD_KIND, "running", "downloading");
         running.download_status = Some("downloading");
         {
             let mut jobs = webui::jobs().write().await;
@@ -1824,15 +1894,33 @@ mod tests {
             jobs.insert(running_id.clone(), running);
         }
 
-        let response = dismiss_download(ConnectionAuth, State(state.clone()), axum::extract::Path(failed_id.clone()), Query(NodeQuery::default())).await;
+        let response = dismiss_download(
+            ConnectionAuth,
+            State(state.clone()),
+            axum::extract::Path(failed_id.clone()),
+            Query(NodeQuery::default()),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(!webui::jobs().read().await.contains_key(&failed_id));
 
-        let response = dismiss_download(ConnectionAuth, State(state.clone()), axum::extract::Path(running_id.clone()), Query(NodeQuery::default())).await;
+        let response = dismiss_download(
+            ConnectionAuth,
+            State(state.clone()),
+            axum::extract::Path(running_id.clone()),
+            Query(NodeQuery::default()),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(webui::jobs().write().await.remove(&running_id).is_some());
 
-        let response = dismiss_download(ConnectionAuth, State(state.clone()), axum::extract::Path("no-such-download".into()), Query(NodeQuery::default())).await;
+        let response = dismiss_download(
+            ConnectionAuth,
+            State(state.clone()),
+            axum::extract::Path("no-such-download".into()),
+            Query(NodeQuery::default()),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
@@ -1852,7 +1940,13 @@ mod tests {
             .await
             .insert(id.clone(), token.clone());
 
-        let response = cancel_download(ConnectionAuth, State(state), axum::extract::Path(id.clone()), Query(NodeQuery::default())).await;
+        let response = cancel_download(
+            ConnectionAuth,
+            State(state),
+            axum::extract::Path(id.clone()),
+            Query(NodeQuery::default()),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
         assert!(token.is_cancelled());
         assert!(!webui::jobs().read().await.contains_key(&id));
@@ -1875,6 +1969,7 @@ mod tests {
                 quantization: None,
                 node_id: Some("someone-else".into()),
                 extra_files: Vec::new(),
+                destination: None,
             }),
         )
         .await;
@@ -1902,7 +1997,9 @@ mod tests {
         let response = list_downloads(
             ConnectionAuth,
             State(state),
-            Query(NodeQuery { node_id: Some(own.clone()) }),
+            Query(NodeQuery {
+                node_id: Some(own.clone()),
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -1915,7 +2012,8 @@ mod tests {
     /// whose file is gone names nothing.
     #[tokio::test]
     async fn installed_sources_name_the_repository_of_each_file() {
-        let dir = std::env::temp_dir().join(format!("pom-hf-sources-{}", uuid::Uuid::new_v4().simple()));
+        let dir =
+            std::env::temp_dir().join(format!("pom-hf-sources-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(dir.join(".pom-hf")).unwrap();
         std::fs::write(dir.join("m.gguf"), b"x").unwrap();
         let record = |filename: &str| InstalledRecord {
@@ -1960,10 +2058,8 @@ mod tests {
     /// still starts.
     #[tokio::test]
     async fn extra_files_ride_on_the_same_action() {
-        let destination = std::env::temp_dir().join(format!(
-            "pom-model-extra-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let destination =
+            std::env::temp_dir().join(format!("pom-model-extra-{}", uuid::Uuid::new_v4().simple()));
         tokio::fs::create_dir_all(&destination).await.unwrap();
         let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
         state.auth.write().await.model_dirs =
@@ -1979,6 +2075,7 @@ mod tests {
                 quantization: None,
                 node_id: None,
                 extra_files: vec!["model.gguf".into(), "mmproj.gguf".into()],
+                destination: None,
             }),
         )
         .await;
@@ -2015,6 +2112,7 @@ mod tests {
                 quantization: None,
                 node_id: None,
                 extra_files: Vec::new(),
+                destination: None,
             }),
         )
         .await;
@@ -2043,6 +2141,7 @@ mod tests {
             quantization: Some("Q5_K_M".into()),
             node_id: None,
             extra_files: Vec::new(),
+            destination: None,
         };
 
         assert_eq!(valid.identity().unwrap().repo_id, "Qwen/model");
@@ -2120,6 +2219,44 @@ mod tests {
         assert_eq!(
             response.destination_paths,
             vec!["/models/primary".to_string(), "/models/backup".to_string()]
+        );
+        assert_eq!(
+            response
+                .destinations
+                .iter()
+                .map(|destination| destination.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/models/primary", "/models/backup"]
+        );
+    }
+
+    #[test]
+    fn requested_destination_must_be_a_configured_folder() {
+        let configured = vec![
+            PathBuf::from("/models/primary"),
+            PathBuf::from("/models/backup"),
+        ];
+
+        assert_eq!(
+            requested_model_destination(&configured, None),
+            Some(PathBuf::from("/models/primary"))
+        );
+        assert_eq!(
+            requested_model_destination(&configured, Some("  ")),
+            Some(PathBuf::from("/models/primary"))
+        );
+        assert_eq!(
+            requested_model_destination(&configured, Some("/models/backup")),
+            Some(PathBuf::from("/models/backup"))
+        );
+        assert_eq!(requested_model_destination(&configured, Some("/etc")), None);
+        assert_eq!(
+            requested_model_destination(&configured, Some("/models/backup/../../etc")),
+            None
+        );
+        assert_eq!(
+            requested_model_destination(&[], Some("/models/backup")),
+            None
         );
     }
 

@@ -115,8 +115,14 @@ fn payment_state_gate_underfunded_returns_402_accepts() {
         GateError::Challenge(challenge) => {
             assert_eq!(challenge.hold_micro, 3000);
             assert_eq!(challenge.balance_micro, 0);
-            assert_eq!(challenge.body["accepts"][0]["scheme"].as_str(), Some("pom-credit"));
-            assert_eq!(challenge.body["accepts"][0]["payTo"].as_str(), Some("pk:principal"));
+            assert_eq!(
+                challenge.body["accepts"][0]["scheme"].as_str(),
+                Some("pom-credit")
+            );
+            assert_eq!(
+                challenge.body["accepts"][0]["payTo"].as_str(),
+                Some("pk:principal")
+            );
             assert_eq!(
                 challenge.body["accepts"][0]["maxAmountRequired"].as_i64(),
                 Some(3000)
@@ -134,9 +140,7 @@ fn payment_state_gate_underfunded_returns_402_accepts() {
 fn payment_state_gate_funded_key_reserves_hold() {
     let state = PaymentState::new(true, "principal");
     state.grant("k", 3000);
-    let reservation = state
-        .gate("k", Some(&test_pricing()), 1000, 1000)
-        .unwrap();
+    let reservation = state.gate("k", Some(&test_pricing()), 1000, 1000).unwrap();
     assert_eq!(reservation.hold_micro, 3000);
     assert_eq!(state.book().reserved("k"), 3000);
     assert_eq!(state.book().balance("k"), 3000);
@@ -146,9 +150,7 @@ fn payment_state_gate_funded_key_reserves_hold() {
 fn payment_state_settle_releases_hold_and_deducts_bill() {
     let state = PaymentState::new(true, "principal");
     state.grant("k", 3000);
-    let reservation = state
-        .gate("k", Some(&test_pricing()), 1000, 1000)
-        .unwrap();
+    let reservation = state.gate("k", Some(&test_pricing()), 1000, 1000).unwrap();
     state.settle("k", reservation.hold_micro, 2500);
     assert_eq!(state.book().reserved("k"), 0);
     assert_eq!(state.book().balance("k"), 500);
@@ -202,7 +204,10 @@ fn price_table_remove_makes_the_deployment_free_again() {
     state.pricing().set("d1", test_pricing());
     state.grant("k", 3000);
     assert_eq!(
-        state.gate_deployment("k", "d1", 1000, 1000).unwrap().hold_micro,
+        state
+            .gate_deployment("k", "d1", 1000, 1000)
+            .unwrap()
+            .hold_micro,
         3000
     );
     state.pricing().remove("d1");

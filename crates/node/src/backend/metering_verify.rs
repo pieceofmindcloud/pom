@@ -615,7 +615,7 @@ fn run_range(
     node.mtp_enabled = false;
     node.speculative_decoding_enabled = false;
     node.peer_count = 2;
-    let engine_cfg = crate::runtime::engine_config_from_node(&node, true, false, Vec::new())?;
+    let engine_cfg = crate::runtime::engine_config_from_node(&node, true)?;
     let cache = crate::llm::ModelCache::new();
     let mut engine = crate::llm::LlmEngine::load_with_cache(&node.model_path, &engine_cfg, &cache, false)?;
     let width = engine.n_embd;

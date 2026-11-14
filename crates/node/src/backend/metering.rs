@@ -691,14 +691,14 @@ pub(crate) async fn node_op(state: &GatewayState, caller_role: &str, op: &str, p
 /// The live validators: each one's id and name. Whether one holds a
 /// receipt's model the ledger asks it (`node.holds`).
 async fn validators_of(state: &GatewayState) -> Vec<Value> {
-    state
-        .network
-        .alive_peers()
-        .await
-        .into_iter()
-        .filter(crate::gateway::peer_is_validator)
+    let peers = state.network.alive_peers().await;
+    let found: Vec<Value> = peers
+        .iter()
+        .filter(|peer| crate::gateway::peer_is_validator(peer))
         .map(|peer| json!({ "node_id": peer.node_id, "name": peer.hostname }))
-        .collect()
+        .collect();
+    tracing::debug!("metering: {} live validators among {} peers", found.len(), peers.len());
+    found
 }
 
 /// Each node's role from this node's view: `admin` (named by the trust

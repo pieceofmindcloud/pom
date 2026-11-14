@@ -214,6 +214,9 @@ Per-file list:
   Description and rules are edited as plain Markdown text with no live
   preview, and the channels in one line; the read-only view renders them with
   the Markdown renderer the Chat uses.
+  Below the information panel, `../components/MeteringPanel` switches GPU
+  work metering at run time (principal only, read-only for others, hidden on a
+  visitor).
 - `Plugins.tsx` - `/plugins` combines the public catalog, read by the node
   (`/api/ui/plugin-catalog`), with local state from
   `GET /api/ui/plugins`, using `code` as the identity. The public client lives

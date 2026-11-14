@@ -1131,6 +1131,11 @@ entry is left out while `available` is false.
 settings; a missing block is metering off) turns the metering on and sets the
 payout cycle, retention, samples, challenges, penalty, draft weight, verifier
 and gateway fee (`metering_core::settings::MeteringSettings`).
+The principal edits it at run time on the Network screen
+(`apps/frontend/src/components/MeteringPanel.tsx`), which posts the whole
+document to `POST /api/ui/network/settings` with only `metering` changed;
+every node reads it again within 5 s (`backend/metering.rs`,
+`spawn_refresher`), so turning it on or off needs no restart.
 
 - `/v1/session/rewind` and `/v1/session/release` accept an optional
   `metering_bundle` (the gateway's nonce). With it, a metered hop adds

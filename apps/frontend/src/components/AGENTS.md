@@ -653,6 +653,14 @@ Per-file list:
   engine in use, plus a `llama.cpp` pseudo badge when the engine is llama.cpp
   (`PeerView.engine` null). Tests in
   `PluginServices.test.tsx`.
+- `MeteringPanel.tsx` - GPU work metering on the Network screen
+  (`NetworkSettings.metering`): the principal turns it on or off at run time
+  and sets the cycle, grace, samples, challenges, penalty, verifier and plugin
+  engine re-execution; it posts the whole network document with only
+  `metering` changed and hands the saved document back (`onSaved`) so the
+  screen's own draft does not restore the old values. Read-only for anyone
+  else; warns when the metering plugin is not active on this machine. Tests in
+  `MeteringPanel.test.tsx`.
 - `KvCache.tsx` - the KV cache block of `PeerDetailCard`: disk used by the
   machine's snapshot directory (`node.kv_cache`), the host-memory cache from
   `/health` (`cache_ram`) and "Clear cache" with a confirmation, sent to the

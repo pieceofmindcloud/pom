@@ -22,6 +22,7 @@ import { MachineIcon } from "../components/MachineIcon";
 import { Markdown } from "../components/Markdown";
 import { AccessFields, DiscoveryChoices, InfoFields, SetupSection } from "../components/NetworkQuickSetup";
 import { RelayOptions } from "../components/RelayOptions";
+import { MeteringPanel } from "../components/MeteringPanel";
 import {
   Badge,
   Button,
@@ -189,6 +190,19 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
             // leaving is for a network it joined, and returns to its own.
             onForgetNetwork={node.data?.own_network && !node.data?.standby_network ? undefined : () => setForgetNetworkConfirm(true)}
             t={t}
+          />
+        )}
+
+        {/* GPU work metering: the principal switches it at run time. */}
+        {networkInfo.data && !isInfer && (
+          <MeteringPanel
+            network={networkInfo.data.network}
+            editable={networkEditable && isAdmin}
+            onSaved={(saved) => {
+              // The form's own draft must not put the old metering back on its next save.
+              setNetworkDraft((draft) => (draft ? { ...draft, metering: saved.metering } : saved));
+              invalidate();
+            }}
           />
         )}
 

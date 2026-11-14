@@ -31,6 +31,8 @@ Quando a internet alcança esta máquina, ela faz relé para os membros da próp
 O painel diz, para duas máquinas que não se enxergam, em qual dos três passos falha: o relatório de NAT, os relés ou o hole punch.
 ### Máquinas admitidas
 As admissões aprovadas, cada uma com **Revogar** atrás de uma confirmação.
+### Medição de trabalho de GPU
+O principal liga ou desliga a medição aqui, a qualquer momento: o ciclo de pagamento, a tolerância antes de um ciclo fechar, amostras e desafios por máquina, a penalidade, o verificador e se os estágios do Strata são reexecutados. Toda máquina acompanha em segundos. O livro em si é o plugin de medição em um admin; o painel avisa quando esta máquina não o roda.
 :::
 
 :::note Salvar propaga

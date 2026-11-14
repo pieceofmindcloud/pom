@@ -94,6 +94,7 @@ vi.mock("../lib/admissions", () => ({
 vi.mock("../lib/queries", () => ({
   useNode: () => queryMocks.node,
   useCluster: () => queryMocks.cluster,
+  usePlugins: () => ({ data: [] }),
   useNetworkInfo: () => queryMocks.networkInfo,
   useWindowsFirewall: () => queryMocks.firewall,
   useAdminNodes: (enabled = true) => (enabled ? queryMocks.nodes : { data: undefined }),

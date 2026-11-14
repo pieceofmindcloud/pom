@@ -505,6 +505,24 @@ export interface NetworkSettings {
   /** Which relays the machines may use; absent reads as `all`. */
   relay_policy?: RelayPolicy;
   location: NetworkLocation | null;
+  /** GPU work metering; absent from an older node. */
+  metering?: MeteringSettings;
+}
+
+/** GPU work metering (`NetworkSettings.metering`, `crates/metering-core/src/settings.rs`). */
+export interface MeteringSettings {
+  enabled: boolean;
+  cycle_secs: number;
+  retain_cycles: number;
+  samples_per_node: number;
+  challenges_per_node: number;
+  penalty_factor: number;
+  draft_weight: number;
+  /** Node id of a dedicated verifier; absent: the ledger's admin. */
+  verifier?: string | null;
+  gateway_fee: { per_request: number; per_prompt_token: number };
+  grace_secs: number;
+  verify_plugin_engines: boolean;
 }
 
 export interface NetworkInfoView {

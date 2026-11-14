@@ -11,8 +11,17 @@ commit. Rust builds and tests of the node run in the dev container; never
 `rustfmt` the POM tree; route tests use `gateway::testkit`; stage named paths.
 Repositories: POM (`pom-salem`), the ledger plugin (`../pom-plugin-metering`),
 `crates/metering-core` (in POM, a path dependency of the plugin).
-Branches: POM `feat/validators` from `feat/visitor-charging`; plugin
-`feat/validators` from `main`.
+Branches: POM `feat/visitor-charging` (the single branch of the metering,
+charging and validators work since 2026-11-14); plugin `main` of
+`pom-plugin-metering`, which pins `metering-core` by POM commit: push the POM
+commit and move that `rev` whenever `metering-core` changes.
+
+**Since this plan was written (2026-11-14):** the last stage proves its plain
+decode steps by its post-norm rows (llama.cpp's embeddings output, see
+`docs/subsystems/inference.md` 10.1), so its receipts are provable and
+validators check it by token replay like any other stage. The re-execution
+request carries `output_head` for a shortened last range. Task C3's
+calibration covers the last stage's rows too.
 
 ## Defaults taken for the spec's open questions
 

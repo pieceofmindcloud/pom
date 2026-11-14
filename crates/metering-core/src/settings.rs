@@ -33,6 +33,21 @@ pub struct MeteringSettings {
     /// 1), so this stays off by default; off, those samples are void and the
     /// stages are paid on receipts and challenges.
     pub verify_plugin_engines: bool,
+    /// Validators (validators spec, part 1): how many re-run each sample.
+    pub validators_per_sample: u32,
+    /// A validator's pay per layer position it re-ran, as a fraction of a
+    /// worker's.
+    pub validator_rate: f64,
+    /// The most of a cycle's worker pay that goes to validators.
+    pub validator_share: f64,
+    /// Strikes in a cycle that pause a validator for the next one.
+    pub validator_strikes: u32,
+    /// Cycles a closing cycle waits for validators before it closes on
+    /// receipts and challenges.
+    pub validation_wait_cycles: u32,
+    /// The share of samples the ledger's admin also re-runs, as the
+    /// reference the validators' readings are held to.
+    pub reference_rate: f64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -56,6 +71,12 @@ impl Default for MeteringSettings {
             gateway_fee: GatewayFee::default(),
             grace_secs: 3_600,
             verify_plugin_engines: false,
+            validators_per_sample: 2,
+            validator_rate: 0.1,
+            validator_share: 0.05,
+            validator_strikes: 3,
+            validation_wait_cycles: 1,
+            reference_rate: 0.1,
         }
     }
 }
@@ -74,6 +95,12 @@ impl MeteringSettings {
             self.draft_weight = 0.5;
         }
         self.draft_weight = self.draft_weight.clamp(0.0, 1.0);
+        self.validators_per_sample = self.validators_per_sample.clamp(1, 5);
+        let fraction = |v: f64, default: f64, max: f64| if v.is_finite() { v.clamp(0.0, max) } else { default };
+        self.validator_rate = fraction(self.validator_rate, 0.1, 1.0);
+        self.validator_share = fraction(self.validator_share, 0.05, 0.5);
+        self.reference_rate = fraction(self.reference_rate, 0.1, 1.0);
+        self.validator_strikes = self.validator_strikes.max(1);
         self
     }
 }
@@ -103,4 +130,15 @@ mod tests {
         assert_eq!((s.cycle_secs, s.retain_cycles, s.samples_per_node), (60, 1, 1));
         assert_eq!((s.penalty_factor, s.draft_weight), (2.0, 1.0));
     }
+
+    #[test]
+    fn validator_settings_default_and_clamp() {
+        let s: MeteringSettings = serde_json::from_str(r#"{"enabled": true}"#).unwrap();
+        assert_eq!((s.validators_per_sample, s.validator_strikes, s.validation_wait_cycles), (2, 3, 1));
+        assert_eq!((s.validator_rate, s.validator_share, s.reference_rate), (0.1, 0.05, 0.1));
+        let n = MeteringSettings { validators_per_sample: 9, validator_share: 0.9, validator_rate: f64::NAN, validator_strikes: 0, ..s }
+            .normalized();
+        assert_eq!((n.validators_per_sample, n.validator_share, n.validator_rate, n.validator_strikes), (5, 0.5, 0.1, 1));
+    }
+
 }

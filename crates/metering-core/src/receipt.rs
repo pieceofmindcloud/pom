@@ -51,6 +51,22 @@ pub struct StatementClaims {
     pub issuer: String,
     pub issuer_key: String,
     pub t: u64,
+    /// A validator's work this cycle: the layer positions it re-ran whose
+    /// readings agreed with the decision of their sample (validators spec, 6).
+    /// Zero for a machine that did not validate; absent from older ledgers.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub validated_positions: f64,
+    /// A validator's strikes this cycle (readings that disagreed).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub validator_strikes: u32,
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 pub fn open_statement(token: &str) -> Result<StatementClaims> {

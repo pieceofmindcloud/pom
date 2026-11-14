@@ -30,6 +30,23 @@ pub fn gateway_fee(per_request: f64, per_prompt_token: f64, prompt_tokens: u32) 
     per_request + per_prompt_token * prompt_tokens as f64
 }
 
+/// A validator's pay for a cycle: the layer positions it re-ran and agreed
+/// on, at `rate` of a worker's (validators spec, 6).
+pub fn validator_pay(agreed_positions: f64, rate: f64) -> f64 {
+    agreed_positions.max(0.0) * rate.max(0.0)
+}
+
+/// The validators' pays scaled down, in proportion, so their sum is at most
+/// `share` of the cycle's worker pay; unchanged when already below.
+pub fn scale_to_share(pays: &[f64], worker_total: f64, share: f64) -> Vec<f64> {
+    let sum: f64 = pays.iter().sum();
+    let cap = (worker_total * share).max(0.0);
+    if sum <= cap || sum <= 0.0 {
+        return pays.to_vec();
+    }
+    pays.iter().map(|p| p * cap / sum).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,4 +98,17 @@ mod tests {
     fn gateway_fee_is_per_request_plus_per_prompt_token() {
         assert_eq!(gateway_fee(1.0, 0.01, 200), 3.0);
     }
+
+    #[test]
+    fn validators_are_paid_by_agreed_work_within_the_share() {
+        assert_eq!(validator_pay(1000.0, 0.1), 100.0);
+        assert_eq!(validator_pay(-5.0, 0.1), 0.0);
+        // Below the cap: unchanged.
+        assert_eq!(scale_to_share(&[10.0, 20.0], 1000.0, 0.05), vec![10.0, 20.0]);
+        // Above it: scaled in proportion to exactly the cap.
+        let scaled = scale_to_share(&[60.0, 40.0], 1000.0, 0.05);
+        assert!((scaled[0] - 30.0).abs() < 1e-9 && (scaled[1] - 20.0).abs() < 1e-9);
+        assert_eq!(scale_to_share(&[], 1000.0, 0.05), Vec::<f64>::new());
+    }
+
 }

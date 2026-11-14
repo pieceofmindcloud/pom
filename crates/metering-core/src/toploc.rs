@@ -246,31 +246,63 @@ fn parse(proof: &[u8]) -> Result<(u32, Vec<u16>)> {
     Ok((modulus, coeffs))
 }
 
-/// Checks a chunk proof against the verifier's recomputation of the same
-/// chunk.
-pub fn check_chunk(proof: &[u8], recomputed: &[f32], params: &Params) -> Result<Verdict> {
-    let (modulus, coeffs) = parse(proof)?;
-    let k = params.k as usize;
-    if coeffs.len() != k {
-        bail!("proof has {} coefficients, expected {k}", coeffs.len());
-    }
-    if recomputed.len() < k {
+/// What a verifier read from its own recomputation of a chunk: the indices of
+/// the k largest values (flattened over the chunk's rows), in order, and those
+/// values as bf16 bits. It is all a check needs from the recomputation, so a
+/// validator hands this in instead of a verdict (validators spec, decision 4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reading {
+    pub idx: Vec<u32>,
+    pub bits: Vec<u16>,
+}
+
+/// The reading of a recomputed chunk.
+pub fn read_chunk(recomputed: &[f32], k: u32) -> Result<Reading> {
+    let k = k as usize;
+    if recomputed.len() < k || k == 0 {
         bail!("recomputed chunk is shorter than k");
     }
     let idx = topk(recomputed, k);
-    let mut mismatches = 0u32;
-    let mut errs: Vec<f64> = Vec::with_capacity(k);
-    for i in idx {
-        let proved = evaluate(&coeffs, (i % modulus as usize) as u64);
-        let mine = bf16_bits(recomputed[i]);
-        let (pe, pm) = ((proved & 0x7F80) >> 7, proved & 0x007F);
-        let (me, mm) = ((mine & 0x7F80) >> 7, mine & 0x007F);
-        if pe != me {
-            mismatches += 1;
-        } else {
-            errs.push((pm as f64 - mm as f64).abs());
+    Ok(Reading {
+        bits: idx.iter().map(|i| bf16_bits(recomputed[*i])).collect(),
+        idx: idx.into_iter().map(|i| i as u32).collect(),
+    })
+}
+
+impl Reading {
+    /// Layout: u32 LE count, the indices as u32 LE, the bits as u16 LE.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + self.idx.len() * 6);
+        out.extend_from_slice(&(self.idx.len() as u32).to_le_bytes());
+        for i in &self.idx {
+            out.extend_from_slice(&i.to_le_bytes());
         }
+        for b in &self.bits {
+            out.extend_from_slice(&b.to_le_bytes());
+        }
+        out
     }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 4 {
+            bail!("malformed reading");
+        }
+        let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        if bytes.len() != 4 + n * 6 {
+            bail!("malformed reading");
+        }
+        let idx = bytes[4..4 + n * 4]
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let bits = bytes[4 + n * 4..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        Ok(Self { idx, bits })
+    }
+}
+
+/// The verdict from exponent mismatches and the mantissa errors of the
+/// values whose exponents agree.
+fn verdict(mismatches: u32, mut errs: Vec<f64>, params: &Params) -> Verdict {
     let (mean, median) = if errs.is_empty() {
         (2f64.powi(64), 2f64.powi(64))
     } else {
@@ -279,12 +311,69 @@ pub fn check_chunk(proof: &[u8], recomputed: &[f32], params: &Params) -> Result<
         (mean, errs[errs.len() / 2])
     };
     let t = &params.thresholds;
-    Ok(Verdict {
+    Verdict {
         exp_mismatches: mismatches,
         mant_err_mean: mean,
         mant_err_median: median,
         pass: mismatches <= t.t_exp && mean <= t.t_mean && median <= t.t_median,
-    })
+    }
+}
+
+fn split(bits: u16) -> (u16, u16) {
+    ((bits & 0x7F80) >> 7, bits & 0x007F)
+}
+
+/// Checks a chunk proof against a verifier's reading of the same chunk.
+pub fn check_reading(proof: &[u8], reading: &Reading, params: &Params) -> Result<Verdict> {
+    let (modulus, coeffs) = parse(proof)?;
+    let k = params.k as usize;
+    if coeffs.len() != k {
+        bail!("proof has {} coefficients, expected {k}", coeffs.len());
+    }
+    if reading.idx.len() != k || reading.bits.len() != k {
+        bail!("the reading has {} values, expected {k}", reading.idx.len());
+    }
+    let mut mismatches = 0u32;
+    let mut errs: Vec<f64> = Vec::with_capacity(k);
+    for (i, mine) in reading.idx.iter().zip(&reading.bits) {
+        let proved = evaluate(&coeffs, (*i as usize % modulus as usize) as u64);
+        let ((pe, pm), (me, mm)) = (split(proved), split(*mine));
+        if pe != me {
+            mismatches += 1;
+        } else {
+            errs.push((pm as f64 - mm as f64).abs());
+        }
+    }
+    Ok(verdict(mismatches, errs, params))
+}
+
+/// Checks a chunk proof against the verifier's recomputation of the same
+/// chunk.
+pub fn check_chunk(proof: &[u8], recomputed: &[f32], params: &Params) -> Result<Verdict> {
+    check_reading(proof, &read_chunk(recomputed, params.k)?, params)
+}
+
+/// Compares two verifiers' readings of one chunk, on the same scale as a
+/// proof check: an index of `a` that `b` did not pick counts as an exponent
+/// mismatch, as it does against a proof.
+pub fn compare_readings(a: &Reading, b: &Reading, params: &Params) -> Verdict {
+    let theirs: std::collections::HashMap<u32, u16> = b.idx.iter().copied().zip(b.bits.iter().copied()).collect();
+    let mut mismatches = 0u32;
+    let mut errs = Vec::with_capacity(a.idx.len());
+    for (i, mine) in a.idx.iter().zip(&a.bits) {
+        match theirs.get(i) {
+            Some(other) => {
+                let ((ae, am), (be, bm)) = (split(*mine), split(*other));
+                if ae != be {
+                    mismatches += 1;
+                } else {
+                    errs.push((am as f64 - bm as f64).abs());
+                }
+            }
+            None => mismatches += 1,
+        }
+    }
+    verdict(mismatches, errs, params)
 }
 
 /// Splits a session's output (rows of `width`) into chunks of `chunk` rows;
@@ -449,4 +538,31 @@ mod tests {
         assert_eq!(bf16_bits(f32::from_bits(0x3F80_8000)), 0x3F80); // tie to even
         assert_eq!(bf16_bits(f32::from_bits(0x3F81_8000)), 0x3F82);
     }
+
+    #[test]
+    fn a_reading_checks_a_proof_exactly_as_the_recomputation_does() {
+        let mut seed = 11u64;
+        let values: Vec<f32> = (0..32 * 128).map(|_| lcg(&mut seed)).collect();
+        let params = Params::for_engine("llama.cpp");
+        let proof = prove_chunk(&values, params.k).unwrap();
+        let noisy: Vec<f32> = values.iter().enumerate().map(|(i, v)| v * (1.0 + 1e-3 * ((i % 7) as f32 - 3.0))).collect();
+        let reading = read_chunk(&noisy, params.k).unwrap();
+        assert_eq!(check_reading(&proof, &reading, &params).unwrap(), check_chunk(&proof, &noisy, &params).unwrap());
+        assert_eq!(Reading::decode(&reading.encode()).unwrap(), reading);
+        assert!(Reading::decode(&[1, 0, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn two_honest_readings_agree_and_a_different_computation_does_not() {
+        let mut seed = 23u64;
+        let values: Vec<f32> = (0..32 * 128).map(|_| lcg(&mut seed)).collect();
+        let params = Params::for_engine("llama.cpp");
+        let a = read_chunk(&values, params.k).unwrap();
+        let close: Vec<f32> = values.iter().map(|v| v * 1.0005).collect();
+        assert!(compare_readings(&a, &read_chunk(&close, params.k).unwrap(), &params).pass);
+        let other: Vec<f32> = (0..32 * 128).map(|_| lcg(&mut seed)).collect();
+        let v = compare_readings(&a, &read_chunk(&other, params.k).unwrap(), &params);
+        assert!(!v.pass && v.exp_mismatches > params.thresholds.t_exp);
+    }
+
 }

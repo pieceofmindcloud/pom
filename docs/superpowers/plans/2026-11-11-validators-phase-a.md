@@ -48,13 +48,19 @@ to validators like any other; their proofs are compared with the admin's. A
 copying validator is caught whenever its sample is a reference one, which it
 cannot tell. The spec is updated in the same commit as task P5.
 
-**Comparing proofs with proofs.** Today's TOPLOC check
-(`toploc::check_chunk(proof, recomputed, params)`,
-`crates/metering-core/src/toploc.rs:251`) compares a committed proof with the
-**raw values** the verifier recomputed. Validators now send proofs, so the
-ledger compares proof with proof: the top-k positions of both, and the values
-at the positions they share. That comparison needs its own limits (task C2)
-before it decides anything.
+**Readings, not proofs (found 2026-11-14, before C2 was written).** A TOPLOC
+proof is a polynomial over the top-k values that does not store their
+indices, so two proofs cannot be compared with each other. A validator returns
+its **reading** of each chunk instead: the indices of its recomputation's top
+k values and those values as bf16 bits (`toploc::Reading`). That is all a proof
+check takes from a recomputation (`check_chunk` is now `check_reading` of
+`read_chunk`), so the ledger checks the worker's proof against a validator's
+reading with the verdict a verifier would give, and compares validators with
+each other (`compare_readings`: an index one picked and the other did not
+counts as an exponent mismatch). A validator still learns nothing from the
+worker's proof and cannot produce a matching reading without running the
+layers. Wherever this plan says a validator returns "proofs" or "chunks",
+read "readings"; C2 below is done this way.
 
 ---
 
@@ -80,7 +86,7 @@ before it decides anything.
 Tests: an older settings document reads with the defaults; `normalized`
 clamps.
 
-### C2. Proof against proof
+### C2. Proof against proof (done as readings, see above)
 
 `crates/metering-core/src/toploc.rs`: `compare_proofs(a: &[u8], b: &[u8],
 params: &Params) -> Result<Verdict>`: decode both, intersect the top-k

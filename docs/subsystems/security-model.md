@@ -49,6 +49,14 @@ are either workers or visitors.
   chain, else its announced profile. A visitor's own announce goes straight to
   its admins, never on the gossip topic or the LAN broadcast
   (`p2p-network.md`, "Admission before the `peers` table").
+- Since phase B of the admin-hub routing a **worker** delegates its generation
+  requests to an admin entry node too - by default, with the network's
+  `worker_delegation = false` as the escape hatch for networks whose workers
+  measurably need to keep planning directly. The entry node accepts the call
+  only from a caller the roster or a membership token attests as visitor or
+  worker (`gateway::peer_role_is_attested`); an announced profile alone never
+  opens it, and an admin caller is refused `409 plan_locally` - an admin is
+  itself an entry node (`payments.md`, "The member gateway").
 - The principal decides which iroh relays the network uses
   (`NetworkSettings.relay_policy`: `all`, `members` for only the network's own
   dedicated and member relays, `none` for direct connections only). A relay
@@ -269,7 +277,8 @@ own.
 A charging network (`docs/subsystems/payments.md`) runs
 `inference_access = member_gateway_only`: a visitor never reaches a worker's
 inference port (`visitor_must_use_gateway`) and learns only the entry nodes
-the policy allows, so it cannot skip the entry node that charges it. The
+the policy allows, so it cannot skip the entry node that charges it. The gate
+holds visitors only: a delegating worker is a member and is not charged. The
 account is named by a home statement signed by the visitor's home principal
 and checked against the key the transport proved (`crate::home_statement`); no
 address or name enters it. Only the principal writes the authoritative book;

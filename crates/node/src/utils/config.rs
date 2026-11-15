@@ -190,7 +190,7 @@ pub enum LocationPrecision {
     City,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetworkSettings {
     #[serde(default)]
     pub public_name: String,
@@ -270,9 +270,55 @@ pub struct NetworkSettings {
     /// nodes.
     #[serde(default)]
     pub entry_nodes: EntryNodes,
+    /// Whether a **worker** hands its own generation requests to an admin
+    /// entry node, like a visitor does. Default true: the hub shape of
+    /// `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`,
+    /// phase B. Set false (the escape hatch of its refinement 8.4) for a
+    /// network whose workers measurably need to keep planning directly;
+    /// visitors still always delegate. Absent (an older principal) reads as
+    /// the default.
+    #[serde(default = "default_worker_delegation")]
+    pub worker_delegation: bool,
     /// Charging visitors from prepaid credit (`crate::payments`).
     #[serde(default)]
     pub payments: PaymentsSettings,
+}
+
+/// Hand-written, not derived: the constructed default must **equal** the
+/// parsed one of a file that predates a field, or a network created in code
+/// (`bootstrap_local_network`, `prepare_for_setup`) would write the opposite
+/// of what an absent field reads as. Today the one that differs from `false`
+/// is `worker_delegation`.
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        Self {
+            public_name: String::new(),
+            organization: String::new(),
+            description: String::new(),
+            rules: String::new(),
+            channels: String::new(),
+            city_id: None,
+            country_code: String::new(),
+            country_name: String::new(),
+            state: String::new(),
+            city: String::new(),
+            geo_label: String::new(),
+            visibility: NetworkVisibility::default(),
+            access_policy: NetworkAccessPolicy::default(),
+            accepted_enrollments: AcceptedEnrollments::default(),
+            public_stats: false,
+            chat_visitors: false,
+            demo_mode_active: false,
+            relay_policy: RelayPolicy::default(),
+            location_precision: LocationPrecision::default(),
+            location: None,
+            metering: MeteringSettings::default(),
+            inference_access: InferenceAccess::default(),
+            entry_nodes: EntryNodes::default(),
+            worker_delegation: default_worker_delegation(),
+            payments: PaymentsSettings::default(),
+        }
+    }
 }
 
 /// How a network's `pom.json` says visitors reach the models. Since phase A
@@ -311,6 +357,10 @@ pub enum EntryNodes {
     #[default]
     Admins,
     AdminsAndWorkers,
+}
+
+fn default_worker_delegation() -> bool {
+    true
 }
 
 /// Charging visitors (`docs/superpowers/specs/2026-11-09-visitor-charging-design.md`).
@@ -1907,6 +1957,10 @@ mod tests {
         assert_eq!(old.inference_access, InferenceAccess::Direct);
         assert_eq!(old.entry_nodes, EntryNodes::Admins);
         assert!(!old.payments.enabled);
+        // The constructed default is the parsed default: what a network built
+        // in code writes must equal what an absent field reads as.
+        assert_eq!(old, NetworkSettings::default());
+        assert!(old.worker_delegation);
         let set: NetworkSettings = serde_json::from_str(
             r#"{"inference_access":"member_gateway_only","entry_nodes":"admins_and_workers","payments":{"enabled":true}}"#,
         )

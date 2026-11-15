@@ -1021,7 +1021,7 @@ pub(crate) async fn caller_may_ask(
 /// says so, checked against the chain alone. On an admin its own admission
 /// list does too. A legacy network open to anyone with the anchor has no
 /// admissions, and keeps the announce.
-async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
+pub(crate) async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
     crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Worker)
         || state.network_chat.admitted_role(

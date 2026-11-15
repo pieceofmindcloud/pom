@@ -28,7 +28,14 @@ Nothing here talks to peers; everything is used by `main.rs` and
   visitor charging: `inference_access` (`direct` | `member_gateway` |
   `member_gateway_only`), `entry_nodes` and `payments` (`enabled`, `prices` per
   model as `ModelPrice`); `validate_network_settings` refuses charging without
-  `member_gateway_only` (`docs/subsystems/payments.md`). `setup_pending` marks a `pom.json` that is only a
+  `member_gateway_only` (`docs/subsystems/payments.md`). `worker_delegation`
+  (default true, phase B of the admin-hub routing) says whether a worker hands
+  its requests to an admin entry node (`backend/delegation.rs`); it is absent
+  from older files and reads as the default. `NetworkSettings`'s `Default` is
+  hand-written, not derived: the constructed default must equal the parsed one
+  of a file that predates a field (a derived `Default` would give
+  `worker_delegation: false`, and a network created in code would then write
+  the opposite of what an absent field reads as). `setup_pending` marks a `pom.json` that is only a
   preference shell (the node left a network): startup then creates a local
   network instead of loading it. `first_run_guide` is the progress of the
   first run guide (`backend/webui/guide.rs`): `None` when there is no guide,

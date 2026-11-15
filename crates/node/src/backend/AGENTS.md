@@ -689,16 +689,21 @@ boundary.
   `gateway::generation::MeterCollect`. Spec
   `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`.
 - `delegation.rs` - the member gateway and the payment gate for visitors
-  (`POST /v1/gateway/delegate`, `visitor_layer`): every visitor delegates, in
-  every access mode, and the entry is always an admin the chain proves
+  (`POST /v1/gateway/delegate`, `member_layer`): every member that is not an
+  admin delegates, in every access mode - a visitor always (phase A), a worker
+  unless the network's `worker_delegation` is false (phase B, refinement 8.4)
+  - and the entry is always an admin the chain proves
   (`entry_nodes`, phase A of
   `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`); with no
-  admin entry node in sight the visitor gets `503 no_entry_node`, there is no
-  self-planning fallback. The entry node holds the
-  request's worst case, refuses in the route's vocabulary (`speak`), and
-  settles at the summary with the metering bundle (`GenSummary.metering_bundle`,
+  admin entry node in sight the caller gets `503 no_entry_node`, there is no
+  self-planning fallback (except a worker under the escape hatch). The entry
+  node accepts a signed call from a visitor named by the roster or an attested
+  worker (`peer_role_is_attested`), refuses an admin caller with `409
+  plan_locally`, holds the request's worst case - charging only the visitor -
+  refuses in the route's vocabulary (`speak`), and settles at the summary with
+  the metering bundle (`GenSummary.metering_bundle`,
   also held back on the plugin engine path until the stages' receipts are in);
-  the visitor relays the answer and records `x_pom.payment`
+  the caller relays the answer and records `x_pom.payment`
   (`tap_payment`). See `docs/subsystems/payments.md`.
 - `metering_verify.rs` - re-execution for the ledger (`node.reexecute`, an
   asynchronous job): cuts and loads each range of the local whole model, runs

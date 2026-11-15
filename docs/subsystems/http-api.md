@@ -1901,7 +1901,9 @@ never returns the key and drops the in-memory material when it receives
 
 ### Charging visitors
 
-The member gateway (`POST /v1/gateway/delegate`), the visitor's balance and
+The member gateway (`POST /v1/gateway/delegate` - since phase B of the
+admin-hub routing a signed call from a visitor **or an attested worker**, an
+admin caller refused `409 plan_locally`), the visitor's balance and
 credit requests, the Payments screen routes and the internal payment routes
 are listed in `docs/subsystems/payments.md`, "Routes". `x_pom.payment` is
 added to the answers of a charged visitor request.

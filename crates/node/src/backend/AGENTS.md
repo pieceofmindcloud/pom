@@ -85,7 +85,9 @@ boundary.
   test scaffold (peer/state_with/body_of).
 - `db.rs` - the only local SQLite store, internal to the crate: schema created at startup,
   WAL/timeout, deployments, API keys and revocations, thermal preferences,
-  the Hugging Face secret, the catalog's durable history and the conversation history. Each
+  the Hugging Face secret, the catalog's durable history, the conversation
+  history and the gateway's session pins (`session_pins`: one row per pinned
+  conversation with its hop chain, pruned by age and cap on restore). Each
   effective admin keeps its own replica of the audit. The
   cluster process log is not here: the logs plugin keeps it in its own
   database, and the schema drops the old `cluster_logs` tables. The history identifies
@@ -599,7 +601,12 @@ boundary.
   whose session is already held by a live head goes back to that head, reusing its cache;
   otherwise the heads take turns round robin (`routing::fastest::rotate_head`, per-model turn in
   `pipeline::next_head_turn`), and a head with generations in flight is passed over for the next
-  free one, or the least loaded when all are busy.
+  free one, or the least loaded when all are busy. A named conversation (the body's `session`,
+  or the `auto-` name hashed from its first user turn) additionally pins its whole
+  hop chain between turns (`gateway::SessionPin`, admin-hub routing 3.3): while
+  the chain resolves against the live peers the next turns run on it unchanged,
+  the pin's head is the plan's head, and a peer that dies, is quarantined or
+  moved releases the pin for one fresh plan.
   `/v1/models` and `/v1/models/{id}` also publish `capabilities.vision` from
   the serving head's projector configuration; the harness uses it to mark
   image input only for deployed vision models. The capacity published in
@@ -823,7 +830,10 @@ lifecycle is `docs/subsystems/deployment.md`; the transfer protocol is
 change lands in the right place.
 
 - `gateway/` - `GatewayState` (network, ollama, default_model, local_assignment, loads,
-  http, runtime, gateway_port, auth, transfers, `reply_inbox`); `FromRef<GatewayState> for
+  http, runtime, gateway_port, auth, transfers, `reply_inbox`,
+  `session_pins` - the pinned hop chains of named conversations, `SessionPin`
+  in `state.rs`, persisted in `pom.db`'s `session_pins` and restored at
+  startup; read and validated in the planning loop of `generate_stream_inner`); `FromRef<GatewayState> for
   AuthState`; `peers_visible_to_cluster` filters blocked nodes; `all_peers` appends the local
   node with `self_dial_host` (advertised > local IP > loopback). Admission probing, the
   pinned-route order (`bases_by_route_plan`), the quarantine, the longer first wait

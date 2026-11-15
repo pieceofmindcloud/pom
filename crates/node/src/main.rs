@@ -2072,9 +2072,13 @@ async fn start_node(
             hf_token_store,
         )),
         pkarr_publisher,
+        session_pins: Default::default(),
     };
 
     info!("Gateway running at http://localhost:{}", gateway_port);
+    // Sessions pinned to a hop chain come back with the gateway: a restart
+    // does not re-plan every live session cold (admin-hub routing 3.3).
+    crate::gateway::restore_session_pins(&gw_state);
     spawn_gateway_companions(&gw_state, &database, net.bind_addr.port());
     let gateway_task = tokio::spawn(async move {
         crate::gateway::start_gateway_with_ready(gw_state, gateway_port, gateway_ready).await

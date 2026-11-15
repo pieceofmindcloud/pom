@@ -4108,6 +4108,7 @@ pub(crate) mod testkit {
                 crate::huggingface::HuggingFaceProvider::new(),
             ))),
             pkarr_publisher: None,
+            session_pins: Default::default(),
         }
     }
 

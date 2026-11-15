@@ -2546,7 +2546,21 @@ complete paths; this greedy planner is the fallback.
   per session, and switching addresses midway is worse than the slow route.
 - The plan is built per request; `PipelinePlan::hop_chain` gives
   "abc123→def456", the proof of distributed execution the gateway puts in
-  `source`.
+  `source`. A request that names its conversation (the request's `session`,
+  or the `auto-` name hashed from the first user turn) is the exception: the
+  planner pins that session's hop chain in `GatewayState.session_pins` and
+  brings the next turns back to it, so the pinned peers keep the session's KV
+  and prefix caches warm (phase B of
+  `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`, 3.3). A
+  pin names only the `node_id`s in hop order, is revalidated against the live
+  peers every turn (`fastest::resolve_chain`), and releases when a peer dies
+  or is quarantined, when a hop moved its range, engine or left, when the idle
+  wake of the pinned plan fails, or after 30 min without use. It lives on the
+  planner alone, never visible to peers, persisted in `pom.db`'s
+  `session_pins` so a restart does not re-plan live sessions cold. The head
+  affinity of `auto_head` is a property of the pin: `auto_head` runs only when
+  no pin resolves. There is no proactive re-balance - a pin lasts until a peer
+  dies or the session ages out (the spec's optional margin re-plan stays off).
 
 ## 7. Fallbacks on the gateway
 

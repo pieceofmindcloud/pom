@@ -76,7 +76,10 @@ again.
   works behind NAT (the answer comes back over connections the node itself
   opened), and so it hides a broken traversal; `direct` exposes it.
 - The head chosen in the UI (`inference_head`) is still the only one
-  accepted. With no viable path, the old greedy planner decides.
+  accepted. A conversation pinned to a hop chain (`SessionPin`,
+  `inference.md` 6) skips this estimator: the pinned chain is the plan while
+  it resolves against the live peers. With no viable path, the old greedy
+  planner decides.
 
 The gateway log states the choice (the line is in Portuguese):
 `pipeline por tempo de entrega: A→B ~N ms, resposta anel|direta` ("pipeline by

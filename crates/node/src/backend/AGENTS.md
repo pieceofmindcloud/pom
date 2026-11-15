@@ -419,7 +419,13 @@ boundary.
   the principal by its key through pkarr (`main::spawn_pkarr_bootstrap`), and
   setup copies `relay_hints` into its `relay_peers`. `ensure_setup_metadata` repairs only a missing setup block
   from the local administrator configuration, and only when the local
-  principal is the current primary.
+  principal is the current primary. Beside the chain lives the roster vouch
+  ledger of phase C of the admin-hub routing (`vouches_path_for`:
+  `<chain>.vouches.json`, `merge_vouches`, `vouched_role`): one
+  `crate::membership::Vouch` per member - an admin's signature of the role
+  its roster approved, the approval's decision time, and the issuer's
+  renewal - kept newest per member, verified against the chain on every
+  read, and cut by the member's last ban exactly as an approval is.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, split into
   `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
   `launch.rs`, `lifecycle.rs`, `node.rs` and test fragments: the capacity survey,
@@ -518,7 +524,18 @@ boundary.
   (`push_revocations`); `internal_revocations` merges a caller's list and
   answers with its own, and `spawn_revocation_keeper` trades lists with one
   admin per tick. `on_revoked` makes the principal forget the member and
-  rotate the key.
+  rotate the key. Phase C of the admin-hub routing
+  (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md` 10.1)
+  adds the roster vouches beside this: `sign_vouches` signs every approval
+  the admin sees - own list and mirror, newer than the last ban - as a
+  `membership::Vouch` of that member's role; an approval publishes it at
+  once (`apply_decision` -> `publish_vouches`: merge locally and push to
+  every peer with a gateway, beside the ban's push), `internal_vouches`
+  merges a caller's vouches and answers with its own, and
+  `spawn_vouch_keeper` re-signs an admin's vouches every tick (the renewal
+  is what lets a dropped member age out) and trades lists with one admin
+  per tick. The gates still decide roles with the token; reading the vouch
+  ledger is the next step of that spec.
 - `webui/gpu_metrics.rs` - the GPU energy and temperature feed of the logs
   plugin's Metrics screen: `spawn_gpu_metrics_sampler` (started with the
   gateway companions) runs once a minute and, only on a node that may see the

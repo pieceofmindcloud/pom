@@ -25,6 +25,7 @@ pub(crate) const TOKEN_PATH: &str = "/api/internal/membership/token";
 pub(crate) const ROSTER_PATH: &str = "/api/internal/membership/roster";
 pub(crate) const DECIDE_PATH: &str = "/api/internal/membership/decide";
 pub(crate) const REVOCATIONS_PATH: &str = "/api/internal/membership/revocations";
+pub(crate) const VOUCHES_PATH: &str = "/api/internal/membership/vouches";
 /// How often a member checks its token and a secondary rereads the list.
 const KEEPER_TICK: Duration = Duration::from_secs(30);
 /// How soon a member with no token looks again: for an admin to show up, and
@@ -329,6 +330,12 @@ pub(crate) async fn apply_decision(state: &GatewayState, decision: AdmissionDeci
                 node_id,
             );
         }
+        // Phase C of the admin-hub routing: the approval is vouched to the
+        // network at once, beside the ban's push of the removal.
+        let publisher = state.clone();
+        tokio::spawn(async move {
+            publish_vouches(&publisher).await;
+        });
     }
     Json(state.network_chat.admissions()).into_response()
 }
@@ -424,6 +431,178 @@ pub(crate) async fn internal_revocations(
     let added = state.admin_trust.merge_revocations(entries);
     on_revoked(&state, &added).await;
     Json(state.admin_trust.revocations()).into_response()
+}
+
+/// Signs this admin's vouches for every approved admission it sees - its
+/// own list and the mirror of the principal's (phase C of the admin-hub
+/// routing, spec 10.1). A vouch repeats the approval: same member, same
+/// role, same decision time, this admin's signature. Decisions older than
+/// the member's last ban are not vouched: the ban already undoes them.
+pub(crate) fn sign_vouches(state: &GatewayState) -> Vec<crate::membership::Vouch> {
+    if !is_admin(&state) {
+        return Vec::new();
+    }
+    let document = state.admin_trust.document();
+    let now = chrono::Utc::now().timestamp();
+    let mut newest: std::collections::HashMap<String, (i64, AdmissionRecord)> =
+        std::collections::HashMap::new();
+    for record in state
+        .network_chat
+        .admissions()
+        .into_iter()
+        .chain(state.network_chat.roster_mirror())
+    {
+        if record.status != AdmissionStatus::Approved {
+            continue;
+        }
+        let Some(admitted_at) = record
+            .decided_at
+            .as_deref()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .map(|at| at.timestamp())
+        else {
+            continue;
+        };
+        if state
+            .admin_trust
+            .revoked_node_at(&record.node_id)
+            .is_some_and(|revoked| admitted_at <= revoked)
+        {
+            continue;
+        }
+        match newest.get(&record.node_id) {
+            Some((known_at, _)) if *known_at >= admitted_at => {}
+            _ => {
+                newest.insert(record.node_id.clone(), (admitted_at, record));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (node_id, (admitted_at, record)) in newest {
+        match crate::membership::sign_vouch(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &document,
+            &node_id,
+            record.role,
+            admitted_at,
+            now,
+        ) {
+            Ok(vouch) => out.push(vouch),
+            Err(error) => debug!("could not vouch {node_id}: {error:#}"),
+        }
+    }
+    out
+}
+
+/// Re-signs this admin's vouches into its ledger and carries them to every
+/// live peer with a gateway, so an approval reaches the whole network at
+/// once - the push beside `push_revocations`, same trust: every entry is
+/// checked on signature wherever it lands. Non-admins keep their copy fresh
+/// through the keeper exchange instead (`spawn_vouch_keeper`).
+pub(crate) async fn publish_vouches(state: &GatewayState) {
+    let signed = sign_vouches(state);
+    state.admin_trust.merge_vouches(signed);
+    let entries = state.admin_trust.vouches();
+    if entries.is_empty() {
+        return;
+    }
+    for peer in state.network.alive_peers().await {
+        if peer.node_id == state.network.node_id || peer.gateway_port.is_none() {
+            continue;
+        }
+        if let Err(error) = crate::admin::post_internal_json(
+            state,
+            &peer,
+            VOUCHES_PATH,
+            &entries,
+            MEMBERSHIP_TIMEOUT,
+        )
+        .await
+        {
+            debug!("could not push vouches to {}: {error:#}", peer.node_id);
+        }
+    }
+}
+
+/// `POST /api/internal/membership/vouches` - takes the caller's vouches and
+/// answers with this node's. Each entry carries an admin's signature and is
+/// checked on its own, so whoever sends them does not matter; this is how a
+/// node that never met the principal still holds the roster's word for its
+/// own decisions (phase C).
+pub(crate) async fn internal_vouches(
+    _auth: InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Json(entries): Json<Vec<crate::membership::Vouch>>,
+) -> Response {
+    state.admin_trust.merge_vouches(entries);
+    Json(state.admin_trust.vouches()).into_response()
+}
+
+/// Keeps the roster vouches fresh on every node (phase C). An admin
+/// re-signs the vouches of its admissions every tick - the renewal is what
+/// lets a member dropped from the roster age out when its ban never
+/// arrived. Every node then trades lists with one admin per tick, a
+/// different one each time, so a node that missed a push holds the
+/// roster's word within a tick or two.
+pub(crate) fn spawn_vouch_keeper(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(KEEPER_TICK);
+        let mut turn = 0usize;
+        loop {
+            ticker.tick().await;
+            if state.network.is_detached() {
+                continue;
+            }
+            if is_admin(&state) {
+                let signed = sign_vouches(&state);
+                if !signed.is_empty() {
+                    state.admin_trust.merge_vouches(signed);
+                }
+            }
+            let document = state.admin_trust.document();
+            let admins: Vec<_> = state
+                .network
+                .alive_peers()
+                .await
+                .into_iter()
+                .filter(|peer| {
+                    peer.node_id != state.network.node_id
+                        && peer.gateway_port.is_some()
+                        && crate::admin_trust::is_admin_key(&document, &peer.node_id, &peer.pubkey)
+                })
+                .collect();
+            if admins.is_empty() {
+                continue;
+            }
+            turn = turn.wrapping_add(1);
+            let peer = &admins[turn % admins.len()];
+            let sent = crate::admin::post_internal_json(
+                &state,
+                peer,
+                VOUCHES_PATH,
+                &state.admin_trust.vouches(),
+                MEMBERSHIP_TIMEOUT,
+            )
+            .await;
+            match sent {
+                Ok(response) if response.status().is_success() => {
+                    match response.json::<Vec<crate::membership::Vouch>>().await {
+                        Ok(entries) => {
+                            state.admin_trust.merge_vouches(entries);
+                        }
+                        Err(error) => debug!("unreadable roster vouches: {error:#}"),
+                    }
+                }
+                Ok(response) => debug!(
+                    "{} answered {} to the vouch exchange",
+                    peer.node_id,
+                    response.status()
+                ),
+                Err(error) => debug!("vouch exchange failed: {error:#}"),
+            }
+        }
+    });
 }
 
 /// Trades revocation lists with one admin per tick, a different one each
@@ -1065,5 +1244,132 @@ mod roster_mirror_tests {
             .local_setting_json(ROSTER_SETTING)
             .unwrap()
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod vouch_tests {
+    use super::*;
+    use crate::gateway::testkit;
+
+    /// Phase C of the admin-hub routing (spec 10.1): the approval on the
+    /// admin's list is signed as a vouch of the admitted role; a request
+    /// that was not decided and an approval a ban cut are not signed.
+    #[tokio::test]
+    async fn an_approval_is_signed_as_a_vouch_on_the_admin_that_holds_it() {
+        let state = testkit::state_with("principal", vec![]).await;
+        state
+            .network_chat
+            .request_admission(
+                "member",
+                Default::default(),
+                crate::config::EnrollmentRole::Worker,
+            )
+            .unwrap();
+        assert!(state.network_chat.decide_admission("member", Some(AdmissionStatus::Approved)));
+        let vouches = sign_vouches(&state);
+        assert_eq!(vouches.len(), 1);
+        assert_eq!(vouches[0].sub, "member");
+        assert_eq!(vouches[0].role, crate::config::EnrollmentRole::Worker);
+        crate::membership::verify_vouch(
+            &vouches[0],
+            &state.admin_trust.document(),
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+
+        // A request no one decided is not an admission, and is not vouched.
+        state
+            .network_chat
+            .request_admission(
+                "candidate",
+                Default::default(),
+                crate::config::EnrollmentRole::Visitor,
+            )
+            .unwrap();
+        assert!(sign_vouches(&state).iter().all(|v| v.sub != "candidate"));
+
+        // A ban cuts the approval: the admin stops vouching the member.
+        let revocation = crate::membership::revoke(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            "member",
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+        state.admin_trust.merge_revocations(vec![revocation]);
+        assert!(sign_vouches(&state).iter().all(|v| v.sub != "member"));
+    }
+
+    /// The exchange merges by signature, never by sender: what no admin
+    /// signed holds nothing, whoever carried it.
+    #[tokio::test]
+    async fn the_vouch_exchange_merges_by_signature_not_by_sender() {
+        let state = testkit::state_with("entry", vec![]).await;
+        let now = chrono::Utc::now().timestamp();
+        let real = crate::membership::sign_vouch(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            "member",
+            crate::config::EnrollmentRole::Worker,
+            now - 10,
+            now,
+        )
+        .unwrap();
+        let mut forged = real.clone();
+        forged.sub = "impostor".into();
+        forged.signature = "00".repeat(64);
+        let response = internal_vouches(
+            InternalNodeAuth { principal: None },
+            State(state.clone()),
+            Json(vec![forged, real]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            state.admin_trust.vouched_role("member", now),
+            Some(crate::config::EnrollmentRole::Worker)
+        );
+        assert_eq!(state.admin_trust.vouched_role("impostor", now), None);
+    }
+
+    /// The approval route vouches the network at once, the way a ban pushes
+    /// its revocation: the principal's own ledger holds the new member.
+    #[tokio::test]
+    async fn deciding_an_approval_publishes_the_vouch_into_the_admin_ledger() {
+        let state = testkit::state_with("principal", vec![]).await;
+        state
+            .network_chat
+            .request_admission(
+                "member",
+                Default::default(),
+                crate::config::EnrollmentRole::Worker,
+            )
+            .unwrap();
+        let response = apply_decision(
+            &state,
+            AdmissionDecision {
+                node_id: "member".into(),
+                decision: "approve".into(),
+                grant_micro: None,
+            },
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        // The publish runs on its own task, as the ban's push does; wait for
+        // its effect on this node's ledger.
+        for _ in 0..50 {
+            if state
+                .admin_trust
+                .vouched_role("member", chrono::Utc::now().timestamp())
+                .is_some()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the approval did not vouch the member");
     }
 }

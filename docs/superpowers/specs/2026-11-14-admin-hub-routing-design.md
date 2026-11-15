@@ -329,6 +329,45 @@ guides.
 5. Confirm whether `direct`/`member_gateway` stay configurable or are
    deprecated with a dated removal.
 
+### 10.1 Decisions recorded (2026-11-15)
+
+1. Confirmed: workers delegate too (delivered in B2, with the
+   `worker_delegation` escape hatch of 8.4).
+2. Confirmed: `entry_nodes` fixed to admins (delivered in phase A;
+   `admins_and_workers` keeps parsing).
+3. Confirmed: pin until a peer dies or the session ages out; no proactive
+   rebalance (delivered in B3).
+4. Confirmed: **full token removal with roster vouches** (phase C). The
+   execution plan recorded here:
+   - **C1 - the vouch plumbing, purely additive, gates unchanged.** A
+     roster vouch is an admin's signed statement of one member's admitted
+     role - `{net, sub, role, admitted_at, issued_at, iss, iss_key, sig}`,
+     Ed25519, the same per-entry form as a `Revocation` ("whoever sends it
+     does not matter"). Any admin signs vouches from its admission list (the
+     principal's own, or its mirror); they travel by a push on each approval
+     and a per-tick exchange beside the revocation keeper; every node
+     verifies each entry against the chain, keeps the newest per member, and
+     persists them beside the chain (`<trust>.vouches.json`). A vouch is
+     valid while the issuer is still an admin of the chain, while it is
+     fresh (`issued_at` within the vouch window - hours, against minutes for
+     a token), and when `admitted_at` is newer than the member's last ban;
+     removing an approved member already signs a revocation, so the ban cut
+     covers removal and freshness is the defense in depth. A vouch is never
+     signed for an admin of the chain.
+   - **C2 - flip the role checks.** `is_member_key`,
+     `Network::peer_is_visitor`, `is_visitor`, the inference session gate,
+     the metering consumer label, and the gateway gates on nodes that hold
+     no roster read the vouch ledger first. The token stays issued,
+     announced and accepted as the legacy form, so a mixed-version cluster
+     keeps working (compatibility policy): the new claim is only "the vouch
+     decides when a current admin signed it".
+   - **C3 - retirement (a dated release-notes decision, a separate
+     release):** new nodes stop announcing and issuing tokens; `membership`
+     keeps reading old announces until the old version is retired on
+     purpose, and shrinks to the revocation entries between admins.
+5. Still open: whether `direct`/`member_gateway` stay configurable or are
+   deprecated with a dated removal.
+
 ## 11. Out of scope
 
 - A data-plane where the admin proxies inference frames per token.

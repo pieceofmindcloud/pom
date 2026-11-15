@@ -299,6 +299,10 @@ pub(crate) struct AdminTrust {
     /// member. Local like the replay ledger: it is merged from what the
     /// admins sign, never part of the shared document.
     revocations: Arc<Mutex<RevocationLedger>>,
+    /// The roster vouches this node has heard: one per member, the newest
+    /// each admin signed. Phase C of the admin-hub routing: what decides a
+    /// role where no roster lives (see `crate::membership::Vouch`).
+    vouches: Arc<Mutex<VouchLedger>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -323,6 +327,34 @@ fn load_revocations(trust_path: Option<&Path>) -> Arc<Mutex<RevocationLedger>> {
             serde_json::from_str(&content).unwrap_or_else(|error| {
                 tracing::warn!("unreadable revocation list at {}: {error}", path.display());
                 RevocationLedger::default()
+            })
+        })
+        .unwrap_or_default();
+    Arc::new(Mutex::new(ledger))
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct VouchLedger {
+    entries: Vec<crate::membership::Vouch>,
+}
+
+/// Where a chain's vouches live: beside it, like its revocations.
+pub(crate) fn vouches_path_for(trust_path: &Path) -> PathBuf {
+    trust_path.with_extension("vouches.json")
+}
+
+fn load_vouches(trust_path: Option<&Path>) -> Arc<Mutex<VouchLedger>> {
+    let ledger = trust_path
+        .map(vouches_path_for)
+        .and_then(|path| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .map(|content| (path, content))
+        })
+        .map(|(path, content)| {
+            serde_json::from_str(&content).unwrap_or_else(|error| {
+                tracing::warn!("unreadable roster vouches at {}: {error}", path.display());
+                VouchLedger::default()
             })
         })
         .unwrap_or_default();
@@ -363,6 +395,7 @@ impl AdminTrust {
             })),
             replay: Arc::new(Mutex::new(load_replay_ledger(path.as_deref()))),
             revocations: load_revocations(path.as_deref()),
+            vouches: load_vouches(path.as_deref()),
             path,
         }
     }
@@ -377,6 +410,7 @@ impl AdminTrust {
             state: Arc::new(Mutex::new(document)),
             replay: Arc::new(Mutex::new(load_replay_ledger(Some(&path)))),
             revocations: load_revocations(Some(&path)),
+            vouches: load_vouches(Some(&path)),
             path: Some(path),
         })
     }
@@ -504,6 +538,7 @@ impl AdminTrust {
             path: Some(path.as_ref().to_path_buf()),
             replay: Arc::new(Mutex::new(load_replay_ledger(Some(path.as_ref())))),
             revocations: load_revocations(Some(path.as_ref())),
+            vouches: load_vouches(Some(path.as_ref())),
         };
         trust.save()?;
         Ok(trust)
@@ -517,6 +552,7 @@ impl AdminTrust {
             path: None,
             replay: Arc::new(Mutex::new(ReplayLedger::default())),
             revocations: load_revocations(None),
+            vouches: load_vouches(None),
         })
     }
 
@@ -676,6 +712,79 @@ impl AdminTrust {
         added
     }
 
+    /// Every roster vouch this node holds.
+    pub(crate) fn vouches(&self) -> Vec<crate::membership::Vouch> {
+        self.vouches.lock().expect("vouch lock poisoned").entries.clone()
+    }
+
+    /// Takes the vouches that hold against the chain and keeps the newest
+    /// per member - the newer approval wins, and an equal one the newer
+    /// signature. Each entry carries an admin's own signature and is
+    /// checked on its own, so whoever sent it does not matter, as with the
+    /// revocations. Entries an admin stopped renewing age out on their own
+    /// (verified on read); the list drops the ones older than a day past
+    /// their window when it is saved.
+    pub(crate) fn merge_vouches(
+        &self,
+        incoming: Vec<crate::membership::Vouch>,
+    ) -> Vec<crate::membership::Vouch> {
+        let document = self.document();
+        let now = chrono::Utc::now().timestamp();
+        let mut ledger = self.vouches.lock().expect("vouch lock poisoned");
+        let mut added = Vec::new();
+        for entry in incoming {
+            if crate::membership::verify_vouch(&entry, &document, now).is_err() {
+                continue;
+            }
+            let known_newer = ledger
+                .entries
+                .iter()
+                .filter(|known| known.sub == entry.sub)
+                .any(|known| {
+                    (known.admitted_at, known.issued_at) >= (entry.admitted_at, entry.issued_at)
+                });
+            if known_newer {
+                continue;
+            }
+            ledger.entries.retain(|known| known.sub != entry.sub);
+            ledger.entries.push(entry.clone());
+            added.push(entry);
+        }
+        let stale = now - crate::membership::VOUCH_FRESH_SECS - 24 * 60 * 60;
+        ledger.entries.retain(|entry| entry.issued_at > stale);
+        if !added.is_empty() {
+            let path = self.path.as_deref().map(vouches_path_for);
+            if let Err(error) = persist_json(&*ledger, path.as_deref(), false) {
+                tracing::warn!("could not save the roster vouches: {error:#}");
+            }
+        }
+        added
+    }
+
+    /// The role the roster vouches give `node_id` now: a vouch that holds
+    /// against the chain and is fresh, with the approval newer than the
+    /// node's last ban. `None` when this node holds no vouch for it.
+    pub(crate) fn vouched_role(&self, node_id: &str, now: i64) -> Option<crate::config::EnrollmentRole> {
+        let document = self.document();
+        let ledger = self.vouches.lock().expect("vouch lock poisoned");
+        let vouch = ledger.entries.iter().find(|entry| entry.sub == node_id)?;
+        crate::membership::verify_vouch(vouch, &document, now).ok()?;
+        if self
+            .revocations
+            .lock()
+            .expect("revocation lock poisoned")
+            .entries
+            .iter()
+            .filter(|entry| entry.sub == node_id)
+            .map(|entry| entry.revoked_at)
+            .max()
+            .is_some_and(|revoked| vouch.admitted_at <= revoked)
+        {
+            return None;
+        }
+        Some(vouch.role)
+    }
+
     /// How many entries the local replay ledger holds.
     #[cfg(test)]
     pub(crate) fn replay_len(&self) -> usize {
@@ -736,6 +845,7 @@ impl AdminTrust {
             path: Some(path.as_ref().to_path_buf()),
             replay: Arc::new(Mutex::new(load_replay_ledger(Some(path.as_ref())))),
             revocations: load_revocations(Some(path.as_ref())),
+            vouches: load_vouches(Some(path.as_ref())),
         };
         trust.save()?;
         Ok(trust)
@@ -2453,5 +2563,61 @@ mod tests {
 
         assert!(parse_transported(&tampered).is_err());
         assert!(parse_transported("nem json e").is_err());
+    }
+
+    /// Phase C of the admin-hub routing (spec 10.1): the ledger of roster
+    /// vouches keeps the newest approval per member, the ban cuts what it
+    /// precedes, and the ledger lives beside the chain like its revocations.
+    #[test]
+    fn the_roster_vouch_ledger_keeps_the_newest_approval_and_the_ban_cuts_it() {
+        use crate::config::EnrollmentRole;
+        let dir = TempDir::new();
+        let trust_path = dir.path().join("trust.json");
+        let (trust, signing_key, root) = boot(&trust_path);
+        let now = chrono::Utc::now().timestamp();
+        let vouch_of = |role, admitted_at, issued_at| {
+            crate::membership::sign_vouch(
+                &signing_key,
+                &root,
+                &trust.document(),
+                "worker",
+                role,
+                admitted_at,
+                issued_at,
+            )
+            .unwrap()
+        };
+        trust.merge_vouches(vec![vouch_of(EnrollmentRole::Worker, now - 10, now)]);
+        assert_eq!(trust.vouched_role("worker", now), Some(EnrollmentRole::Worker));
+        assert_eq!(trust.vouched_role("stranger", now), None);
+        // An older approval does not replace the one the ledger holds.
+        assert!(trust
+            .merge_vouches(vec![vouch_of(EnrollmentRole::Visitor, now - 100, now)])
+            .is_empty());
+        assert_eq!(trust.vouched_role("worker", now), Some(EnrollmentRole::Worker));
+        // A newer approval does.
+        trust.merge_vouches(vec![vouch_of(EnrollmentRole::Visitor, now + 1, now + 1)]);
+        assert_eq!(
+            trust.vouched_role("worker", now + 1),
+            Some(EnrollmentRole::Visitor)
+        );
+        // The ban cuts the approval it precedes; a re-admission after it holds.
+        let ban =
+            crate::membership::revoke(&signing_key, &root, &trust.document(), "worker", now + 2)
+                .unwrap();
+        trust.merge_revocations(vec![ban]);
+        assert_eq!(trust.vouched_role("worker", now + 2), None);
+        trust.merge_vouches(vec![vouch_of(EnrollmentRole::Visitor, now + 3, now + 3)]);
+        assert_eq!(
+            trust.vouched_role("worker", now + 3),
+            Some(EnrollmentRole::Visitor)
+        );
+        // The ledger is saved beside the chain, and a reload answers the same.
+        assert!(vouches_path_for(&trust_path).exists());
+        let reloaded = AdminTrust::load(&trust_path).unwrap();
+        assert_eq!(
+            reloaded.vouched_role("worker", now + 3),
+            Some(EnrollmentRole::Visitor)
+        );
     }
 }

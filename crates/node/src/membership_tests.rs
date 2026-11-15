@@ -358,3 +358,109 @@ fn revocation_lists_merge_keeping_the_latest_ban() {
     assert_eq!(chain.trust.revoked_node_at("another-worker"), None);
     assert_eq!(chain.trust.revocations().len(), 1);
 }
+
+#[test]
+fn any_admin_signs_a_vouch_every_node_checks_against_the_chain_alone() {
+    let chain = chain();
+    let document = chain.trust.document();
+    for (key, issuer) in [
+        (&chain.primary_key, &chain.primary),
+        (&chain.secondary_key, &chain.secondary),
+    ] {
+        let vouch = sign_vouch(
+            key,
+            issuer,
+            &document,
+            "worker",
+            EnrollmentRole::Worker,
+            NOW - 10,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(vouch.sub, "worker");
+        assert_eq!(vouch.role, EnrollmentRole::Worker);
+        assert_eq!(vouch.admitted_at, NOW - 10);
+        assert_eq!(vouch.issued_at, NOW);
+        // The other admin checks it knowing nothing about the member.
+        verify_vouch(&vouch, &document, NOW).unwrap();
+    }
+}
+
+#[test]
+fn a_vouch_is_bound_to_its_network_its_signature_its_freshness_and_its_chain() {
+    let chain = chain();
+    let document = chain.trust.document();
+    let vouch = sign_vouch(
+        &chain.primary_key,
+        &chain.primary,
+        &document,
+        "worker",
+        EnrollmentRole::Visitor,
+        NOW - 10,
+        NOW,
+    )
+    .unwrap();
+    // A vouch of another network is nothing here.
+    let mut foreign = vouch.clone();
+    foreign.net = "other-cluster".into();
+    assert!(verify_vouch(&foreign, &document, NOW).is_err());
+    // A forged signature does not hold.
+    let mut forged = vouch.clone();
+    forged.signature = "00".repeat(64);
+    assert!(verify_vouch(&forged, &document, NOW).is_err());
+    // One that stopped being renewed ages out; inside the window it holds.
+    assert!(verify_vouch(
+        &vouch,
+        &document,
+        NOW + VOUCH_FRESH_SECS + CLOCK_LEEWAY_SECS + 1
+    )
+    .is_err());
+    assert!(verify_vouch(&vouch, &document, NOW + VOUCH_FRESH_SECS - 60).is_ok());
+    // An admin of the chain is never vouched.
+    assert!(sign_vouch(
+        &chain.primary_key,
+        &chain.primary,
+        &document,
+        &chain.primary.node_id,
+        EnrollmentRole::Worker,
+        NOW - 10,
+        NOW,
+    )
+    .is_err());
+    // A vouch signed by a stranger is refused at once.
+    let stranger_key = SigningKey::from_bytes(&[9; 32]);
+    let stranger = principal_of("stranger", &stranger_key);
+    assert!(sign_vouch(
+        &stranger_key,
+        &stranger,
+        &document,
+        "worker",
+        EnrollmentRole::Worker,
+        NOW - 10,
+        NOW,
+    )
+    .is_err());
+}
+
+#[test]
+fn a_vouch_from_an_admin_the_chain_demotes_holds_nothing() {
+    let chain = chain();
+    let document = chain.trust.document();
+    let vouch = sign_vouch(
+        &chain.secondary_key,
+        &chain.secondary,
+        &document,
+        "worker",
+        EnrollmentRole::Worker,
+        NOW - 10,
+        NOW,
+    )
+    .unwrap();
+    verify_vouch(&vouch, &document, NOW).unwrap();
+    chain
+        .trust
+        .demote_secondary(&chain.primary_key, chain.secondary.clone())
+        .unwrap();
+    // The check is against the chain as it stands now, like a token's.
+    assert!(verify_vouch(&vouch, &chain.trust.document(), NOW).is_err());
+}

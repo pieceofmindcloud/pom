@@ -192,6 +192,10 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
             post(crate::webui::internal_revocations),
         )
         .route(
+            crate::webui::VOUCHES_PATH,
+            post(crate::webui::internal_vouches),
+        )
+        .route(
             "/api/internal/enterprise/fingerprint",
             get(crate::plugins::plugin_peer_fingerprint),
         )

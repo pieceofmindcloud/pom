@@ -313,6 +313,145 @@ pub(crate) fn verify_revocation(
         .context("the revocation signature does not match")
 }
 
+/// How long a roster vouch holds on a node without hearing it renewed. The
+/// admins re-sign theirs every keeper tick and push a new approval at once,
+/// so this only covers a stretch where the exchange could not run: hours,
+/// where a token gets minutes (`TOKEN_TTL_SECS`) - a vouch outlives the
+/// token it replaces because the ban, not the calendar, is what takes a
+/// role away.
+pub(crate) const VOUCH_FRESH_SECS: i64 = 4 * 60 * 60;
+
+/// Domain label of a vouch signature.
+const VOUCH_LABEL: &[u8] = b"pom-roster-vouch/v1\n";
+
+/// A roster vouch: an admin's signed statement of the role one member was
+/// admitted with - the roster entry, signed. The phase C form of the
+/// `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`: unlike
+/// a token it is not carried by the member and does not move per request;
+/// it travels the network through the vouch keepers, every node keeps the
+/// newest per member, and every node checks each entry against the chain
+/// alone. `sub` is the member's `node_id`, which is the hash of its key:
+/// the vouch names the key as well. `admitted_at` is the approval's
+/// decision time, cut by the member's last ban exactly as an approval is;
+/// `issued_at` is when this admin last signed it, the freshness the keepers
+/// renew.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct Vouch {
+    pub(crate) net: String,
+    pub(crate) sub: String,
+    pub(crate) role: EnrollmentRole,
+    pub(crate) admitted_at: i64,
+    pub(crate) issued_at: i64,
+    pub(crate) iss: String,
+    pub(crate) iss_key: String,
+    pub(crate) signature: String,
+}
+
+fn vouch_bytes(vouch: &Vouch) -> Vec<u8> {
+    let mut bytes = VOUCH_LABEL.to_vec();
+    bytes.extend(
+        serde_json::to_vec(&(
+            &vouch.net,
+            &vouch.sub,
+            &vouch.role,
+            vouch.admitted_at,
+            vouch.issued_at,
+            &vouch.iss,
+            &vouch.iss_key,
+        ))
+        .unwrap_or_default(),
+    );
+    bytes
+}
+
+/// Signs the vouch of `subject` with `role`, admitted at `admitted_at`. Only
+/// an admin of `document` signs one, with its own key, and never for a
+/// member of the chain's own list: an admin's role is the chain's.
+pub(crate) fn sign_vouch(
+    signing_key: &SigningKey,
+    issuer: &AuthorityPrincipal,
+    document: &AdminTrustDocument,
+    subject_node_id: &str,
+    role: EnrollmentRole,
+    admitted_at: i64,
+    now: i64,
+) -> Result<Vouch> {
+    if issuer.pubkey != hex::encode(signing_key.verifying_key().as_bytes()) {
+        bail!("the signing key is not the issuer's");
+    }
+    if !crate::admin_trust::control_issuer_is_admin(document, issuer) {
+        bail!("only an admin of the trust chain vouches a member");
+    }
+    if subject_node_id.is_empty() {
+        bail!("a vouch names its member");
+    }
+    if std::iter::once(&document.primary)
+        .chain(document.grants.iter().map(|grant| &grant.subject))
+        .any(|admin| {
+            admin.node_id == subject_node_id
+                && crate::admin_trust::control_issuer_is_admin(document, admin)
+        })
+    {
+        bail!("an admin is not vouched: its role is the chain's");
+    }
+    let mut vouch = Vouch {
+        net: document.anchor.cluster_id.clone(),
+        sub: subject_node_id.to_string(),
+        role,
+        admitted_at,
+        issued_at: now,
+        iss: issuer.node_id.clone(),
+        iss_key: issuer.pubkey.clone(),
+        signature: String::new(),
+    };
+    vouch.signature = hex::encode(signing_key.sign(&vouch_bytes(&vouch)).to_bytes());
+    verify_vouch(&vouch, document, now)?;
+    Ok(vouch)
+}
+
+/// Whether `vouch` holds against `document` now: this network, signed by an
+/// admin the chain names today, not aimed at one, and renewed within the
+/// vouch window. The ban cut is not checked here - it belongs to the ledger
+/// lookup (`AdminTrust::vouched_role`), like a revocation's cut of a token.
+pub(crate) fn verify_vouch(vouch: &Vouch, document: &AdminTrustDocument, now: i64) -> Result<()> {
+    if vouch.net != document.anchor.cluster_id {
+        bail!("the vouch belongs to another network");
+    }
+    if vouch.sub.is_empty() {
+        bail!("a vouch names its member");
+    }
+    if now + CLOCK_LEEWAY_SECS < vouch.issued_at {
+        bail!("the vouch was issued in the future");
+    }
+    if now - CLOCK_LEEWAY_SECS > vouch.issued_at + VOUCH_FRESH_SECS {
+        bail!("the vouch is too old to hold: it stopped being renewed");
+    }
+    if !crate::admin_trust::is_admin_key(document, &vouch.iss, &vouch.iss_key) {
+        bail!("the vouch was not signed by an admin of the trust chain");
+    }
+    if std::iter::once(&document.primary)
+        .chain(document.grants.iter().map(|grant| &grant.subject))
+        .any(|admin| {
+            admin.node_id == vouch.sub
+                && crate::admin_trust::control_issuer_is_admin(document, admin)
+        })
+    {
+        bail!("an admin is not vouched");
+    }
+    let raw: [u8; 32] = hex::decode(&vouch.iss_key)
+        .context("invalid issuer key")?
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid issuer key size"))?;
+    let key = VerifyingKey::from_bytes(&raw).context("invalid issuer key")?;
+    let signature = Signature::from_slice(
+        &hex::decode(&vouch.signature).context("invalid vouch signature")?,
+    )
+    .context("invalid vouch signature")?;
+    key.verify(&vouch_bytes(vouch), &signature)
+        .context("the vouch signature does not match")
+}
+
 /// Seconds `token` has left, read without checking it: only for deciding
 /// when the holder renews its own.
 pub(crate) fn expires_at(token: &str) -> Option<i64> {

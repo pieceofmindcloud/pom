@@ -563,6 +563,123 @@ mod tests {
         );
     }
 
+    /// Like `announce_token`, but fixing when the token was issued: the ban
+    /// cut (`iat <= revoked_at`) is measured against the token's `iat`.
+    async fn announce_at(
+        state: &GatewayState,
+        node_id: &str,
+        role: crate::config::EnrollmentRole,
+        issued_at: i64,
+    ) {
+        let mut peers = state.network.peers.write().await;
+        let peer = peers.get_mut(node_id).expect("the peer is in the table");
+        peer.membership = Some(
+            crate::membership::issue(
+                &state.authority_signing_key,
+                &state.authority_principal,
+                &state.admin_trust.document(),
+                &peer.node_id,
+                &peer.pubkey,
+                role,
+                issued_at,
+            )
+            .unwrap(),
+        );
+    }
+
+    /// Phase B of the admin-hub routing: the roster decides the role at the
+    /// serving gate when it names the member. A machine approved as a worker
+    /// does not become a visitor by announcing itself one - the announce
+    /// claims a role it was not given - and a ban cuts both lists: an old
+    /// approval and an old token attest nothing after it, the newer decision
+    /// decides.
+    #[tokio::test]
+    async fn the_roster_decides_the_role_at_the_serving_gate() {
+        use crate::webui::RouteScope::ServingMember;
+        let mut worker = testkit::peer("worker", "worker", 8090);
+        worker.profile = crate::profile::NodeProfile::Worker;
+        let state = testkit::state_with("principal", vec![worker]).await;
+        let principal_of = |node_id: &str| crate::admin_trust::AuthorityPrincipal {
+            node_id: node_id.into(),
+            peer_id: String::new(),
+            pubkey: format!("pubkey-of-{node_id}"),
+        };
+
+        // A worker approved on the roster is one whatever it announces.
+        state
+            .network_chat
+            .request_admission(
+                "worker",
+                Default::default(),
+                crate::config::EnrollmentRole::Worker,
+            )
+            .unwrap();
+        assert!(state.network_chat.decide_admission(
+            "worker",
+            Some(crate::network_lobby::AdmissionStatus::Approved)
+        ));
+        {
+            let mut peers = state.network.peers.write().await;
+            peers
+                .get_mut("worker")
+                .expect("the peer is in the table")
+                .profile = crate::profile::NodeProfile::Visitor;
+        }
+        assert_eq!(
+            caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
+            Ok(()),
+            "the roster names it a worker; the visitor announce is not its role"
+        );
+
+        // The ban cuts the approval: the roster no longer vouches the worker,
+        // and its old announce and a token issued at the ban's minute hold
+        // nothing.
+        let now = chrono::Utc::now().timestamp();
+        state.admin_trust.merge_revocations(
+            vec![crate::membership::revoke(
+                &state.authority_signing_key,
+                &state.authority_principal,
+                &state.admin_trust.document(),
+                "worker",
+                now,
+            )
+            .unwrap()],
+        );
+        announce_at(
+            &state,
+            "worker",
+            crate::config::EnrollmentRole::Worker,
+            now,
+        )
+        .await;
+        assert_eq!(
+            caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
+            Err("role_unattested")
+        );
+
+        // Re-admitted as a visitor after the ban - the removal erased the old
+        // record first, as the member-removal flow does - the roster decides it
+        // is a visitor for the serving routes: the machine's announce and the
+        // worker's token no longer change the answer.
+        assert!(state.network_chat.decide_admission("worker", None));
+        state
+            .network_chat
+            .request_admission(
+                "worker",
+                Default::default(),
+                crate::config::EnrollmentRole::Visitor,
+            )
+            .unwrap();
+        assert!(state.network_chat.decide_admission(
+            "worker",
+            Some(crate::network_lobby::AdmissionStatus::Approved)
+        ));
+        assert_eq!(
+            caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
+            Err("visitor_caller")
+        );
+    }
+
     fn router_with_surface_gate(state: &GatewayState, paths: &[&'static str]) -> Router {
         let mut app = Router::new();
         for path in paths {

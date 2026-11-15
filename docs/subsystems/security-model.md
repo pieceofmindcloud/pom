@@ -194,7 +194,7 @@ session gate; another node goes through `caller_may_ask` (`gateway/state.rs`).
 | --- | --- | --- | --- |
 | PrincipalOnly | Principal | Signed by the principal | `signature_required`, `principal_required` |
 | AnyAdmin | Any admin | Signed by any admin in the chain | `admin_required` |
-| ServingMember | Admin or worker | Signed by an admin, or by a peer with a valid worker token | `visitor_caller`, `role_unattested`, `unknown_caller` |
+| ServingMember | Admin or worker | Signed by an admin, or by a peer the roster names a worker (the membership token decides members no roster names) | `visitor_caller`, `role_unattested`, `unknown_caller` |
 | AnyMember | Every profile | Every member (inference, leaving) | - |
 | LocalOnly | Every profile | Never | `local_operator_only` |
 | HandlerAuth | The handler checks | The handler checks (sync protocols) | - |

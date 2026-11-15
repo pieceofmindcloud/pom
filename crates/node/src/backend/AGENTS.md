@@ -645,9 +645,11 @@ boundary.
   the peers announce and fetches the chain from whoever is ahead
   (`chain_sources`, `POST /api/internal/admin-trust/chain`) - any member, so
   it works with the principal offline. The chain names admins only: a
-  worker's or visitor's role is its membership token (`webui/membership.rs`
-  below), and a non-admin caller of a `ServingMember` route needs a `worker`
-  token (`caller_may_ask`). `chain_status` feeds
+  worker's or visitor's role is decided by the admission roster when it names
+  the member - the principal's own list, or its mirror on a secondary
+  (`webui/membership.rs` below) - and by the membership token otherwise
+  (`peer_role_is_attested`); a non-admin caller of a `ServingMember` route
+  needs one or the other (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
 - Image models live outside this folder, in `crates/node/src/`:
   `components.rs` (a node serves components, `POST /api/ui/components/apply|release`;

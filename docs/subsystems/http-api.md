@@ -206,9 +206,13 @@ last):
     trust chain, principal or secondary (`"admin_required"`). A
     `ServingMember` route needs it signed by an admin or by a live peer
     admitted as a worker (`"visitor_caller"`, `"unknown_caller"`,
-    `"role_unattested"`): the membership token it announces, or on an admin
-    its admission list, says so - the announce's profile never does. Only a legacy network open to anyone with the anchor
-    (`open_admission`), which has no admissions, keeps the announce. These
+    `"role_unattested"`): the admission roster decides when it names the
+    member - an admin's own list, or its mirror on a secondary - and the
+    membership token the peer announces decides the members the roster
+    cannot name; the announce's profile never decides, whatever else says
+    (`peer_role_is_attested`, phase B of the admin-hub routing). Only a
+    legacy network open to anyone with the anchor (`open_admission`), which
+    has no admissions, keeps the announce. These
     routes include `/api/transfer/*`, which is on the administrative surface:
     a peer reaches it signed, and the local screen with its session, never
     with the connection key alone. A
@@ -243,9 +247,13 @@ last):
     its acceptance of a principal transfer the principal offered to it. Routes of
     the other scopes - `/v1`, `/api/generate`, the node's own description, the
     `/api/internal` and `/api/cluster` sync routes - are unchanged.
-  `gateway::peer_is_visitor` is the one definition of "visitor": a peer
-  that announces the profile, one whose membership token says so (below), or,
-  on an admin, one whose admission record says so. **The role travels in a
+  `gateway::peer_is_visitor` is the one definition of "visitor": the
+  admission roster decides when it names the member - the principal's own
+  list carries every candidate by the role it carries, asked in with or
+  decided, the mirror of it counts approvals cut by the node's last ban -
+  and a roster-named member is whatever the roster says, whatever its
+  announce or an older token claims; with no roster entry, one whose
+  membership token says so (below), or one that announces the profile. **The role travels in a
   membership token, not in the chain** (`crate::membership`,
   `webui/membership.rs`). The trust chain names the admins only, so admitting
   a worker or a visitor changes no trust document. Every machine that is not

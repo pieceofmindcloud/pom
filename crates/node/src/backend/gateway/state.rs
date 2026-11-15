@@ -955,13 +955,30 @@ pub(crate) fn peer_is_validator(peer: &PeerInfo) -> bool {
 
 pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
-    peer.profile == crate::profile::NodeProfile::Visitor
-        || crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Visitor)
-        || state
-            .network_chat
-            .admission_of(&peer.node_id)
-            .is_some_and(|record| record.role == EnrollmentRole::Visitor)
-        || state.network_chat.admitted_role(&peer.node_id, None) == Some(EnrollmentRole::Visitor)
+    // Phase B of the admin-hub routing: the **roster** decides when it names
+    // the member. The principal's own list names every candidate by the role
+    // it carries - asked in with or decided - because a candidate is the
+    // principal's direct responsibility and the candidate's own word about
+    // its role only ever restricts it. The mirror of that list, read for
+    // membership, counts only approvals, cut by the node's last ban
+    // (`admitted_role`, `webui::membership`). A roster-named member is
+    // whatever the roster says, whatever its announce or an older token
+    // claims.
+    if let Some(record) = state.network_chat.admission_of(&peer.node_id) {
+        return record.role == EnrollmentRole::Visitor;
+    }
+    if let Some(role) = state
+        .network_chat
+        .admitted_role(&peer.node_id, state.admin_trust.revoked_node_at(&peer.node_id))
+    {
+        return role == EnrollmentRole::Visitor;
+    }
+    // With no roster entry the legacy sources decide, as before: the token
+    // the peer announces, checked against the chain and the revocations, and
+    // last its announce - a member admitted before the lists existed, or one
+    // this node only knows by its announce.
+    crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Visitor)
+        || peer.profile == crate::profile::NodeProfile::Visitor
 }
 
 /// What a node-to-node request may reach, by the caller's identity.
@@ -971,8 +988,9 @@ pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
 /// - A deploy route (deploy, load, unload, stop) takes a request signed by
 ///   any admin of the trust chain, principal or secondary.
 /// - A route of a serving node (catalog, planning, transfers) takes a signed
-///   request from an admin or from a worker whose membership token says so
-///   (`peer_role_is_attested`) - never on the strength of its announce.
+///   request from an admin or from a worker an admin admitted as one
+///   (`peer_role_is_attested` - the roster decides when it names the member,
+///   the membership token otherwise) - never on the strength of its announce.
 /// - A route of this machine's own operator (`LocalOnly`) is refused to
 ///   every other node, signed or not.
 /// - Everything else - inference, the node's own description, the internal
@@ -1020,17 +1038,25 @@ pub(crate) async fn caller_may_ask(
 }
 
 /// Whether an admin vouched that `peer` was admitted as a worker, rather
-/// than taking the peer's word for it: the membership token it announces
-/// says so, checked against the chain alone. On an admin its own admission
-/// list does too. A legacy network open to anyone with the anchor has no
-/// admissions, and keeps the announce.
+/// than taking the peer's word for it. Since phase B of the admin-hub
+/// routing the **roster** decides when it names the member: an approval on
+/// the admission list - the principal's own, or its mirror on a secondary
+/// (`spawn_roster_keeper`, persisted since B1) - newer than the node's last
+/// ban. The membership token stays what a member the roster cannot name is
+/// judged by: a member admitted before the lists existed, a legacy network
+/// open to anyone with the anchor, and every member seen by a node that
+/// holds no roster at all. Phase C replaces that fallback with roster
+/// vouches; until then the token is the legacy form, checked against the
+/// chain alone.
 pub(crate) async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
-    crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Worker)
-        || state.network_chat.admitted_role(
+    state
+        .network_chat
+        .admitted_role(
             &peer.node_id,
             state.admin_trust.revoked_node_at(&peer.node_id),
         ) == Some(EnrollmentRole::Worker)
+        || crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Worker)
         || state.auth.read().await.network.open_admission()
 }
 

@@ -64,9 +64,11 @@ level entry consumed by `backend/gateway/` (`generate_stream_with_stops`).
 - `PipelineStep::frame_encoding` - returns the `F16` marker; every byte passes
   through the initial frame `inference/frame-v1-batch`.
 - `CAP_GATEWAY_DELEGATE` / `CAP_GATEWAY_CLIENT` - `gateway/delegate-v1`,
-  announced by members (they can be entry nodes for visitors), and
-  `gateway/client-v1`, announced by visitors that delegate; a visitor without it
-  is cut off by `member_gateway_only` (`docs/subsystems/payments.md`).
+  announced by members (they can be entry nodes for visitors; the visitor's
+  entry is always an admin of the chain, `crate::delegation`), and
+  `gateway/client-v1`, announced by visitors: in the admin-hub shape a visitor
+  without it (an older release) has no path to inference
+  (`docs/subsystems/payments.md`).
 - `CAP_FRAME_BATCH` - capability `inference/frame-v1-batch`; the relay sends only
   after the peer announces the loaded server. There is no rolling upgrade for
   earlier formats in this first version of the product.

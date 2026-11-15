@@ -259,12 +259,15 @@ pub struct NetworkSettings {
     /// block; a missing block is metering off.
     #[serde(default)]
     pub metering: MeteringSettings,
-    /// How visitors reach the models: planning themselves (`direct`, every
-    /// released network), or through a member entry node (`member_gateway`,
-    /// `member_gateway_only`). See `backend/delegation.rs`.
+    /// How visitors reach the models: parsed history (`direct`, every
+    /// released network), or delegation to a member entry node
+    /// (`member_gateway`, `member_gateway_only`). Today all of them mean
+    /// delegation: see `backend/delegation.rs`.
     #[serde(default)]
     pub inference_access: InferenceAccess,
-    /// Which members serve as entry nodes for visitors.
+    /// Which members the file names as entry nodes. The visitor's entry is
+    /// always an admin of the chain now; the value is preserved for older
+    /// nodes.
     #[serde(default)]
     pub entry_nodes: EntryNodes,
     /// Charging visitors from prepaid credit (`crate::payments`).
@@ -272,6 +275,12 @@ pub struct NetworkSettings {
     pub payments: PaymentsSettings,
 }
 
+/// How a network's `pom.json` says visitors reach the models. Since phase A
+/// of the admin-hub routing
+/// (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`) no code
+/// branches on the value: visitors always delegate to an admin entry node.
+/// The variants stay parsed and written for older nodes and for the charging
+/// validation.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InferenceAccess {
@@ -282,12 +291,20 @@ pub enum InferenceAccess {
 }
 
 impl InferenceAccess {
-    /// Whether a visitor hands its requests to an entry node.
+    /// Whether a visitor hands its requests to an entry node. Since the
+    /// admin-hub routing (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`)
+    /// this is always true: every released network's visitor delegates to an
+    /// admin entry node, whatever the persisted value says. The values stay
+    /// parsed and written so an older node keeps reading the config; the
+    /// difference between them survives only as legacy on older nodes.
     pub fn delegates(self) -> bool {
-        !matches!(self, InferenceAccess::Direct)
+        true
     }
 }
 
+/// Which members the `pom.json` names as entry nodes for visitors. Since
+/// phase A of the admin-hub routing the visitor's entry is always an admin of
+/// the chain; the value stays parsed and written for older nodes.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryNodes {

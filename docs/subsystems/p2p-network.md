@@ -77,17 +77,21 @@ sources registers a `PeerInfo` without local proof of admission. The same rule
 applies to UDP `Announce`, gossip `Announce`, `PeerList` and direct entry
 through `insert_peer`; policies, tunnels, routes, UI and pipeline only consume
 the table after that point. On a visitor, another visitor is never admitted and
-is left out of `alive_peers`; a `PeerList` names visitors only to a requester
+is left out of `alive_peers`; in the default visitor view (`Network::hides`,
+`payments.md`, "The visitor view") no member that is not an admin entry node is
+admitted either. A `PeerList` names visitors only to a requester
 known as an admin or a worker (`security-model.md`, roles).
 
 A visitor's own `Announce` never travels where another visitor could read it.
 The gossip topic is shared by every network, so a visitor does not publish on
 it: each announce round it sends the sealed announce straight to every admin
-and worker in its `alive_peers` and to the endpoints it dialed through pkarr
+in its `alive_peers` (the default view holds only admins) and to the endpoints
+it dialed through pkarr
 (`discovery::direct_announce_targets`), over the `pom/announce-direct/1` ALPN
 (`AnnounceCodec`), and the receiver handles it exactly like a gossip announce.
 Over UDP it skips the LAN broadcast and announces only to the peers it keeps.
-It stays subscribed to the topic, which is how it hears the admins and workers.
+It stays subscribed to the topic, which is how it hears the admins; a worker's
+announce that arrives there finds admission closed.
 
 - On a private network, a non-empty `connection_key` selects the proof through
   `/handshake`. The key never leaves the node: it sends its identity and a

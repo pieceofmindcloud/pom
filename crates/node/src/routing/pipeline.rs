@@ -199,11 +199,13 @@ pub const CAP_LINK_STREAM: &str = "transport/link-v1";
 /// contract; peers are never downgraded to an older wire format.
 /// The node takes visitors' requests as their entry node
 /// (`POST /v1/gateway/delegate`, `crate::delegation`). Every member announces
-/// it; the visitor keeps those the network's `entry_nodes` policy allows.
+/// it; the visitor's entry is always an admin of the chain (admin-hub
+/// routing, phase A).
 pub const CAP_GATEWAY_DELEGATE: &str = "gateway/delegate-v1";
-/// Announced by a visitor that hands its requests to an entry node when the
-/// network asks it to. A visitor without it (an older release) is cut off by
-/// `inference_access = member_gateway_only` (`docs/subsystems/payments.md`).
+/// Announced by a visitor that hands its requests to an entry node, which is
+/// every visitor of this shape. A visitor without it (an older release) has
+/// no path: it can neither plan for itself nor be seen planning (`delegation`,
+/// `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`).
 pub const CAP_GATEWAY_CLIENT: &str = "gateway/client-v1";
 /// Announced by a worker admitted as a validator (validators spec, 1): it
 /// re-runs sampled work for the metering ledger and is never planned for

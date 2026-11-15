@@ -38,14 +38,16 @@ are either workers or visitors.
 - The lobby is the admins' only: each candidate talks in a thread of its own
   that only the admins the chain proves receive, erased once an admin approves or
   declines it, or after a day without messages (`p2p-network.md`, 6.1).
-- A visitor needs the admins and the workers
-  that serve it, so its `Network::admit_peer` refuses another visitor and
-  `alive_peers` leaves one out (`Network::hides`): it never probes, measures,
-  gossips with or lists one. Every node answers a `PeerRequest` with visitors
-  only to a requester it knows as an admin or a worker
+- A visitor delegates its requests to an admin entry node, so it has no reason
+  to know a worker: its `Network::admit_peer` refuses another visitor and every
+  member the visitor view withholds (`Network::hides`), and `alive_peers`
+  leaves them out: it never probes, measures, gossips with or lists one. In the
+  default view the withheld ones are all members that are not admin entry nodes
+  (`payments.md`, "The member gateway"). Every node answers a `PeerRequest`
+  with visitors only to a requester it knows as an admin or a worker
   (`Network::peer_list_for`). The role is the peer's token checked against the
   chain, else its announced profile. A visitor's own announce goes straight to
-  its admins and workers, never on the gossip topic or the LAN broadcast
+  its admins, never on the gossip topic or the LAN broadcast
   (`p2p-network.md`, "Admission before the `peers` table").
 - The principal decides which iroh relays the network uses
   (`NetworkSettings.relay_policy`: `all`, `members` for only the network's own

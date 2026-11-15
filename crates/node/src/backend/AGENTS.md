@@ -687,7 +687,12 @@ boundary.
   `gateway::generation::MeterCollect`. Spec
   `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`.
 - `delegation.rs` - the member gateway and the payment gate for visitors
-  (`POST /v1/gateway/delegate`, `visitor_layer`): the entry node holds the
+  (`POST /v1/gateway/delegate`, `visitor_layer`): every visitor delegates, in
+  every access mode, and the entry is always an admin the chain proves
+  (`entry_nodes`, phase A of
+  `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`); with no
+  admin entry node in sight the visitor gets `503 no_entry_node`, there is no
+  self-planning fallback. The entry node holds the
   request's worst case, refuses in the route's vocabulary (`speak`), and
   settles at the summary with the metering bundle (`GenSummary.metering_bundle`,
   also held back on the plugin engine path until the stages' receipts are in);

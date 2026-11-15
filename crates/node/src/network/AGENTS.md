@@ -680,12 +680,17 @@ dedicated or member, with iroh's hole punching), are in
   (`self_addr_candidates`), `route.rs` (`Network.routes`); `discovery.rs` →
   `network.rs::insert_admitted_peer`, `p2p.rs`.
 
-## Visitors under member_gateway_only
+## The visitor view (the admin-hub shape)
 
-`Network::set_visitor_view` (kept from the network settings by
-`payments::runtime::install`) narrows what visitors learn: `peer_list_for` a
-visitor lists only allowed entry nodes (`gateway/delegate-v1`, admins only
-under `entry_nodes = admins`), and a node kept from visitors
+`Network::set_visitor_view` is set once at startup by
+`payments::runtime::install` to "admin entry nodes only", whatever the
+network's `inference_access` says (phase A of
+`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). It narrows
+what visitors learn, on both sides: `peer_list_for` a visitor lists only the
+admins announcing `gateway/delegate-v1`; `hides` keeps a visitor from ever
+admitting a worker or another visitor (`insert_admitted_peer` refuses, the
+announce loop, `PeerRequest` targets and `alive_peers` never name one), so a
+visitor's table holds only admins; and a node kept from visitors
 (`self_withheld_from_visitors`) neither announces to them nor answers their
 `PeerRequest`. See `docs/subsystems/payments.md`.
 

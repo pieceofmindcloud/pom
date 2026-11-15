@@ -1,19 +1,21 @@
-//! Member gateway: a visitor hands its requests to a member entry node
-//! (`docs/superpowers/specs/2026-11-07-member-gateway-planning-design.md`),
-//! which plans and runs them and, when the network charges visitors, charges
-//! the visitor's home network for them
-//! (`docs/superpowers/specs/2026-11-09-visitor-charging-design.md`).
+//! Member gateway: every visitor hands its requests to an **admin** entry
+//! node (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`,
+//! phase A of the admin-hub routing; the entry-node call itself shipped in
+//! `docs/superpowers/specs/2026-11-07-member-gateway-planning-design.md` and
+//! the charging gate in `2026-11-09-visitor-charging-design.md`), which
+//! plans and runs them and, when the network charges visitors, charges the
+//! visitor's home network for them.
 //!
-//! - **On the visitor** ([`visitor_layer`]): under `inference_access =
-//!   member_gateway*`, a request to `/v1/chat/completions`, `/v1/completions`,
-//!   `/v1/messages` or `/api/generate`, once the client's own API key is
-//!   checked here (keys never leave the node that minted them), goes to an entry
-//!   node's `POST /v1/gateway/delegate` with the visitor's home statement; the
-//!   answer (status, content type, streamed body) comes back unchanged. Entry
-//!   nodes are members announcing `gateway/delegate-v1` that the network's
-//!   `entry_nodes` allows, by measured RTT. A request moves to the next entry
-//!   node only when it got no answer. With none: `503 no_entry_node` under
-//!   `member_gateway_only`; under `member_gateway` the visitor plans itself.
+//! - **On the visitor** ([`visitor_layer`]): a request to `/v1/chat/completions`,
+//!   `/v1/completions`, `/v1/messages` or `/api/generate`, once the client's
+//!   own API key is checked here (keys never leave the node that minted them),
+//!   goes to an admin entry node's `POST /v1/gateway/delegate` with the
+//!   visitor's home statement; the answer (status, content type, streamed
+//!   body) comes back unchanged. Entry nodes are the admins the trust chain
+//!   proves, announcing `gateway/delegate-v1`, by measured RTT. A request
+//!   moves to the next entry node only when it got no answer. With none:
+//!   `503 no_entry_node` - the persisted `inference_access` no longer opens a
+//!   path where a visitor plans itself.
 //! - **On the entry node** ([`delegate_route`]): only a signed call from a
 //!   visitor (a member that is not a visitor plans itself: `409
 //!   plan_locally`). When the network charges, the home statement names the
@@ -24,10 +26,10 @@
 //!   through this node's own router, marked as delegated (an in-process
 //!   extension no outside request can carry), so every route answers as for a
 //!   local client; the generation settles at its end ([`PAYMENT`]).
-//! - **On a worker** ([`refuse_visitor`]): under `member_gateway_only`, a
-//!   visitor's call on the inference port is refused (`visitor_must_use_gateway`).
+//! - **On a worker**: a visitor's call on the inference port is refused
+//!   (`visitor_must_use_gateway`), in every access mode
+//!   (`crate::auth::visitor_must_delegate`).
 
-use crate::config::{EntryNodes, InferenceAccess};
 use crate::gateway::GatewayState;
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -98,12 +100,11 @@ fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
 
 // ── Visitor ─────────────────────────────────────────────────────────────────
 
-/// Entry nodes for this visitor: members announcing delegation that the
-/// policy allows, nearest first.
-pub(crate) async fn entry_nodes(
-    state: &GatewayState,
-    allowed: EntryNodes,
-) -> Vec<crate::network::PeerInfo> {
+/// Entry nodes for this visitor: the admins the chain proves, announcing
+/// delegation, nearest first. Since phase A of the admin-hub routing the
+/// network's `entry_nodes` value no longer opens worker entry nodes: the
+/// visitor's entry is always an admin.
+pub(crate) async fn entry_nodes(state: &GatewayState) -> Vec<crate::network::PeerInfo> {
     let document = state.admin_trust.document();
     let rtt = crate::route_plan::book().rtt_map(crate::route_plan::Plane::Gateway);
     let mut peers: Vec<_> = state
@@ -118,10 +119,7 @@ pub(crate) async fn entry_nodes(
                 .any(|c| c == crate::pipeline::CAP_GATEWAY_DELEGATE)
         })
         .filter(|p| !crate::gateway::peer_is_visitor(state, p))
-        .filter(|p| match allowed {
-            EntryNodes::Admins => crate::admin_trust::is_admin_node(&document, &p.node_id),
-            EntryNodes::AdminsAndWorkers => true,
-        })
+        .filter(|p| crate::admin_trust::is_admin_node(&document, &p.node_id))
         .collect();
     peers.sort_by(|a, b| {
         let ra = rtt.get(&a.node_id).copied().unwrap_or(f64::MAX);
@@ -144,10 +142,6 @@ pub(crate) async fn visitor_layer(
     {
         return next.run(request).await;
     }
-    let settings = crate::payments::runtime::settings(&state).await;
-    if !settings.inference_access.delegates() {
-        return next.run(request).await;
-    }
     let (mut parts, body) = request.into_parts();
     // The client's key is this node's: checked here, never sent on.
     if let Err(rejection) = <crate::auth::ApiKeyAuth as axum::extract::FromRequestParts<
@@ -167,17 +161,12 @@ pub(crate) async fn visitor_layer(
             )
         }
     };
-    let entries = entry_nodes(&state, settings.entry_nodes).await;
+    let entries = entry_nodes(&state).await;
     if entries.is_empty() {
-        if settings.inference_access == InferenceAccess::MemberGateway {
-            return next
-                .run(Request::from_parts(parts, Body::from(bytes)))
-                .await;
-        }
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
             "no_entry_node",
-            "no entry node of the network is in sight",
+            "no admin entry node of the network is in sight",
         );
     }
     let Ok(client_body) = serde_json::from_slice::<Value>(&bytes) else {
@@ -595,23 +584,7 @@ pub(crate) fn settle(
     })
 }
 
-// ── Worker ──────────────────────────────────────────────────────────────────
-
-/// Under `member_gateway_only`, whether `caller` (a peer calling the
-/// inference port or the tunnel) is a visitor that must use an entry node.
-pub(crate) async fn refuse_visitor(state: &GatewayState, caller: &str) -> bool {
-    let settings = crate::payments::runtime::settings(state).await;
-    if settings.inference_access != InferenceAccess::MemberGatewayOnly {
-        return false;
-    }
-    state
-        .network
-        .alive_peers()
-        .await
-        .iter()
-        .find(|p| p.node_id == caller)
-        .is_some_and(|p| crate::gateway::peer_is_visitor(state, p))
-}
+// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -665,7 +638,7 @@ mod tests {
         peer.profile = crate::profile::NodeProfile::Visitor;
         let state = testkit::state_with("entry", vec![peer]).await;
         let mut settings = crate::config::NetworkSettings::default();
-        settings.inference_access = InferenceAccess::MemberGatewayOnly;
+        settings.inference_access = crate::config::InferenceAccess::MemberGatewayOnly;
         settings.payments.enabled = charge;
         settings.payments.prices.insert(
             "priced".into(),
@@ -709,6 +682,53 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["error"]["code"], "plan_locally");
+    }
+
+    /// Phase A of the admin-hub routing: a visitor of the old `direct` mode
+    /// no longer plans for itself. Its request delegates, and with no admin
+    /// entry node in sight - a worker announcing delegation is not one - it
+    /// ends as `503 no_entry_node`, never at the local planning route.
+    #[tokio::test]
+    async fn a_direct_mode_visitor_delegates_and_never_plans_itself() {
+        let mut entry = testkit::peer("worker-entry", "worker", 9);
+        entry.inference_frame_capabilities
+            .push(crate::pipeline::CAP_GATEWAY_DELEGATE.into());
+        let state = testkit::state_with("visiting", vec![entry]).await;
+        state
+            .network
+            .set_profile(crate::profile::NodeProfile::Visitor);
+        let settings = crate::config::NetworkSettings::default();
+        state.database.save_network_settings(&settings).unwrap();
+        state
+            .database
+            .insert_api_key(&crate::config::ApiKey {
+                id: "ui-key".into(),
+                key_hash: crate::auth::api_key_hash("sk-active"),
+                key_hint: String::new(),
+                label: "visiting".into(),
+                node_id: "visiting".into(),
+                origin_node_id: "visiting".into(),
+                active: true,
+                created_at: "2026-11-14T00:00:00Z".into(),
+                user_id: String::new(),
+            })
+            .unwrap();
+        let app = axum::Router::new()
+            .route("/api/generate", axum::routing::post(|| async { StatusCode::OK }))
+            .with_state(state.clone())
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                visitor_layer,
+            ));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/generate")
+            .header("x-api-key", "sk-active")
+            .body(axum::body::Body::from(r#"{"model":"m","prompt":"hi"}"#))
+            .unwrap();
+        let (status, body) = code_of(app.oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "no_entry_node");
     }
 
     #[tokio::test]

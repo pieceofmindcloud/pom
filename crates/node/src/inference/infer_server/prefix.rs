@@ -1073,7 +1073,7 @@ pub(super) async fn require_inference_auth(
     next: Next,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    if crate::auth::visitor_must_delegate(&config, &parts.extensions).await {
+    if crate::auth::visitor_must_delegate(&parts.extensions).await {
         return (
             axum::http::StatusCode::FORBIDDEN,
             axum::Json(serde_json::json!({

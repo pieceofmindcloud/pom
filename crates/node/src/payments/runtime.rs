@@ -141,19 +141,11 @@ pub(crate) fn install(state: &GatewayState) {
         }
     }
     spawn_lease_sweeper(state.clone());
-    // What visitors may learn of the network follows the access policy.
-    let state = state.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            ticker.tick().await;
-            let settings = settings(&state).await;
-            let view = (settings.inference_access
-                == crate::config::InferenceAccess::MemberGatewayOnly)
-                .then_some(settings.entry_nodes == crate::config::EntryNodes::Admins);
-            state.network.set_visitor_view(view);
-        }
-    });
+    // The admin-hub shape (`delegation`): a visitor always delegates to an
+    // admin entry node and learns only the admins, whatever the persisted
+    // `inference_access` / `entry_nodes` say (older values keep parsing; they
+    // no longer open a direct visitor path).
+    state.network.set_visitor_view(Some(true));
 }
 
 pub(crate) fn is_principal(state: &GatewayState) -> bool {
@@ -757,7 +749,8 @@ async fn cycle_payouts(state: &GatewayState, cycle: u64) -> Option<Value> {
 }
 
 /// The visitors in sight that cannot go through an entry node (an older
-/// release, without `gateway/client-v1`): `member_gateway_only` cuts them off.
+/// release, without `gateway/client-v1`): the admin-hub shape cuts them off in
+/// every access mode.
 pub(crate) async fn visitors_cut_off(state: &GatewayState) -> Vec<Value> {
     state
         .network
@@ -815,9 +808,8 @@ pub(crate) async fn my_balance(State(state): State<GatewayState>) -> Response {
         )
         .into_response();
     };
-    let settings = settings(&state).await;
     let body = json!({ "home": home });
-    for peer in crate::delegation::entry_nodes(&state, settings.entry_nodes).await {
+    for peer in crate::delegation::entry_nodes(&state).await {
         if let Ok(response) = state
             .control_post_json(&peer, "/v1/gateway/balance", &body, PEER_TIMEOUT)
             .await
@@ -862,10 +854,9 @@ pub(crate) async fn request_credit(
         )
             .into_response();
     };
-    let settings = settings(&state).await;
     let body = json!({ "home": home, "amount_micro": ask.amount_micro, "note": ask.note });
     let mut tried = Vec::new();
-    for peer in crate::delegation::entry_nodes(&state, settings.entry_nodes).await {
+    for peer in crate::delegation::entry_nodes(&state).await {
         match state
             .control_post_json(&peer, "/v1/gateway/credit-request", &body, PEER_TIMEOUT)
             .await

@@ -1444,7 +1444,8 @@ pub struct Network {
     /// Advertised in every `Announce` so peers can name this machine without a
     /// second HTTP round-trip.
     /// What a visitor may learn of this network (`set_visitor_view`):
-    /// 0 everyone, 1 entry nodes only, 2 admin entry nodes only.
+    /// 0 everyone, 1 entry nodes only, 2 admin entry nodes only. Since phase
+    /// A of the admin-hub routing every node holds 2 (`payments::runtime::install`).
     visitor_view: Arc<std::sync::atomic::AtomicU8>,
     /// A worker admitted as a validator (`set_validator`).
     validator: Arc<std::sync::atomic::AtomicBool>,
@@ -3169,9 +3170,12 @@ impl Network {
         ) == Some(crate::config::EnrollmentRole::Visitor)
     }
 
-    /// Under `inference_access = member_gateway_only` a visitor learns only
-    /// the network's entry nodes (`crate::delegation`): `Some(admins_only)`,
-    /// or `None` to let visitors learn every member.
+    /// The shape a visitor may learn of this network (`set_visitor_view`):
+    /// the default network shape is admin entry nodes only, in every access
+    /// mode (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`,
+    /// phase A): `Some(admins_only)`, `Some(false)` for entry nodes of any
+    /// member, `None` to let a visitor learn every member (legacy shapes, kept
+    /// for the tests and for older behavior).
     pub(crate) fn set_visitor_view(&self, view: Option<bool>) {
         let value = match view {
             None => 0,
@@ -3182,7 +3186,15 @@ impl Network {
             .store(value, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Whether `peer` is kept from visitors: not an entry node the policy
+    /// Whether the view installed here keeps visitors on admin entry nodes
+    /// only (the shape `payments::runtime::install` sets).
+    fn self_view_is_admins_only(&self) -> bool {
+        self.visitor_view
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == 2
+    }
+
+    /// Whether `peer` is kept from visitors: not an entry node the view
     /// allows.
     fn withheld_from_visitors(&self, peer: &PeerInfo) -> bool {
         let view = self.visitor_view.load(std::sync::atomic::Ordering::Relaxed);
@@ -3198,8 +3210,7 @@ impl Network {
 
     /// Whether this node is kept from visitors (see `withheld_from_visitors`).
     fn self_withheld_from_visitors(&self) -> bool {
-        let view = self.visitor_view.load(std::sync::atomic::Ordering::Relaxed);
-        if view != 2 || self.is_visitor() {
+        if !self.self_view_is_admins_only() || self.is_visitor() {
             return false;
         }
         match self.admission.as_ref() {
@@ -3215,11 +3226,15 @@ impl Network {
         }
     }
 
-    /// Visitors never know each other: a visitor needs the admins and the
-    /// workers that serve it, and another visitor is neither. So a visitor
-    /// does not admit, list, probe, measure or gossip with one.
+    /// Who this node never learns of: another visitor, and - since phase A of
+    /// the admin-hub routing, in the default view - every member that is not
+    /// an admin entry node. A visitor delegates its requests to an admin and
+    /// has no reason to know a worker, so it does not admit, list, probe,
+    /// measure or gossip with either.
     fn hides(&self, peer: &PeerInfo) -> bool {
-        peer.node_id != self.node_id && self.is_visitor() && self.peer_is_visitor(peer)
+        peer.node_id != self.node_id
+            && self.is_visitor()
+            && (self.peer_is_visitor(peer) || self.withheld_from_visitors(peer))
     }
 
     /// The live peers a `PeerRequest` from `from` is answered with. Visitors
@@ -4715,6 +4730,13 @@ impl Network {
     }
 
     pub(crate) async fn insert_admitted_peer(&self, mut peer: PeerInfo) {
+        if self.hides(&peer) {
+            debug!(
+                "peer {} not learned: hidden from this node's view",
+                short(&peer.node_id)
+            );
+            return;
+        }
         if peer.dialable_addr().is_none() {
             debug!(
                 "ignoring peer {} without a dialable UDP address",
@@ -6775,10 +6797,12 @@ mod tests {
         assert_eq!(to_worker, vec!["visitor-a", "visitor-b", "worker"]);
     }
 
-    /// Under `member_gateway_only` a visitor is listed only the entry nodes
-    /// the policy allows, and a node kept from visitors does not announce to them.
+    /// In the default shape (`payments::runtime::install` sets it, whatever the
+    /// network's `inference_access` says) a visitor is listed only the admin
+    /// entry nodes, a node kept from visitors does not announce to them, and
+    /// a visitor's own table holds nobody but the admins.
     #[tokio::test]
-    async fn visitors_learn_only_entry_nodes_under_member_gateway_only() {
+    async fn visitors_learn_only_admin_entry_nodes() {
         use crate::profile::NodeProfile;
         let as_role = |id: &str, profile: NodeProfile, entry: bool| {
             let mut peer = dummy_peer(id, "127.0.0.1:9");
@@ -6833,6 +6857,27 @@ mod tests {
         assert!(worker.self_withheld_from_visitors());
         worker.set_visitor_view(None);
         assert!(!worker.self_withheld_from_visitors());
+
+        // The same view on the visitor's side: its own table never holds a
+        // worker, and it does not admit one it hears.
+        let visitor = Network::testkit("visitor-c".into(), String::new(), vec![], None, None)
+            .await
+            .unwrap();
+        *visitor.profile.write().unwrap() = NodeProfile::Visitor;
+        visitor.set_visitor_view(Some(true));
+        assert!(!visitor.admit_peer(&as_role("worker", NodeProfile::Worker, true)).await);
+        assert!(visitor.admit_peer(&as_role("admin", NodeProfile::Admin, true)).await);
+        for peer in [
+            as_role("worker-plain", NodeProfile::Worker, false),
+            as_role("admin-b", NodeProfile::Admin, true),
+        ] {
+            visitor
+                .peers
+                .write()
+                .await
+                .insert(peer.node_id.clone(), peer);
+        }
+        assert_eq!(ids(visitor.alive_peers().await), vec!["admin-b"]);
     }
 
     /// A worker admitted as a validator announces it, beside delegation; a
@@ -6960,25 +7005,29 @@ mod tests {
         assert_eq!(learned.map(|peer| peer.anon_tunnel), Some(None));
     }
 
-    /// A visitor announces itself straight to the admins and workers it
-    /// knows and to the endpoints it dialed through pkarr, never to another
-    /// visitor or to itself.
+    /// A visitor announces itself straight to the admins it knows and to the
+/// endpoints it dialed through pkarr. Workers, other visitors and itself are
+/// none of those in the default view.
     #[tokio::test]
-    async fn a_visitor_announces_only_to_admins_and_workers() {
+    async fn a_visitor_announces_only_to_admins() {
         use crate::profile::NodeProfile;
         let endpoint = |seed: u8| crate::p2p::SecretKey::from_bytes(&[seed; 32]).public();
         let with = |id: &str, profile: NodeProfile, seed: u8| {
             let mut peer = dummy_peer(id, "127.0.0.1:9");
             peer.profile = profile;
             peer.endpoint_id = Some(endpoint(seed).to_string());
+            peer.inference_frame_capabilities
+                .push(crate::pipeline::CAP_GATEWAY_DELEGATE.into());
             peer
         };
         let visitor = Network::testkit("visitor-a".into(), String::new(), vec![], None, None)
             .await
             .unwrap();
         *visitor.profile.write().unwrap() = NodeProfile::Visitor;
+        visitor.set_visitor_view(Some(true));
         for peer in [
             with("worker", NodeProfile::Worker, 1),
+            with("admin-b", NodeProfile::Admin, 3),
             with("visitor-b", NodeProfile::Visitor, 2),
             with("visitor-a", NodeProfile::Visitor, 9),
         ] {
@@ -6998,7 +7047,7 @@ mod tests {
                 .map(|(id, _)| id)
                 .collect();
         targets.sort();
-        let mut expected = vec![endpoint(1), endpoint(4)];
+        let mut expected = vec![endpoint(3), endpoint(4)];
         expected.sort();
         assert_eq!(targets, expected);
         assert!(visitor.is_visitor());

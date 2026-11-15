@@ -339,7 +339,8 @@ guides.
    rebalance (delivered in B3).
 4. Confirmed: **full token removal with roster vouches** (phase C). The
    execution plan recorded here:
-   - **C1 - the vouch plumbing, purely additive, gates unchanged.** A
+   - **C1 - the vouch plumbing, purely additive, gates unchanged** (delivered
+  2026-11-15). A
      roster vouch is an admin's signed statement of one member's admitted
      role - `{net, sub, role, admitted_at, issued_at, iss, iss_key, sig}`,
      Ed25519, the same per-entry form as a `Revocation` ("whoever sends it
@@ -354,7 +355,7 @@ guides.
      removing an approved member already signs a revocation, so the ban cut
      covers removal and freshness is the defense in depth. A vouch is never
      signed for an admin of the chain.
-   - **C2 - flip the role checks.** `is_member_key`,
+   - **C2 - flip the role checks** (delivered 2026-11-15). `is_member_key`,
      `Network::peer_is_visitor`, `is_visitor`, the inference session gate,
      the metering consumer label, and the gateway gates on nodes that hold
      no roster read the vouch ledger first. The token stays issued,
@@ -365,6 +366,9 @@ guides.
      release):** new nodes stop announcing and issuing tokens; `membership`
      keeps reading old announces until the old version is retired on
      purpose, and shrinks to the revocation entries between admins.
+     Pending: a release decision, and it is entangled with open decision 5
+     below (retiring the announce is the moment the old versions' gates
+     stop being fed).
 5. Still open: whether `direct`/`member_gateway` stay configurable or are
    deprecated with a dated removal.
 

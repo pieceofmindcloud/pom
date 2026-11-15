@@ -48,7 +48,7 @@ Um modelo de imagem escolhido no seletor de modelo (marcado com um ícone de ima
 
 :::steps
 ### Escolher o modelo na tela
-O chip do modelo no topo do mapa escolhe qual implantação é desenhada. Adicionar, Desimplantar e o painel de propriedades seguem esse modelo.
+Arraste o fundo pontilhado para andar pelo mapa; a roda do mouse ou a pinça do trackpad dá zoom em volta do ponteiro, como no mapa do Deploy. O chip do modelo no topo do mapa escolhe qual implantação é desenhada. Adicionar, Desimplantar e o painel de propriedades seguem esse modelo.
 ### Adicionar uma máquina
 **Adicionar** coloca mais uma máquina na implantação; o diálogo lista o que a máquina escolhida já tem no disco. Quando a máquina tem um projetor de visão para o modelo, uma chave permite que ela leia imagens; ela já vem ligada quando a implantação já lê.
 ### Desimplantar

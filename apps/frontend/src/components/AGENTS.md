@@ -508,7 +508,12 @@ Per-file list:
   imports it); only `trackOf` (the repeating color palette, `TRACKS`) is still
   exported, reused by `PeerDetailCard`, `Dashboard` and `DeployModel`.
   Currently rendered hidden on Dashboard.
-- `ModelNetworkCanvas.tsx` - each machine card also shows the measured TPS of
+- `ModelNetworkCanvas.tsx` - pans and zooms like `DeployNetworkCanvas`: the map
+  scrolls in `dashboard-map-scroll`, dragging its background (`data-map-background`,
+  never a card or a button) scrolls it, and the wheel or trackpad pinch zooms around
+  the pointer, 40% to 160%, through a native non-passive wheel listener; the toolbars,
+  the legend and the properties button stay on the section, outside what scrolls.
+  Each machine card also shows the measured TPS of
   decode and of prefill (`machine-tps`, from the `peer_perf` of
   `/api/ui/chat/telemetry`) as badges (`speed-decode`/`speed-prefill`)
   colored by `rateSpeed` (`../lib/peerSpeed`): the ratio to the fastest slice of the same model

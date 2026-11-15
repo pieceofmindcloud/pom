@@ -327,6 +327,10 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
   </article>;
 }
 
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 1.6;
+const clampZoom = (zoom: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+
 export function ModelNetworkCanvas({
   cluster,
   rttMeasurements = [],
@@ -364,6 +368,12 @@ export function ModelNetworkCanvas({
   const model = onModelChange ? controlledModel : ownModel;
   const setModel = onModelChange ?? setOwnModel;
   const [zoom, setZoom] = useState(1);
+  // the zoom the wheel handler reads between renders
+  const zoomRef = useRef(1);
+  zoomRef.current = zoom;
+  // dragging the dotted background scrolls the map, like its scrollbars
+  const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const [panning, setPanning] = useState(false);
   const [positions, setPositions] = useState<Record<string, CanvasPosition>>({});
   const [dragging, setDragging] = useState<string | null>(null);
   const [cardModes, setCardModes] = useState<CardModes>(readCardModes);
@@ -388,6 +398,34 @@ export function ModelNetworkCanvas({
   const showClusterCoverage = profile === "admin";
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
+
+  // The wheel and the trackpad pinch (a wheel event with ctrlKey) zoom around
+  // the pointer, as on the Deploy map. A native listener, not React's: React's
+  // wheel handler is passive and cannot keep the page from scrolling.
+  useEffect(() => {
+    const element = canvas.current;
+    if (!element) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const bounds = element.getBoundingClientRect();
+      const pointerX = event.clientX - bounds.left;
+      const pointerY = event.clientY - bounds.top;
+      const previous = zoomRef.current;
+      // a pinch sends small deltas, a mouse wheel larger ones
+      const next = clampZoom(previous * Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.0015)));
+      if (next === previous) return;
+      const contentX = (element.scrollLeft + pointerX) / previous;
+      const contentY = (element.scrollTop + pointerY) / previous;
+      zoomRef.current = next;
+      setZoom(next);
+      requestAnimationFrame(() => {
+        element.scrollLeft = contentX * next - pointerX;
+        element.scrollTop = contentY * next - pointerY;
+      });
+    };
+    element.addEventListener("wheel", onWheel, { passive: false });
+    return () => element.removeEventListener("wheel", onWheel);
+  }, []);
   const modelIds = useMemo(() => canvasModelIds(cluster), [cluster]);
   const selected = selectedCanvasModel(cluster, model, modelIds);
   const ranges = selected ? (graph.byModel[selected] ?? []) : [];
@@ -552,7 +590,9 @@ export function ModelNetworkCanvas({
     setDragging(null);
   }
 
-  return <section ref={canvas} className="relative h-full min-h-0 w-full overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]" style={{ backgroundSize: "18px 18px" }}>
+  // The toolbars and the legend sit on the section, outside the area that
+  // scrolls, so they stay put while the map is panned or zoomed.
+  return <section className="relative h-full min-h-0 w-full overflow-hidden">
     <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 rounded-xl border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
       <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label={t("canvas.modelGroupAria")}>{modelIds.length ? modelIds.map((name) => <button key={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{name}</button>) : <span className="px-2 text-xs text-muted">{t("canvas.noModel")}</span>}{extraModels.map((extra) => <button key={extra.id} type="button" onClick={() => setModel(extra.id)} aria-pressed={false} className="flex h-8 shrink-0 items-center gap-1 rounded-md px-3 font-mono text-xs text-muted hover:bg-raised hover:text-fg"><ImageIcon className="h-3 w-3" aria-label={t("imageMap.badge")} />{extra.label}</button>)}</div>
       {/*
@@ -573,8 +613,8 @@ export function ModelNetworkCanvas({
       >
         {allCompact ? <Maximize2 className="h-4 w-4" /> : <Minimize2 className="h-4 w-4" />}
       </Button>}
-      <Button size="sm" aria-label={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(.65, value - .1))}><Minus className="h-4 w-4" /></Button>
-      <Button size="sm" aria-label={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + .1))}><Plus className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.zoomOut")} onClick={() => setZoom((value) => clampZoom(value - .1))}><Minus className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.zoomIn")} onClick={() => setZoom((value) => clampZoom(value + .1))}><Plus className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.fit")} onClick={fit}>Fit</Button>
       <Button size="sm" aria-label={t("canvas.autoLayout")} title={t("canvas.autoLayout")} onClick={organize}><LayoutGrid className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.resetLayout")} title={t("canvas.resetLayout")} onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
@@ -591,7 +631,38 @@ export function ModelNetworkCanvas({
         icon={propertiesOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
       />
     </div>}
-    {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">{t("canvas.noCapacity")}</div> : <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
+    <div
+      ref={canvas}
+      data-testid="dashboard-map-scroll"
+      className={clsx(
+        "absolute inset-0 overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]",
+        panning ? "cursor-grabbing select-none" : "cursor-grab",
+      )}
+      style={{ backgroundSize: "18px 18px" }}
+      onPointerDown={(event) => {
+        // only the background pans: a card, the gateway or a button keeps its own gesture
+        const target = event.target as HTMLElement;
+        if (event.button !== 0 || (target !== event.currentTarget && target.dataset.mapBackground === undefined)) return;
+        const element = event.currentTarget;
+        pan.current = { x: event.clientX, y: event.clientY, left: element.scrollLeft, top: element.scrollTop };
+        element.setPointerCapture?.(event.pointerId);
+        setPanning(true);
+      }}
+      onPointerMove={(event) => {
+        const start = pan.current;
+        if (!start) return;
+        event.currentTarget.scrollLeft = start.left - (event.clientX - start.x);
+        event.currentTarget.scrollTop = start.top - (event.clientY - start.y);
+      }}
+      onPointerUp={(event) => {
+        if (!pan.current) return;
+        pan.current = null;
+        setPanning(false);
+        if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      onPointerCancel={() => { pan.current = null; setPanning(false); }}
+    >
+    {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">{t("canvas.noCapacity")}</div> : <div data-map-background="" className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
         <defs><marker id="route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker><marker id="route-arrow-relay" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-relay" /></marker></defs>
         {forwardEdges.map((edge) => {
@@ -646,6 +717,7 @@ export function ModelNetworkCanvas({
       })}
       {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} routes={pipelineRoutes} nameOf={nameOf} dragging={dragging === GATEWAY_LAYOUT_ID} onPointerDown={(event) => beginDrag(GATEWAY_LAYOUT_ID, gatewayPosition, event)} onPointerMove={(event) => drag(GATEWAY_LAYOUT_ID, GATEWAY_SIZE, event)} onPointerUp={endDrag} />}
     </div>}
+    </div>
     {/* The same view the Details tab shows, in the same component. */}
     <PeerDetailDialog
       peer={detailed ? detailPeer : null}

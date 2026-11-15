@@ -1054,7 +1054,8 @@ base of image to image, for a workflow whose `inputs` list `image`; body at most
 [{hash, ext, kind, width?, height?}], "images": [{hash, ext, width, height}]}`
 (`images` repeats the pictures for older screens; an older plugin's line gives
 `images` only) or `{"error"}`; every output is stored on this node in
-`<workspace>/.comfyui/images/<sha256>.<ext>` (kind and extension from the bytes:
+`<workspace>/.imagestudio/images/<sha256>.<ext>` (`.comfyui/images`, where they
+were kept before the image plugin became Image Studio, is still read) (kind and extension from the bytes:
 png, jpg, webp, gif images, mp4, webm video, wav, mp3, flac, ogg audio; at most
 16 files and 32 MiB each, nothing written when one is refused) before the last
 line, and `GET .../:hash` serves any of them with its type. A workflow listed by another machine runs there through

@@ -1,6 +1,6 @@
 //! Images from the Chat: the ComfyUI workflows the network offers, running one
 //! on the machine that lists it, and keeping its images on the node that made
-//! the request, in `<workspace>/.comfyui/images/<sha256>.<ext>` (images,
+//! the request, in `<workspace>/.imagestudio/images/<sha256>.<ext>` (images,
 //! video and audio, kind by magic bytes), so they survive the serving machine
 //! going away.
 
@@ -146,8 +146,14 @@ pub(crate) async fn network_workflows(state: &GatewayState) -> Vec<Workflow> {
 
 // ── Keeping the images ──────────────────────────────────────────────────────
 
-/// `<root>/.comfyui/images`, the root being the node's workspace.
+/// `<root>/.imagestudio/images`, the root being the node's workspace.
 pub(crate) fn images_dir(root: &Path) -> PathBuf {
+    root.join(".imagestudio").join("images")
+}
+
+/// Where the images were kept before the image plugin became Image Studio
+/// (`<root>/.comfyui/images`): still read, so a conversation keeps them.
+pub(crate) fn legacy_images_dir(root: &Path) -> PathBuf {
     root.join(".comfyui").join("images")
 }
 
@@ -610,7 +616,11 @@ pub(crate) async fn image_route(
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     let root = state.auth.read().await.workspace_root_path();
-    match find_image(&images_dir(&root), &hash) {
+    let found = match find_image(&images_dir(&root), &hash) {
+        Ok(None) => find_image(&legacy_images_dir(&root), &hash),
+        other => other,
+    };
+    match found {
         Err(error) => (
             StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({ "error": error })),
@@ -749,7 +759,7 @@ mod tests {
 
     #[test]
     fn the_folder_is_under_dot_comfyui_images() {
-        assert_eq!(images_dir(Path::new("/w")), Path::new("/w/.comfyui/images"));
+        assert_eq!(images_dir(Path::new("/w")), Path::new("/w/.imagestudio/images"));
     }
 
     #[test]
@@ -828,7 +838,7 @@ mod tests {
             status: status.into(),
             node_id: "n".into(),
             hostname: "n".into(),
-            plugin_code: "comfyui".into(),
+            plugin_code: "imagestudio".into(),
             in_flight: None,
         };
         assert_eq!(

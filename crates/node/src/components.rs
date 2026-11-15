@@ -320,9 +320,9 @@ pub(crate) fn assignment_of(deploy_id: &str, name: &str, choice: &ComponentChoic
     })
 }
 
-/// The plugin that serves image components. One today; the service lists
-/// its own code, so another plugin could join later.
-pub(crate) const IMAGE_PLUGIN: &str = "comfyui";
+/// The plugin that serves image components (Image Studio). One today; the
+/// service lists its own code, so another plugin could join later.
+pub(crate) const IMAGE_PLUGIN: &str = "imagestudio";
 
 /// Deploy an image model from the form before the stages (one machine per
 /// component). The stage plan checks it; on a failure the machines already
@@ -1516,7 +1516,7 @@ mod tests {
             name: "Z-Image".into(),
             component: component.into(),
             paths: vec![path.into()],
-            plugin_code: "comfyui".into(),
+            plugin_code: "imagestudio".into(),
             options: Value::Null,
         }
     }
@@ -1886,7 +1886,7 @@ mod tests {
             status: "ready".into(),
             node_id: node_id.into(),
             hostname: format!("host-{node_id}"),
-            plugin_code: "comfyui".into(),
+            plugin_code: "imagestudio".into(),
             in_flight: None,
         }
     }
@@ -2324,12 +2324,12 @@ mod tests {
             name: "Z".into(),
             component: "vae".into(),
             paths: vec!["/m/ae.safetensors".into()],
-            plugin_code: "comfyui".into(),
+            plugin_code: "imagestudio".into(),
             options: Value::Null,
         }];
         assert_eq!(
             serving_plugin(&assignments, "img-1", "vae"),
-            Some("comfyui".to_owned())
+            Some("imagestudio".to_owned())
         );
         assert_eq!(serving_plugin(&assignments, "img-1", "diffusion"), None);
         assert_eq!(serving_plugin(&assignments, "img-2", "vae"), None);
@@ -2472,7 +2472,7 @@ mod tests {
     #[test]
     fn network_components_list_only_image_services() {
         let services = vec![
-            json!({"plugin_code": "comfyui", "id": "comfyui-image", "kind": "image",
+            json!({"plugin_code": "imagestudio", "id": "comfyui-image", "kind": "image",
                    "name": "ComfyUI", "status": "ready",
                    "components": [{"deploy_id": "img-1", "name": "Z-Image",
                                    "component": "vae", "files": ["ae.safetensors"],
@@ -2486,7 +2486,7 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].node_id, "node-a");
         assert_eq!(listed[0].hostname, "machine-a");
-        assert_eq!(listed[0].plugin_code, "comfyui");
+        assert_eq!(listed[0].plugin_code, "imagestudio");
         assert_eq!(listed[0].component, "vae");
         assert_eq!(listed[0].files, ["ae.safetensors"]);
     }

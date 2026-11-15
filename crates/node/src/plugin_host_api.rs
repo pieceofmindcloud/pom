@@ -369,7 +369,7 @@ pub(crate) async fn image_job_begin(
             state.audit.begin(crate::reqlog::AuditRequest {
                 id: audit_id.clone(),
                 received_at: chrono::Utc::now().to_rfc3339(),
-                route: "/comfyui/image".into(),
+                route: "/imagestudio/image".into(),
                 model: request.model,
                 caller,
                 entry_node_id: state.network.node_id.clone(),
@@ -381,7 +381,7 @@ pub(crate) async fn image_job_begin(
         Err(denial) => {
             crate::gateway::record_rejected(
                 &state,
-                "/comfyui/image",
+                "/imagestudio/image",
                 caller,
                 request.model,
                 request.prompt,

@@ -863,10 +863,10 @@ mod tests {
     fn the_tunnel_carries_the_plugin_calls() {
         assert!(gateway_path_is_allowed("/api/internal/plugins/services"));
         assert!(gateway_path_is_allowed(
-            "/api/internal/plugins/comfyui/component/img-1a2b/vae/decode"
+            "/api/internal/plugins/imagestudio/component/img-1a2b/vae/decode"
         ));
         assert!(!gateway_path_is_allowed(
-            "/api/internal/plugins/comfyui/component/img-1/vae/../x"
+            "/api/internal/plugins/imagestudio/component/img-1/vae/../x"
         ));
         assert!(gateway_path_is_allowed("/api/ui/components/apply"));
         assert!(gateway_path_is_allowed("/api/ui/components/release"));

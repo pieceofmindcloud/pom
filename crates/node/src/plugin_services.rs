@@ -746,7 +746,7 @@ mod tests {
              ]},
             {"id": "comfyui", "kind": "app", "name": "ComfyUI", "status": "ready"}
         ]});
-        let services = parse_services("comfyui", &answer);
+        let services = parse_services("imagestudio", &answer);
         assert_eq!(services[0].components.len(), 2);
         assert_eq!(services[0].components[0].component, "vae");
         assert_eq!(services[0].components[1].status, "loading");
@@ -938,7 +938,7 @@ mod tests {
              "workflows": [{"id": "pub:typed", "name": "Typed", "description": "Paints a picture",
                             "inputs": ["prompt", "steps"], "params": params}]}
         ]});
-        let workflow = &parse_services("comfyui", &answer)[0].workflows[0];
+        let workflow = &parse_services("imagestudio", &answer)[0].workflows[0];
         assert_eq!(workflow.description.as_deref(), Some("Paints a picture"));
         assert_eq!(workflow.params.len(), MAX_PARAMS, "at most 24 parameters");
         let keys: Vec<_> = workflow.params.iter().map(|p| p.key.as_str()).collect();
@@ -962,7 +962,7 @@ mod tests {
             {"id": "comfyui-image", "kind": "image", "name": "ComfyUI", "status": "ready",
              "workflows": [{"id": "pub:old", "name": "Old", "inputs": ["prompt"]}]}
         ]});
-        let workflow = &parse_services("comfyui", &older)[0].workflows[0];
+        let workflow = &parse_services("imagestudio", &older)[0].workflows[0];
         assert!(workflow.params.is_empty() && workflow.description.is_none());
     }
 }

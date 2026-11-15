@@ -52,8 +52,9 @@ a signed peer call: a visitor always, whatever the network's
 node. Entry nodes are the admins the trust chain proves that announce
 `gateway/delegate-v1`, nearest by measured RTT; with none in sight the caller
 gets `503 no_entry_node`, it does not plan for itself (except a worker under
-the escape hatch). The entry node accepts only a signed caller the roster or a
-membership token attests - a visitor or a worker; an admin caller is refused
+the escape hatch). The entry node accepts only a signed caller the roster,
+its vouch (`AdminTrust::vouched_role`), or - the legacy form - a membership
+token attests - a visitor or a worker; an admin caller is refused
 `409 plan_locally` - runs the request through its own router marked
 `Delegated`, and streams the answer back. The caller's identity in the audit
 is `visitor:<node>` or `member:<node>`; the fee of a charging network falls on

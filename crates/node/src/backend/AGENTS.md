@@ -534,8 +534,11 @@ boundary.
   merges a caller's vouches and answers with its own, and
   `spawn_vouch_keeper` re-signs an admin's vouches every tick (the renewal
   is what lets a dropped member age out) and trades lists with one admin
-  per tick. The gates still decide roles with the token; reading the vouch
-  ledger is the next step of that spec.
+  per tick. Since phase C the role gates read that ledger where the local
+  roster cannot name the member - `peer_role_is_attested`,
+  `gateway::peer_is_visitor`, `Network::is_member_key`, `roles_of` - and the
+  token stays accepted as the legacy form until the old versions retire with
+  it (spec 10.1, C3).
 - `webui/gpu_metrics.rs` - the GPU energy and temperature feed of the logs
   plugin's Metrics screen: `spawn_gpu_metrics_sampler` (started with the
   gateway companions) runs once a minute and, only on a node that may see the
@@ -664,9 +667,10 @@ boundary.
   it works with the principal offline. The chain names admins only: a
   worker's or visitor's role is decided by the admission roster when it names
   the member - the principal's own list, or its mirror on a secondary
-  (`webui/membership.rs` below) - and by the membership token otherwise
-  (`peer_role_is_attested`); a non-admin caller of a `ServingMember` route
-  needs one or the other (`caller_may_ask`). `chain_status` feeds
+  (`webui/membership.rs` below) - by the roster vouch when it reaches this
+  node (`AdminTrust::vouched_role`), and by the membership token as the
+  legacy form (`peer_role_is_attested`); a non-admin caller of a
+  `ServingMember` route needs one of the three (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
 - Image models live outside this folder, in `crates/node/src/`:
   `components.rs` (a node serves components, `POST /api/ui/components/apply|release`;

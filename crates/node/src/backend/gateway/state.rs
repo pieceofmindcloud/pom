@@ -935,9 +935,10 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
 
 /// Whether `peer` is a visitor. The role is granted at admission and an
 /// announce is only what a node says about itself, so a machine admitted as
-/// one stays one whatever it announces: on every node its membership token
-/// says so (`crate::membership`), and on the admins their admission list
-/// as well. Everywhere, a node that announces itself as a visitor is one.
+/// one stays one whatever it announces: on the admins the admission list
+/// decides, on every node the roster vouch that reached it
+/// (`AdminTrust::vouched_role`), then the membership token, and only with
+/// none of these does the announce itself decide.
 impl GatewayState {
     /// Whether this node runs as a visitor (`crate::profile::NodeProfile`).
     pub(crate) fn local_profile_is_visitor(&self) -> bool {
@@ -973,7 +974,16 @@ pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
     {
         return role == EnrollmentRole::Visitor;
     }
-    // With no roster entry the legacy sources decide, as before: the token
+    // Then the roster's word carried to this node: the vouch ledger decides
+    // on a node that holds no roster entry of its own (phase C of the
+    // admin-hub routing).
+    if let Some(role) = state
+        .admin_trust
+        .vouched_role(&peer.node_id, chrono::Utc::now().timestamp())
+    {
+        return role == EnrollmentRole::Visitor;
+    }
+    // With neither the legacy sources decide, as before: the token
     // the peer announces, checked against the chain and the revocations, and
     // last its announce - a member admitted before the lists existed, or one
     // this node only knows by its announce.
@@ -1038,16 +1048,18 @@ pub(crate) async fn caller_may_ask(
 }
 
 /// Whether an admin vouched that `peer` was admitted as a worker, rather
-/// than taking the peer's word for it. Since phase B of the admin-hub
-/// routing the **roster** decides when it names the member: an approval on
-/// the admission list - the principal's own, or its mirror on a secondary
-/// (`spawn_roster_keeper`, persisted since B1) - newer than the node's last
-/// ban. The membership token stays what a member the roster cannot name is
-/// judged by: a member admitted before the lists existed, a legacy network
-/// open to anyone with the anchor, and every member seen by a node that
-/// holds no roster at all. Phase C replaces that fallback with roster
-/// vouches; until then the token is the legacy form, checked against the
-/// chain alone.
+/// than taking the peer's word for it. Since phase B the **roster** decides
+/// when it names the member: an approval on the admission list - the
+/// principal's own, or its mirror on a secondary (`spawn_roster_keeper`,
+/// persisted since B1) - newer than the node's last ban. Since phase C what
+/// the local roster cannot name is decided by the roster's word carried to
+/// this node: a **vouch** - an admin's signature of the roster entry, kept
+/// fresh for every member by `spawn_vouch_keeper` and persisted beside the
+/// chain (`AdminTrust::vouched_role`). The membership token stays accepted
+/// as the legacy form - a member admitted before the lists or vouches
+/// existed, a legacy network open to anyone with the anchor, a member whose
+/// vouch has not arrived yet - checked against the chain alone, until the
+/// old versions retire with it.
 pub(crate) async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
     state
@@ -1056,6 +1068,10 @@ pub(crate) async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo)
             &peer.node_id,
             state.admin_trust.revoked_node_at(&peer.node_id),
         ) == Some(EnrollmentRole::Worker)
+        || state
+            .admin_trust
+            .vouched_role(&peer.node_id, chrono::Utc::now().timestamp())
+            == Some(EnrollmentRole::Worker)
         || crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Worker)
         || state.auth.read().await.network.open_admission()
 }

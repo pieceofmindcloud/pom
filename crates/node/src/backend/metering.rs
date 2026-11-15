@@ -817,7 +817,12 @@ async fn roles_of(state: &GatewayState, ids: &[String]) -> HashMap<String, &'sta
             } else if let Some(peer) = peers.iter().find(|p| p.node_id == *id) {
                 if crate::gateway::peer_is_visitor(state, peer) {
                     "visitor"
-                } else if crate::membership::peer_role(peer, &state.admin_trust).is_some() {
+                } else if crate::membership::peer_role(peer, &state.admin_trust).is_some()
+                    || state
+                        .admin_trust
+                        .vouched_role(id, chrono::Utc::now().timestamp())
+                        .is_some()
+                {
                     "worker"
                 } else {
                     "unknown"

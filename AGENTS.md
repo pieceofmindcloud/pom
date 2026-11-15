@@ -235,10 +235,13 @@ breaks the whole product.
   of the trust chain, routes of a serving node take a worker, and the
   connection key alone opens none of them - every member holds it. A machine's
   own operator routes (API keys, plugins, its name, networks, logs) are reached
-  by no other node at all. **The trust chain names the admins only**: a worker
-  or a visitor carries a short lived membership token an admin signed
-  (`src/membership.rs`), which every node checks against the chain alone, so
-  admitting a member changes no trust document. **A secondary admin deploys
+  by no other node at all. **The trust chain names the admins only**: a worker's
+  or a visitor's role travels in the roster - the admission list the admins
+  hold, and its entries signed as vouches that reach every node
+  (`AdminTrust::vouched_role`) - or, as the legacy form, a short lived
+  membership token an admin signed (`src/membership.rs`); every one of them is
+  checked against the chain alone, so admitting a member changes no trust
+  document. **A secondary admin deploys
   models, decides admissions and removes workers and visitors, and nothing
   else**: settings, keys, admins and every change to the trust chain come from
   the principal, on the screen and between nodes. The role is granted at

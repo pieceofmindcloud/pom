@@ -1,8 +1,13 @@
 # Security model
 
 The nodes themselves enforce every role, between nodes as well as on the
-screen. The trust chain names the admins only, and every other machine proves
-its role with a short-lived membership token signed by an admin. This guide is
+screen. The trust chain names the admins only. Every other machine proves its
+role through the roster: the admission list the admins hold, and the roster
+entries those admins sign as **vouches** - each one an admin's signature of a
+member's admitted role, carried to every node by the vouch keepers and kept
+fresh beside the chain (`AdminTrust::vouched_role`). A short-lived membership
+token remains accepted as the legacy form - the shape of the role before the
+vouches existed - until the old versions retire with it. This guide is
 the overview; `http-api.md` has the full route reference and `p2p-network.md`
 the transport.
 
@@ -172,7 +177,10 @@ principal is away.
   server and as client. There is no switch to turn it off.
 - **The connection key alone opens nothing.** A call authenticated by the key is
   accepted only when the transport proves the caller is a current member: an
-  admin of the chain, or a node holding a valid, unrevoked membership token.
+  admin of the chain, a member the roster vouches (`AdminTrust::vouched_role`,
+  phase C of the admin-hub routing), or a node holding a valid, unrevoked
+  membership token - the legacy form, kept until the old versions retire with
+  it.
 - **The iroh endpoint** authenticates the endpoint id, which is the node key,
   on every connection; the receiving side hands that identity to the request
   the same way. Announces over gossip are signed by the node key and dropped
@@ -194,7 +202,7 @@ session gate; another node goes through `caller_may_ask` (`gateway/state.rs`).
 | --- | --- | --- | --- |
 | PrincipalOnly | Principal | Signed by the principal | `signature_required`, `principal_required` |
 | AnyAdmin | Any admin | Signed by any admin in the chain | `admin_required` |
-| ServingMember | Admin or worker | Signed by an admin, or by a peer the roster names a worker (the membership token decides members no roster names) | `visitor_caller`, `role_unattested`, `unknown_caller` |
+| ServingMember | Admin or worker | Signed by an admin, or by a peer the roster names a worker or vouches as one (the token decides members neither names) | `visitor_caller`, `role_unattested`, `unknown_caller` |
 | AnyMember | Every profile | Every member (inference, leaving) | - |
 | LocalOnly | Every profile | Never | `local_operator_only` |
 | HandlerAuth | The handler checks | The handler checks (sync protocols) | - |

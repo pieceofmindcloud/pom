@@ -3120,19 +3120,33 @@ impl Network {
             .ok()
             .and_then(|check| check.clone())
             .is_some_and(|check| check(&peer.node_id, revoked_at));
-        !readmitted && crate::membership::peer_role(peer, &admission.trust).is_none()
+        !readmitted
+            && admission
+                .trust
+                .vouched_role(&peer.node_id, chrono::Utc::now().timestamp())
+                .is_none()
+            && crate::membership::peer_role(peer, &admission.trust).is_none()
     }
 
-    /// Whether `peer` is a visitor: its token, checked against the chain,
-    /// says so, or it announces itself as one. A token outranks the
-    /// announce, as everywhere: the role is granted at admission.
+    /// Whether `peer` is a visitor: the roster vouch decides when this node
+    /// holds one for it (phase C of the admin-hub routing); with no vouch,
+    /// its token, checked against the chain; and with no token, that it
+    /// announces itself as one. The role is granted at admission, as
+    /// everywhere.
     pub(crate) fn peer_is_visitor(&self, peer: &PeerInfo) -> bool {
         use crate::config::EnrollmentRole;
         match self.admission.as_ref() {
-            Some(admission) => match crate::membership::peer_role(peer, &admission.trust) {
-                Some(role) => role == EnrollmentRole::Visitor,
-                None => peer.profile == crate::profile::NodeProfile::Visitor,
-            },
+            Some(admission) => {
+                if let Some(role) =
+                    admission.trust.vouched_role(&peer.node_id, chrono::Utc::now().timestamp())
+                {
+                    return role == EnrollmentRole::Visitor;
+                }
+                match crate::membership::peer_role(peer, &admission.trust) {
+                    Some(role) => role == EnrollmentRole::Visitor,
+                    None => peer.profile == crate::profile::NodeProfile::Visitor,
+                }
+            }
             None => peer.profile == crate::profile::NodeProfile::Visitor,
         }
     }
@@ -3150,7 +3164,8 @@ impl Network {
         }
     }
 
-    /// Whether this node is a visitor: its profile, or its own token.
+    /// Whether this node is a visitor: its profile, its roster vouch, or its
+    /// own token.
     pub(crate) fn is_visitor(&self) -> bool {
         if self
             .profile
@@ -3162,6 +3177,13 @@ impl Network {
         let Some(admission) = self.admission.as_ref() else {
             return false;
         };
+        if admission
+            .trust
+            .vouched_role(&self.node_id, chrono::Utc::now().timestamp())
+            == Some(crate::config::EnrollmentRole::Visitor)
+        {
+            return true;
+        }
         crate::membership::member_role(
             &admission.trust,
             self.membership().as_deref(),
@@ -3275,9 +3297,11 @@ impl Network {
     }
 
     /// Whether the node with `pubkey` is a member of this network now: an
-    /// admin of the chain, or a peer whose announced membership token holds
-    /// against the chain and its revocations. A node without admission (a
-    /// test bench) does not judge, and answers yes.
+    /// admin of the chain, a peer the roster vouches (phase C of the
+    /// admin-hub routing), or a peer whose announced membership token holds
+    /// against the chain and its revocations - the legacy form, kept until
+    /// the old versions retire with it. A node without admission (a test
+    /// bench) does not judge, and answers yes.
     pub(crate) async fn is_member_key(&self, node_id: &str, pubkey: &str) -> bool {
         let Some(admission) = self.admission.as_ref() else {
             return true;
@@ -3292,8 +3316,13 @@ impl Network {
         if crate::admin_trust::is_admin_key(&admission.trust.document(), node_id, pubkey) {
             return true;
         }
+        let vouched = admission
+            .trust
+            .vouched_role(node_id, chrono::Utc::now().timestamp())
+            .is_some();
         self.peers.read().await.get(node_id).is_some_and(|peer| {
-            peer.pubkey == pubkey && crate::membership::peer_role(peer, &admission.trust).is_some()
+            peer.pubkey == pubkey
+                && (vouched || crate::membership::peer_role(peer, &admission.trust).is_some())
         })
     }
 
@@ -7990,6 +8019,152 @@ mod tests {
                 .unwrap();
         trust.merge_revocations(vec![ban]);
         assert!(!net.is_member_key("worker", "worker-key").await);
+    }
+
+    /// Phase C of the admin-hub routing: the roster vouch makes a member a
+    /// member with no token in its announce, binds to the announced key as
+    /// a token does, and a ban cuts it - a re-admission after the ban vouches
+    /// again and membership returns.
+    #[tokio::test]
+    async fn a_vouched_member_is_a_member_without_a_token() {
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "primary",
+            crate::identity::trust_peer_id(primary_key.verifying_key().as_bytes()),
+            &primary_key,
+        );
+        let trust = Arc::new(
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "test-cluster",
+                primary.clone(),
+                &primary_key,
+            )
+            .unwrap(),
+        );
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None)
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config("key", crate::config::NetworkVisibility::Private),
+                trust.clone(),
+            );
+
+        let now = chrono::Utc::now().timestamp();
+        let vouch = crate::membership::sign_vouch(
+            &primary_key,
+            &primary,
+            &trust.document(),
+            "worker",
+            crate::config::EnrollmentRole::Worker,
+            now - 5,
+            now,
+        )
+        .unwrap();
+        trust.merge_vouches(vec![vouch]);
+        let mut worker = dummy_peer("worker", "127.0.0.1:9");
+        worker.pubkey = "worker-key".into();
+        let mut stranger = dummy_peer("stranger", "127.0.0.1:10");
+        stranger.pubkey = "stranger-key".into();
+        {
+            let mut peers = net.peers.write().await;
+            peers.insert("worker".into(), worker);
+            peers.insert("stranger".into(), stranger);
+        }
+        assert!(
+            net.is_member_key("worker", "worker-key").await,
+            "the vouch names it a member; it holds no token"
+        );
+        assert!(!net.is_member_key("worker", "another-key").await);
+        assert!(!net.is_member_key("stranger", "stranger-key").await);
+
+        let ban = crate::membership::revoke(
+            &primary_key,
+            &primary,
+            &trust.document(),
+            "worker",
+            now + 1,
+        )
+        .unwrap();
+        trust.merge_revocations(vec![ban]);
+        assert!(
+            !net.is_member_key("worker", "worker-key").await,
+            "the ban cuts the approval the vouch repeats"
+        );
+        let re_admitted = crate::membership::sign_vouch(
+            &primary_key,
+            &primary,
+            &trust.document(),
+            "worker",
+            crate::config::EnrollmentRole::Worker,
+            now + 2,
+            now + 2,
+        )
+        .unwrap();
+        trust.merge_vouches(vec![re_admitted]);
+        assert!(net.is_member_key("worker", "worker-key").await);
+    }
+
+    /// The vouch outranks the announce in the peers view: a visitor the roster
+    /// vouches stays one announcing a worker's profile, and a vouched worker
+    /// is not made a visitor by announcing one.
+    #[tokio::test]
+    async fn the_vouch_outranks_the_announce_in_the_peers_view() {
+        use crate::config::EnrollmentRole;
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "primary",
+            crate::identity::trust_peer_id(primary_key.verifying_key().as_bytes()),
+            &primary_key,
+        );
+        let trust = Arc::new(
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "test-cluster",
+                primary.clone(),
+                &primary_key,
+            )
+            .unwrap(),
+        );
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None)
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config("key", crate::config::NetworkVisibility::Private),
+                trust.clone(),
+            );
+        let now = chrono::Utc::now().timestamp();
+        for (role, announced, expected, admitted_at) in [
+            (
+                EnrollmentRole::Visitor,
+                crate::profile::NodeProfile::Worker,
+                true,
+                now - 5,
+            ),
+            (
+                EnrollmentRole::Worker,
+                crate::profile::NodeProfile::Visitor,
+                false,
+                now - 4,
+            ),
+        ] {
+            let vouch = crate::membership::sign_vouch(
+                &primary_key,
+                &primary,
+                &trust.document(),
+                "member",
+                role,
+                admitted_at,
+                now,
+            )
+            .unwrap();
+            trust.merge_vouches(vec![vouch]);
+            let mut member = dummy_peer("member", "127.0.0.1:9");
+            member.profile = announced;
+            assert_eq!(
+                net.peer_is_visitor(&member),
+                expected,
+                "the roster's word decides, {role:?} over the announce {announced:?}"
+            );
+        }
     }
 
     /// A banned node approved again holds no token yet, and fetches its

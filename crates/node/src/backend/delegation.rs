@@ -763,6 +763,39 @@ mod tests {
         assert_eq!(body["error"]["code"], "not_ready");
     }
 
+    /// Phase C of the admin-hub routing: the entry node attests a delegation
+    /// caller its own admission list has never seen - the vouch the keepers
+    /// carried is enough, with no token and no local record. Acceptance past
+    /// the role gate is again proved by `not_ready`.
+    #[tokio::test]
+    async fn a_vouched_worker_delegates_without_local_admission() {
+        let worker = key(47);
+        let mut peer = testkit::peer(&id_of(&worker), "worker", 9);
+        peer.profile = crate::profile::NodeProfile::Worker;
+        let state = testkit::state_with("entry", vec![peer]).await;
+        let now = chrono::Utc::now().timestamp();
+        let vouch = crate::membership::sign_vouch(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            &id_of(&worker),
+            crate::config::EnrollmentRole::Worker,
+            now - 5,
+            now,
+        )
+        .unwrap();
+        state.admin_trust.merge_vouches(vec![vouch]);
+        state
+            .database
+            .save_network_settings(&crate::config::NetworkSettings::default())
+            .unwrap();
+        let (status, body) =
+            code_of(delegate_route(signed(&worker), State(state), Json(ask("m", None))).await)
+                .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"]["code"], "not_ready");
+    }
+
     /// An admin never delegates in either direction of the hub: a call
     /// signed by the chain's own admin is refused `plan_locally` - an admin
     /// is itself an entry node.

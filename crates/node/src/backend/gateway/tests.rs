@@ -680,6 +680,71 @@ mod tests {
         );
     }
 
+    /// Phase C of the admin-hub routing: on a node that holds no roster - a
+    /// plain worker judging its own callers - the vouches the keepers carried
+    /// decide. A vouched worker announcing a visitor's profile passes; a
+    /// vouched visitor announcing a worker's is refused; an announce with no
+    /// vouch behind it still decides a visitor, the legacy form kept for old
+    /// members.
+    #[tokio::test]
+    async fn the_vouch_decides_the_role_where_no_roster_lives() {
+        use crate::webui::RouteScope::ServingMember;
+        let principal = testkit::state_with("principal", vec![]).await;
+        let mut vouched_worker = testkit::peer("vworker", "vworker", 8092);
+        vouched_worker.profile = crate::profile::NodeProfile::Visitor;
+        let mut vouched_visitor = testkit::peer("vvisitor", "vvisitor", 8093);
+        vouched_visitor.profile = crate::profile::NodeProfile::Worker;
+        let mut legacy = testkit::peer("legacy", "legacy", 8094);
+        legacy.profile = crate::profile::NodeProfile::Visitor;
+        let member = testkit::state_with(
+            "member",
+            vec![vouched_worker, vouched_visitor, legacy],
+        )
+        .await;
+        let mut member = member;
+        member.admin_trust = Arc::new(
+            crate::admin_trust::AdminTrust::in_memory(principal.admin_trust.document()).unwrap(),
+        );
+        let now = chrono::Utc::now().timestamp();
+        let document = principal.admin_trust.document();
+        for (node_id, role) in [
+            ("vworker", crate::config::EnrollmentRole::Worker),
+            ("vvisitor", crate::config::EnrollmentRole::Visitor),
+        ] {
+            let vouch = crate::membership::sign_vouch(
+                &principal.authority_signing_key,
+                &principal.authority_principal,
+                &document,
+                node_id,
+                role,
+                now - 5,
+                now,
+            )
+            .unwrap();
+            member.admin_trust.merge_vouches(vec![vouch]);
+        }
+        let principal_of = |node_id: &str| crate::admin_trust::AuthorityPrincipal {
+            node_id: node_id.into(),
+            peer_id: String::new(),
+            pubkey: format!("pubkey-of-{node_id}"),
+        };
+        assert_eq!(
+            caller_may_ask(&member, ServingMember, Some(&principal_of("vworker"))).await,
+            Ok(()),
+            "the roster's word vouches it a worker; the visitor announce is not its role"
+        );
+        assert_eq!(
+            caller_may_ask(&member, ServingMember, Some(&principal_of("vvisitor"))).await,
+            Err("visitor_caller"),
+            "the roster's word is a visitor's; the worker announce does not lift it"
+        );
+        assert_eq!(
+            caller_may_ask(&member, ServingMember, Some(&principal_of("legacy"))).await,
+            Err("visitor_caller"),
+            "with no roster and no vouch the announce still decides, as before"
+        );
+    }
+
     fn router_with_surface_gate(state: &GatewayState, paths: &[&'static str]) -> Router {
         let mut app = Router::new();
         for path in paths {

@@ -561,7 +561,11 @@ Deploy screen), `deploy_block` checks each machine with
 (`plugin_cuts_range` in `webui/jobs_apply.rs`) and `engine.load` carries
 `range: {start_layer, end_layer}` whenever a stage's file is the whole model
 (`load_params`). Strata publishes `["qwen4exp"]` on its `pom-whole-range`
-branch. A service whose engine takes a
+branch. A service that runs slices and names no `stage_ranges` (Avalon) also
+takes a whole model split in ranges (`plugin_engine::serves_whole_ranges`,
+`serviceCutsRanges`): the apply cuts each machine's range from its own whole
+file, a header-only virtual slice when the node opts in, a real slice
+otherwise, and the engine loads that slice. A service whose engine takes a
 drafter file from the deployment names the model architectures in
 `draft_architectures`: the Deploy screen then offers the compatible files
 (`serviceTakesDraft`), the plan resolves the choice on the stage with the last

@@ -104,9 +104,13 @@ export function serviceRunsSlices(service: InferenceServiceEntry, architecture: 
   return service.stageArchitectures.length === 0 || (architecture != null && service.stageArchitectures.includes(architecture));
 }
 
-/** Whether the service can serve ranges of a whole model of `architecture`, each machine from its own whole file. */
+/** Whether the service can serve ranges of a whole model of `architecture`, each machine from its own whole file:
+ *  it cuts them itself (`stage_ranges`), or it names no `stage_ranges` and runs the architecture as slices, which the
+ *  node cuts at apply time (`plugin_engine::serves_whole_ranges`). */
 export function serviceCutsRanges(service: InferenceServiceEntry, architecture: string | null): boolean {
-  return service.stages && architecture != null && service.stageRanges.includes(architecture);
+  if (!service.stages || architecture == null) return false;
+  if (service.stageRanges.length > 0) return service.stageRanges.includes(architecture);
+  return serviceRunsSlices(service, architecture);
 }
 
 /** Whether the deploy screen offers a drafter file for a model of `architecture` on the service. Another

@@ -592,7 +592,7 @@ pub(super) async fn add_node_endpoint(
                 })
                 .is_some_and(|entry| {
                     if whole_range {
-                        crate::plugin_engine::runs_ranges(&entry, architecture.as_deref())
+                        crate::plugin_engine::serves_whole_ranges(&entry, architecture.as_deref())
                     } else {
                         crate::plugin_engine::runs_slices(&entry, architecture.as_deref())
                     }

@@ -78,4 +78,12 @@ describe("inferenceServicesOf", () => {
     expect(serviceCutsRanges(strata, "qwen35moe")).toBe(false);
     expect(serviceCutsRanges(strata, null)).toBe(false);
   });
+
+  it("serves ranges the node cuts for a service that runs slices and names no stage_ranges", () => {
+    const [avalon] = inferenceServicesOf([peer("a", [{ plugin_code: "avalon", name: "Avalon", kind: "inference", status: "ready",
+      stages: true, architectures: ["qwen4exp"], stage_architectures: ["qwen4exp"] }])]);
+    expect(serviceCutsRanges(avalon, "qwen4exp")).toBe(true);
+    expect(serviceCutsRanges(avalon, "deepseek4")).toBe(false);
+    expect(serviceCutsRanges(avalon, null)).toBe(false);
+  });
 });

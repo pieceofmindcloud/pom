@@ -1938,7 +1938,7 @@ pub(crate) async fn deploy_block(
                 ))
             }
             // ranges of the whole model, one stage per machine, each cut from that machine's own whole file
-            Some(entry) if ranges && !runs_ranges(entry, architecture) => {
+            Some(entry) if ranges && !serves_whole_ranges(entry, architecture) => {
                 return Some(format!(
                     "the inference service {service} of machine {target} cannot serve a range of {} from the whole \
                      model",
@@ -1973,6 +1973,20 @@ pub(crate) fn runs_ranges(entry: &Value, architecture: Option<&str>) -> bool {
                     .any(|candidate| candidate.as_str() == Some(architecture))
             })
         })
+}
+
+/// Whether a machine's inference service can serve a range of the whole model of `architecture`, one stage per
+/// machine: it cuts the range itself ([`runs_ranges`]), or it names no `stage_ranges` and runs that architecture as
+/// slices ([`runs_slices`]), and the node cuts the range from the machine's whole file at apply time (a virtual slice
+/// when the node opts in, a real one otherwise). A service that names `stage_ranges` serves ranges of those only.
+pub(crate) fn serves_whole_ranges(entry: &Value, architecture: Option<&str>) -> bool {
+    if runs_ranges(entry, architecture) {
+        return true;
+    }
+    let names_ranges = entry["stage_ranges"]
+        .as_array()
+        .is_some_and(|list| !list.is_empty());
+    !names_ranges && architecture.is_some() && runs_slices(entry, architecture)
 }
 
 pub(crate) fn runs_slices(entry: &Value, architecture: Option<&str>) -> bool {
@@ -2572,6 +2586,19 @@ mod tests {
         (cfg.start_layer, cfg.end_layer) = (0, 3);
         assert!(load_params(&cfg, &[0], &[], None).get("range").is_none());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_service_that_runs_slices_serves_ranges_the_node_cuts() {
+        let avalon = json!({"stages": true, "stage_architectures": ["qwen4exp"]});
+        assert!(serves_whole_ranges(&avalon, Some("qwen4exp")));
+        assert!(!runs_ranges(&avalon, Some("qwen4exp")), "the node cuts the slice");
+        assert!(!serves_whole_ranges(&avalon, Some("deepseek4")));
+        assert!(!serves_whole_ranges(&avalon, None));
+        let strata = json!({"stages": true, "stage_ranges": ["qwen4exp"]});
+        assert!(serves_whole_ranges(&strata, Some("qwen4exp")));
+        assert!(!serves_whole_ranges(&strata, Some("qwen35moe")));
+        assert!(!serves_whole_ranges(&json!({"stages": false}), Some("qwen4exp")));
     }
 
     #[test]

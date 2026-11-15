@@ -981,8 +981,14 @@ fn generated_text_event(event: &Value) -> Option<GenEvent> {
         .map(|text| GenEvent::Reasoning(text.to_owned()))
 }
 
+/// How long a turn the head said is waiting for a batch slot (`{"queued": ...}`) may wait there, with no token yet,
+/// before the gateway moves it to a clearly less busy machine of the same model.
+const QUEUE_MOVE_AFTER: Duration = Duration::from_secs(3);
+/// How often a queued turn looks again for a machine to move to, when none was free.
+const QUEUE_MOVE_RECHECK: Duration = Duration::from_secs(2);
+
 /// Runs one generation on the plugin engine of `node_id` and reports it as
-/// the pipeline does.
+/// the pipeline does. A turn the head queues may move once to a less busy machine (`generate_on`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn generate(
     state: &GatewayState,
@@ -994,6 +1000,93 @@ pub(crate) async fn generate(
     tx: &mpsc::Sender<GenEvent>,
     cancellation: &crate::prefill::Cancellation,
     request_started: Instant,
+) {
+    generate_on(
+        state,
+        plan,
+        code,
+        model,
+        trace_id,
+        request,
+        tx,
+        cancellation,
+        request_started,
+        true,
+    )
+    .await
+}
+
+/// The machine a turn waiting in its head's queue moves to: one that serves the whole model with the same plugin and
+/// is clearly less busy than the head, so the turn runs there now instead of after the head's queue. The least busy
+/// wins, then the fastest at decoding. `None` keeps the turn where it is.
+async fn queue_move_target(
+    state: &GatewayState,
+    code: &str,
+    model: &str,
+    head: &str,
+) -> Option<crate::network::PeerInfo> {
+    let peers = state.all_peers().await;
+    let perf = state.admission_health.perf_snapshot();
+    let mut load_of = std::collections::HashMap::new();
+    for peer in &peers {
+        let live = state.loads.load(&peer.node_id).await;
+        let reported = perf
+            .get(&peer.node_id)
+            .map(|p| p.active_generations)
+            .unwrap_or(0);
+        load_of.insert(peer.node_id.clone(), live.max(reported));
+    }
+    // the head's load counts this turn
+    let head_load = load_of.get(head).copied().unwrap_or(0);
+    let candidates: Vec<crate::network::PeerInfo> = peers
+        .into_iter()
+        .filter(|peer| {
+            peer.node_id != head
+                && peer.model == model
+                && peer.total_layers > 0
+                && peer.start_layer == 0
+                && peer.end_layer + 1 == peer.total_layers
+                && engine_of_peer(peer).as_deref() == Some(code)
+        })
+        .collect();
+    let scored: Vec<(u32, f64)> = candidates
+        .iter()
+        .map(|peer| {
+            let load = load_of.get(&peer.node_id).copied().unwrap_or(0);
+            let speed = perf
+                .get(&peer.node_id)
+                .and_then(|p| p.decode_ms_per_step)
+                .unwrap_or(f64::INFINITY);
+            (load, speed)
+        })
+        .collect();
+    pick_queue_move(head_load, &scored).map(|index| candidates[index].clone())
+}
+
+/// Of the machines a queued turn could move to (`(load, decode ms per step)` each), the index of the one it moves to:
+/// moved, the turn adds one there, which must still be less than the head's load (this turn included), so two
+/// machines never trade a turn back and forth. The least busy wins, then the fastest at decoding.
+fn pick_queue_move(head_load: u32, candidates: &[(u32, f64)]) -> Option<usize> {
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, (load, _))| load + 1 < head_load)
+        .min_by(|(_, a), (_, b)| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)))
+        .map(|(index, _)| index)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn generate_on(
+    state: &GatewayState,
+    plan: &crate::pipeline::PipelinePlan,
+    code: &str,
+    model: &str,
+    trace_id: Option<String>,
+    request: EngineRequest,
+    tx: &mpsc::Sender<GenEvent>,
+    cancellation: &crate::prefill::Cancellation,
+    request_started: Instant,
+    may_move: bool,
 ) {
     // The last stage holds the head: it serves the request.
     let Some(step) = plan.steps.last() else {
@@ -1072,11 +1165,49 @@ pub(crate) async fn generate(
     let mut first_token_at: Option<Instant> = None;
     let mut streamed_any = false;
     let mut pieces = 0u32;
+    // The head said the turn waits for a batch slot: when to look for a less busy machine to move it to. Only a turn
+    // nothing was sent for yet moves, once, and not one whose prompt a prefill machine already read for this head.
+    let movable = may_move && plan.steps.len() == 1 && prefill_leg.is_none();
+    let mut move_check_at: Option<Instant> = None;
     loop {
         if cancellation.is_cancelled() || tx.is_closed() {
             // Dropping the stream closes the connection; the plugin's server
             // notices and stops the engine.
             return;
+        }
+        if let Some(at) = move_check_at.filter(|at| Instant::now() >= *at) {
+            move_check_at = None;
+            if !streamed_any && first_token_at.is_none() {
+                if let Some(step) = queue_move_target(state, code, model, node_id)
+                    .await
+                    .and_then(|peer| crate::pipeline::step_for(&peer, 0))
+                {
+                    tracing::info!(
+                        target = %step.node_id,
+                        head = %node_id,
+                        waited_ms = at.elapsed().as_millis() as u64 + QUEUE_MOVE_AFTER.as_millis() as u64,
+                        "plugin engine: the turn waits for a batch slot on its head; moved to a less busy machine"
+                    );
+                    // Dropping the stream closes the connection: the head's bridge drops the turn it had not started.
+                    drop(stream);
+                    drop(_in_flight);
+                    let moved = crate::pipeline::plan_from_steps(vec![step]);
+                    return Box::pin(generate_on(
+                        state,
+                        &moved,
+                        code,
+                        model,
+                        trace_id,
+                        request,
+                        tx,
+                        cancellation,
+                        request_started,
+                        false,
+                    ))
+                    .await;
+                }
+                move_check_at = Some(Instant::now() + QUEUE_MOVE_RECHECK);
+            }
         }
         let next = tokio::time::timeout(Duration::from_millis(500), stream.next()).await;
         let chunk = match next {
@@ -1099,6 +1230,11 @@ pub(crate) async fn generate(
             let Ok(event) = serde_json::from_slice::<Value>(&line[..line.len() - 1]) else {
                 continue;
             };
+            if movable && first_token_at.is_none() && event.get("queued").is_some() {
+                tracing::info!(head = %node_id, queued = %event["queued"], "plugin engine: the head has no free batch slot for the turn");
+                move_check_at.get_or_insert_with(|| Instant::now() + QUEUE_MOVE_AFTER);
+                continue;
+            }
             if let Some(output) = generated_text_event(&event) {
                 if first_token_at.is_none() {
                     super::plugin_stage_link::set_phase(
@@ -2662,5 +2798,32 @@ mod relay_tests {
         assert_eq!(value["done"]["links"][0]["round_trip_ms"], 30);
         assert_eq!(value["done"]["links"][0]["bytes_sent"], 900);
         assert!(done.ends_with(b"\n"));
+    }
+}
+
+#[cfg(test)]
+mod queue_move_tests {
+    use super::pick_queue_move;
+
+    #[test]
+    fn a_queued_turn_moves_only_to_a_clearly_less_busy_machine() {
+        // the head holds 7 turns, this one included: a machine with 6 would end with 7, no better
+        assert_eq!(pick_queue_move(7, &[(6, 20.0)]), None);
+        assert_eq!(pick_queue_move(7, &[(5, 20.0)]), Some(0));
+        // nothing to gain on an idle head or between two equally busy machines
+        assert_eq!(pick_queue_move(1, &[(0, 20.0)]), None);
+        assert_eq!(pick_queue_move(3, &[(3, 20.0), (2, 20.0)]), None);
+    }
+
+    #[test]
+    fn the_least_busy_then_the_fastest_machine_wins() {
+        assert_eq!(
+            pick_queue_move(8, &[(4, 20.0), (2, 40.0), (2, 25.0)]),
+            Some(2)
+        );
+        assert_eq!(
+            pick_queue_move(8, &[(2, f64::INFINITY), (2, 30.0)]),
+            Some(1)
+        );
     }
 }

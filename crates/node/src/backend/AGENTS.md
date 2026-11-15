@@ -506,7 +506,9 @@ boundary.
   started), `last_error`, `peers` (other live peers in sight) and
   `admin_in_sight`. On a secondary admin,
   `spawn_roster_keeper` mirrors the principal's admission list
-  (`internal_roster`), and `forward_decision` sends its admission decisions
+  (`internal_roster`, persisted in `pom.db`'s `local_settings` so a restart
+  while the principal is offline keeps the member list), and
+  `forward_decision` sends its admission decisions
   to the principal (`internal_decide`, applied by `apply_decision`, which
   refuses to remove an admin). `NetworkChat::admitted_role` reads the own
   list and the mirror, ignoring an approval not newer than the member's last

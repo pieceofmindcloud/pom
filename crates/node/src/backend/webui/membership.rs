@@ -494,7 +494,41 @@ pub(crate) async fn refresh_roster(state: &GatewayState) -> anyhow::Result<Vec<A
     }
     let records: Vec<AdmissionRecord> = response.json().await?;
     state.network_chat.set_roster_mirror(records.clone());
+    persist_roster_mirror(state, &records);
     Ok(records)
+}
+
+/// `local_settings` key of the secondary's persisted mirror.
+const ROSTER_SETTING: &str = "roster_mirror";
+
+/// Writes the mirror last read from the principal, so a secondary admin that
+/// restarts while the principal is offline still knows who the network
+/// admitted (admin-hub design, con 3:
+/// `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). A failure
+/// is only logged: the in-memory mirror already serves this turn.
+fn persist_roster_mirror(state: &GatewayState, records: &[AdmissionRecord]) {
+    if let Err(error) = state.database.save_local_setting(ROSTER_SETTING, records) {
+        debug!("could not persist the roster mirror: {error:#}");
+    }
+}
+
+/// Brings back the last mirror persisted on this machine. The revocation guard
+/// still applies on read: `admitted_role` ignores an approval not newer than
+/// the node's last ban, and revocations are durable in the trust chain.
+fn restore_roster_mirror(state: &GatewayState) {
+    let Ok(Some(raw)) = state.database.local_setting_json(ROSTER_SETTING) else {
+        return;
+    };
+    match serde_json::from_str::<Vec<AdmissionRecord>>(&raw) {
+        Ok(records) if !records.is_empty() => {
+            state.network_chat.set_roster_mirror(records);
+        }
+        Ok(_) => {}
+        Err(error) => {
+            debug!("the persisted roster mirror is unreadable: {error:#}");
+            let _ = state.database.delete_local_setting(ROSTER_SETTING);
+        }
+    }
 }
 
 /// Sends a secondary's decision to the principal and returns the list as
@@ -521,6 +555,7 @@ pub(crate) async fn forward_decision(
             match response.json::<Vec<AdmissionRecord>>().await {
                 Ok(records) => {
                     state.network_chat.set_roster_mirror(records.clone());
+                    persist_roster_mirror(state, &records);
                     Json(records).into_response()
                 }
                 Err(error) => (
@@ -787,14 +822,20 @@ pub(super) async fn connection_status(State(state): State<GatewayState>) -> Json
 }
 
 /// On a secondary admin: keeps the mirror of the principal's admission
-/// list. Off a secondary the mirror is empty.
+/// list. Off a secondary the mirror is empty. The mirror is restored from
+/// `pom.db` at the start and written back on every read, so a secondary that
+/// restarts while the principal is offline keeps knowing the member list.
 pub(crate) fn spawn_roster_keeper(state: GatewayState) {
     tokio::spawn(async move {
+        if is_admin(&state) && !is_principal(&state) {
+            restore_roster_mirror(&state);
+        }
         let mut ticker = tokio::time::interval(KEEPER_TICK);
         loop {
             ticker.tick().await;
             if !is_admin(&state) || is_principal(&state) {
                 state.network_chat.set_roster_mirror(Vec::new());
+                let _ = state.database.delete_local_setting(ROSTER_SETTING);
                 continue;
             }
             if let Err(error) = refresh_roster(&state).await {
@@ -966,5 +1007,63 @@ mod relay_pass_tests {
             now
         )
         .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod roster_mirror_tests {
+    use super::*;
+
+    /// The mirror survives the process: a secondary admin that restarts while
+    /// the principal is offline reads the member list back from `pom.db`
+    /// (admin-hub design, con 3:
+    /// `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`).
+    #[tokio::test]
+    async fn the_roster_mirror_comes_back_from_the_database() {
+        let state = crate::gateway::testkit::state_with_secondary_admin("secondary", vec![]).await;
+        let records = vec![AdmissionRecord {
+            node_id: "worker-1".into(),
+            card: Default::default(),
+            role: crate::config::EnrollmentRole::Worker,
+            status: AdmissionStatus::Approved,
+            requested_at: "2026-11-14T00:00:00Z".into(),
+            decided_at: Some("2026-11-14T00:01:00Z".into()),
+            account: None,
+            validator: false,
+        }];
+        persist_roster_mirror(&state, &records);
+
+        // A restart empties the in-memory mirror before the first read of a
+        // principal that is not reachable yet.
+        state.network_chat.set_roster_mirror(Vec::new());
+        assert!(state.network_chat.roster_mirror().is_empty());
+
+        restore_roster_mirror(&state);
+        let mirror = state.network_chat.roster_mirror();
+        assert_eq!(mirror.len(), 1);
+        assert_eq!(mirror[0].node_id, "worker-1");
+        // The restored mirror is the roster a serving gate consults.
+        assert_eq!(
+            state.network_chat.admitted_role("worker-1", None),
+            Some(crate::config::EnrollmentRole::Worker)
+        );
+    }
+
+    /// An unreadable persisted mirror is erased, not trusted: the next read of
+    /// the principal replaces it.
+    #[tokio::test]
+    async fn an_unreadable_mirror_is_erased_and_not_restored() {
+        let state = crate::gateway::testkit::state_with_secondary_admin("secondary", vec![]).await;
+        state
+            .database
+            .save_local_setting(ROSTER_SETTING, &"not a list")
+            .unwrap();
+        restore_roster_mirror(&state);
+        assert!(state.network_chat.roster_mirror().is_empty());
+        assert!(state
+            .database
+            .local_setting_json(ROSTER_SETTING)
+            .unwrap()
+            .is_none());
     }
 }

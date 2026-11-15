@@ -173,7 +173,9 @@ last):
   `reject` or `forget`) decides one. The list is the principal's, because the
   lobby and the key rotation on a departure are: a secondary admin reads it
   from the principal (`POST /api/internal/membership/roster`, kept as a
-  mirror every 30 s by `webui::spawn_roster_keeper`) and sends its decision
+  mirror every 30 s by `webui::spawn_roster_keeper`, which persists it in
+  `pom.db` so a secondary that restarts while the principal is offline keeps
+  the member list) and sends its decision
   there (`POST /api/internal/membership/decide`), so with the principal
   offline a secondary sees its last copy and cannot approve or reject. `forget`
   on an approved machine is a ban, and needs no principal: the admin who

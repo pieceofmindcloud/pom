@@ -20,6 +20,11 @@ pub const ARCHITECTURES: &[&str] = &[];
 pub const VISION: bool = false;
 /// The engine runs a POM layer slice as one stage of a split (feature L6).
 pub const STAGES: bool = false;
+/// Architectures whose stages this engine cuts itself from the whole model
+/// (`range` in `engine.load`, announced as `stage_ranges`). Leave empty when
+/// the engine reads the node's header-only virtual slice instead (a llama.cpp
+/// derivative with the external tensor data loader).
+pub const STAGE_RANGES: &[&str] = &[];
 /// POM settings that apply to this engine's deployments (`pom_settings`).
 pub const POM_SETTINGS: &[&str] = &[];
 /// How long a model may take to load before the load is an error.

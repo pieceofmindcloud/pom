@@ -1012,6 +1012,11 @@ Key logic carriers:
   setting the service publishes with `placement: "pom"` (the Strata's
   `session_save`) goes to that same card in both modes, whole model and slices,
   and is not in the engine's card. A service that declares none has no such card.
+  A service that declares `cache_types`, `batch` or `sampling` (the Avalon
+  engine) gets the "Default settings" card of llama.cpp for those groups -
+  context, sessions, `n_batch`/`n_ubatch`, the sampling knobs (`SAMPLING_KNOBS`)
+  and seed, the K/V cache types and idle unloading - and its own card
+  ("<name> settings") keeps only the engine's settings.
 - `DeploymentInspector.tsx` - the inspector of a deployment's properties, and
   **one single** one for the two screens: the deploy screen uses it editable, the History
   uses it with `readOnly` to show with which parameters a version came up. In

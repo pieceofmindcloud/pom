@@ -79,11 +79,14 @@ wraps the engine's own handler). Never patch the engine tree for POM glue.
 | Accept a hidden state of explicit width as input and hand out the last layer's residual | engine feature branch | a two-stage answer equals the whole-model answer (greedy) |
 | Stage link: earlier stage serves frames on loopback (`engine.link`), later stage connects to `prev_port` with the token, kind-byte envelope, tensors as `f32` | engine feature branch + plugin `engine.link`, `launch::STAGES`, `pom_settings` `prefill_max_inflight_chunks`, `hidden_state_dtype` | two machines serve one model |
 | Prompt pieces in flight, answers in order; prompt cache continued on every stage | engine | the prompt reads on both machines at once |
-| Optional: serve a range of the whole model with no slice on disk (llama.cpp: external tensor data, a header-only virtual slice; the node announces `model/range-load-v1`) | engine feature branch | the range answers as the real slice does; nothing written but the header |
+| Serve a range of the whole model with no slice on disk: either read the node's header-only virtual slice (`general.external_data.*`; for a llama.cpp derivative, cherry-pick the POM fork's loader, `fork-analysis.md` 1) or cut the range itself (`stage_ranges` + `range` in `engine.load`) | engine feature branch + `launch::STAGE_RANGES` | with `<SLUG>_VIRTUAL_SLICES=1` the range answers as the real slice does; nothing written but the header (`engine-contract.md`, "Which file a stage receives") |
 
-A plugin engine may also take a range of the whole model: it lists the
-architecture in `stage_ranges` and gets `range` in `engine.load`
-(`engine-contract.md`). Strata does it for Flash-Next (`--stage-layers`). The
+A `stages` engine must load a virtual slice or declare `stage_ranges` for
+every architecture it runs: the node writes a virtual slice for any plugin
+stage when the switch is on, without asking. Strata takes the `range` path
+(`--stage-layers`, Flash-Next, Qwen3.6, DeepSeek-V4.1); a llama.cpp
+derivative takes the virtual slice path, which needs no plugin code beyond
+`STAGES`. The
 other range operations of the layer range deployment spec (`engine.cuts`,
 `engine.estimate`) are not implemented: the planner uses the GGUF's cuts.
 

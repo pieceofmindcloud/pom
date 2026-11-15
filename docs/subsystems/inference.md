@@ -2581,7 +2581,11 @@ runs it through that plugin or fails.
   NVIDIA GPU indices of the machine - and `gpu_devices`, every GPU with its
   `vendor` and its `ordinal` among that vendor's cards, the number its own
   runtime gives it: `HIP_VISIBLE_DEVICES` for an AMD card, which `sysmon`
-  counts after the NVIDIA ones), reads `engine.status` every 2 s and answers
+  counts after the NVIDIA ones; also `cache_type_k`/`cache_type_v` - the
+  installation's own K/V types beside the plugin-named `kv` -, `n_batch`,
+  `n_ubatch` and `sampling`, the deployment's sampling defaults and seed, which
+  an engine that declares `cache_types`, `batch` or `sampling` reads and the
+  others ignore), reads `engine.status` every 2 s and answers
   `/health` with the fields the llama.cpp server publishes: `model_loaded`
   only once the plugin is `ready`, the layer range, `n_ctx_per_session` (the
   whole window: the engine gives it to every request) and

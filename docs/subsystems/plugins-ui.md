@@ -570,8 +570,11 @@ layer, and `engine.load` receives it as `mtp_draft_path`. Strata names
 uses the drafts it finds itself. The service lists in `pom_settings`
 the POM deployment settings that
 apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks`,
-`hidden_state_dtype` and `inference_role` are the known ones, any other name is
-dropped. The deploy inspector draws only the declared ones, in their own card
+`hidden_state_dtype`, `inference_role` and `prefill_min_tokens` are the known
+ones, plus three groups of llama.cpp's defaults the engine takes:
+`cache_types`, `batch` and `sampling` (the inspector draws them in the Default
+settings card; `engine.load` always carries their values, see below). Any other
+name is dropped. The deploy inspector draws only the declared ones, in their own card
 (the first two when the slices cross machines, `inference_role` when the model
 runs whole on one machine; see `inference.md`, "Prefill/decode split"). Such a
 plugin implements four operations the node calls through its own local host,

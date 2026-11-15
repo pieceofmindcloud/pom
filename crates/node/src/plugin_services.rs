@@ -297,12 +297,18 @@ fn parse_components(kind: &str, value: &Value) -> Vec<ServedComponent> {
 /// `RuntimeParams` name. The first two act on the hidden state the nodes carry
 /// between the stages of a model split across machines; `inference_role` is a
 /// whole-model machine's part in a prefill/decode split (`plugin_engine`), and
-/// `prefill_min_tokens` the split's threshold.
-const POM_SETTINGS: [&str; 4] = [
+/// `prefill_min_tokens` the split's threshold. `cache_types`, `batch` and
+/// `sampling` are groups of llama.cpp's default settings an engine takes: the
+/// deploy inspector draws them in the same Default settings card, and
+/// `engine.load` carries their values (`plugin_engine::load_params`).
+const POM_SETTINGS: [&str; 7] = [
     "prefill_max_inflight_chunks",
     "hidden_state_dtype",
     "inference_role",
     "prefill_min_tokens",
+    "cache_types",
+    "batch",
+    "sampling",
 ];
 
 fn parse_pom_settings(kind: &str, value: &Value) -> Vec<String> {

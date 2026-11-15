@@ -77,3 +77,5 @@ If it is not a fork, ask for the official repository.
 | `ready` before the model loaded | Health route that waits for the load |
 | Unsupported request silently answered | `{"error": "this engine does not ..."}` |
 | Rewriting `pom` after an upstream move | Merge upstream into `pom`; tag pinned commits |
+| Building the runtime from the fork checkout you are editing | `git worktree add --detach ../<engine>-build pom`, then `build-runtime.sh --source` it: a branch switch mid-build mixes sources |
+| A llama.cpp derivative re-deriving the POM's engine changes | Cherry-pick from the POM's llama.cpp fork `pom` (external tensor data, hidden-state input width, qwen4exp wide residual) into neutral branches |

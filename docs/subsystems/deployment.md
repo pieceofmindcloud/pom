@@ -379,8 +379,12 @@ idle unloading) and the engine's own settings, as the service publishes them
 (`components/EngineSettings.tsx`); those go in `RuntimeParams.engine_settings`.
 The POM settings the service declares in `pom_settings` (in-flight prefill
 chunks, hidden-state precision) are shown in a separate "POM settings" card
-when its slices cross machines. The per-machine GPU layers and KV cache on the
-GPU are llama.cpp's and are not offered.
+when its slices cross machines. A service that also declares one of the groups
+`cache_types`, `batch` or `sampling` gets llama.cpp's "Default settings" card for
+them (the installation's K/V cache types, `n_batch`/`n_ubatch`, the sampling
+defaults and the seed, beside context, sessions and idle unloading), and its own
+card then holds only the engine's settings. The per-machine GPU layers and KV
+cache on the GPU are llama.cpp's and are not offered.
 
 `POST /api/ui/deploy` (and the preview, when the screen sends the service in
 `params`) refuses such a deployment unless it is a whole model on exactly one

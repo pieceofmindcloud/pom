@@ -824,7 +824,11 @@ export type PomSetting =
   | "prefill_max_inflight_chunks"
   | "hidden_state_dtype"
   | "inference_role"
-  | "prefill_min_tokens";
+  | "prefill_min_tokens"
+  // groups of llama.cpp's Default settings the engine takes: the KV cache types, the prompt batch, the sampling defaults
+  | "cache_types"
+  | "batch"
+  | "sampling";
 
 /** A whole-model machine's part in a prefill/decode split of a plugin inference service. */
 /** `shared` is not chosen on screen: the deploy gives it to a `both` machine that runs the whole model beside others. */

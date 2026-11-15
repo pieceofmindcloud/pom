@@ -79,6 +79,28 @@ describe("DeploymentInspector with a plugin's inference service", () => {
     expect(document.body.textContent).not.toContain("dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf");
   });
 
+  it("gives an engine that takes llama.cpp's defaults the Default settings card, and keeps its own card for the rest", () => {
+    render(
+      <LocaleProvider initialLocale="en">
+        <DeploymentInspector
+          value={{ ...params, temperature: 0.7, top_p: 0.9, n_batch: 2048, n_ubatch: 512 } as RuntimeParams}
+          onChange={vi.fn()}
+          inferenceService={{
+            name: "Avalon",
+            settings: [{ key: "mtp", type: "boolean", label: { en: "MTP speculative decoding" } } as EngineSetting],
+            pomSettings: ["cache_types", "batch", "sampling"],
+          }}
+        />
+      </LocaleProvider>,
+    );
+    expect(screen.getByText("Default settings")).toBeTruthy();
+    expect(screen.getByText("Avalon settings")).toBeTruthy();
+    expect(document.querySelector('input[name="temperature"]')).toBeTruthy();
+    expect(document.querySelector('input[name="n_batch"]')).toBeTruthy();
+    expect(document.querySelector('input[name="seed"]')).toBeTruthy();
+    expect(document.body.textContent).toContain("MTP speculative decoding");
+  });
+
   it("offers the POM's transfer between the slices when they cross machines", () => {
     const onChange = mount(true);
     const precision = screen.getByRole("combobox", { name: "Hidden-state precision" });

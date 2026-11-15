@@ -3384,6 +3384,14 @@ with the ledger is the crate `crates/metering-core`; the node side is
   and check the forward arrived. The cause was not investigated here; what is
   measured is that the flakiness does not depend on the persistent channel - it
   shows up the same on the tree without it.
+- **Lab watchdogs under load** (2026-11-15): `prefix_reuse_lab::unknown_session_recovery_is_bounded`
+  and `mid_prefill_transport_failure_does_not_corrupt_recurrent_session` failed in full parallel
+  runs on the 5 s timeout. They watch for a hang; the properties - the cold attempt limit and
+  the absence of partial removals - are in the assertions, so the watchdogs are now 30 s. The
+  QUIC client timeout in `serve::integration::quic_starts_without_a_tcp_tls_configuration` got
+  the same slack (15 s). `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`
+  keeps its 1-leg tolerance because the tolerance is the measured law: it reads the real clock,
+  passes alone, and still shows under a heavily loaded machine.
 - **The forwarding hop's `network_ms` includes the next hop.** When the head is
   the gateway itself (`local` transport) and forwards to the next peer inside
   the same call, its `round_trip_ms` covers the next hop's whole round trip, and

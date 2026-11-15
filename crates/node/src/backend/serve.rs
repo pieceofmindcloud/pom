@@ -1056,7 +1056,9 @@ mod integration {
                 None,
                 None,
                 b"http3-without-tcp-tls".to_vec(),
-                Duration::from_secs(3),
+                // The handshake on loopback is fast; the slack is for the
+                // machine running the whole suite in parallel.
+                Duration::from_secs(15),
             )
             .await
             .unwrap();

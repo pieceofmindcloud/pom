@@ -10,12 +10,16 @@ Code: `crates/node/src/payments/` (the x402 prepaid credit core and
 
 `NetworkSettings` (saved and fanned out like every network setting):
 
-- `inference_access`: `direct` (default, as before), `member_gateway`,
-  `member_gateway_only`. Since phase A of
-  `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md` the values
-  stay parsed and written for older nodes, but behavior no longer branches on
-  them: every visitor delegates, in every mode. `enabled` payments still
-  validate against `member_gateway_only`.
+- `inference_access`: deprecated 2026-11-15 (decision 5 of
+  `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). `direct`
+  and `member_gateway` open nothing on a new node: every visitor delegates to
+  an admin entry node, whatever the file says. They keep parsing and being
+  written so older nodes read the same config; the node warns on load when a
+  file carries one, and a new network defaults to `member_gateway_only` - the
+  only value whose name still says something. They die in the dated release
+  that retires the membership token (phase C3), the moment the last gate that
+  honored them stops being fed. `enabled` payments still validate against
+  `member_gateway_only`; that gate collapses together with the enum.
 - `entry_nodes`: `admins` (default) or `admins_and_workers`. Parsed and
   preserved; the entry node is always an admin the chain proves, for a visitor
   and for a worker alike.

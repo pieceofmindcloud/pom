@@ -366,11 +366,17 @@ guides.
      release):** new nodes stop announcing and issuing tokens; `membership`
      keeps reading old announces until the old version is retired on
      purpose, and shrinks to the revocation entries between admins.
-     Pending: a release decision, and it is entangled with open decision 5
-     below (retiring the announce is the moment the old versions' gates
-     stop being fed).
-5. Still open: whether `direct`/`member_gateway` stay configurable or are
-   deprecated with a dated removal.
+     Pending: a release decision, and it is entangled with decision 5
+     recorded below (retiring the announce is the moment the old versions'
+     gates stop being fed, and it is also the moment the deprecated
+     `inference_access` values stop being honored anywhere, so the two
+     retirements ride on the same dated release).
+5. Confirmed (2026-11-15): **deprecate now**. `direct` and `member_gateway`
+   are deprecated: they keep parsing and writing for older nodes and are
+   never honored by a new node; the node warns on load when a file carries
+   one; the new default is `member_gateway_only`, and the charging gate
+   collapses together with the enum. The dated removal rides on the same
+   release as C3, the moment the old versions' gates stop being fed.
 
 ## 11. Out of scope
 

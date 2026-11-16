@@ -20,3 +20,12 @@ describe("deployModelDisplayName", () => {
     expect(deployModelDisplayName("Qwen3.8-27B-UD-IQ3_XXS-v2-2024.gguf")).toBe("Qwen3.8-27B-UD-IQ3_XXS-v2-2024");
   });
 });
+
+describe("deployment names", () => {
+  it("are API identifiers, as the node keeps them", async () => {
+    const { apiName, deployModelDisplayName } = await import("./format");
+    expect(apiName("Meu modelo @ R&D")).toBe("Meu-modelo-R-D");
+    expect(apiName("abc ", true)).toBe("abc-");
+    expect(deployModelDisplayName("Qwen3.8 Flash-00001-of-00002.gguf")).toBe("Qwen3.8-Flash");
+  });
+});

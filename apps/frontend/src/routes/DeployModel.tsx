@@ -64,7 +64,7 @@ import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs, u
 import type { SidecarPick } from "../components/SidecarPicker";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
-import { bytes, deployModelDisplayName, layerRange } from "../lib/format";
+import { apiName, bytes, deployModelDisplayName, layerRange } from "../lib/format";
 import { Confirm, Modal } from "../components/Confirm";
 import { DeploymentInspector, InspectorRow } from "../components/DeploymentInspector";
 import { FilePresence, ModelPresence } from "../components/ModelPresence";
@@ -1154,7 +1154,7 @@ export function DeployModel() {
       const started = await api.post<{ job_id: string }>("/api/ui/deploy", {
         group: chosen,
         kind,
-        deployment_name: deploymentName || deployModelDisplayName(chosen),
+        deployment_name: apiName(deploymentName) || deployModelDisplayName(chosen),
         strategy,
         preferred_node_ids: preferredNodeIds,
         ...rowsPayload(selection ? rows : null),
@@ -1180,7 +1180,7 @@ export function DeployModel() {
         selection: rows,
         params: sentParams,
         merge: effMerge,
-        deployment_name: deploymentName || deployModelDisplayName(chosen),
+        deployment_name: apiName(deploymentName) || deployModelDisplayName(chosen),
         strategy,
       });
       invalidate();
@@ -1511,7 +1511,7 @@ export function DeployModel() {
                 aria-label={t("deployStudio.deploymentName")}
                 name="deployment_name"
                 value={deploymentName}
-                onChange={(event) => setDeploymentName(event.target.value)}
+                onChange={(event) => setDeploymentName(apiName(event.target.value, true))}
                 placeholder={deployModelDisplayName(chosen) || t("deployStudio.deploymentName")}
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
               />

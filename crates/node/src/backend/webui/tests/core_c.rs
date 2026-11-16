@@ -312,6 +312,7 @@ mod profile_network_tests {
         state.runtime.seed_config_for_test(config.clone()).await;
         *state.local_assignment.write().await = Some(crate::model::LayerAssignment {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             model: "qwen".into(),
             total_layers: 32,
             start_layer: 0,

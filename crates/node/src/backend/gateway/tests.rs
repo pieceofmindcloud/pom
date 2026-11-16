@@ -2990,6 +2990,7 @@ mod peer_visibility_tests {
     fn peer(id: &str) -> PeerInfo {
         PeerInfo {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             tls: false,
             node_id: id.into(),
             pubkey: String::new(),
@@ -3392,6 +3393,7 @@ mod peer_visibility_tests {
         let state = crate::gateway::testkit::state_with("self", vec![]).await;
         *state.local_assignment.write().await = Some(LayerAssignment {
             deploy_id: "deployment-42".into(),
+            deployment_name: String::new(),
             model: "qwen".into(),
             total_layers: 32,
             start_layer: 0,
@@ -3867,6 +3869,7 @@ pub(crate) mod testkit {
         );
         PeerInfo {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             tls: false,
             node_id: node_id.into(),
             pubkey: authority_pubkey,

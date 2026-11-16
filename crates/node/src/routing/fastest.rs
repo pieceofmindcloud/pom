@@ -774,6 +774,7 @@ mod tests {
     fn peer(node_id: &str, start: u32, end: u32) -> PeerInfo {
         PeerInfo {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             tls: false,
             node_id: node_id.to_string(),
             pubkey: "p".into(),

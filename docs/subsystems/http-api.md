@@ -824,6 +824,16 @@ substitution. When more than one model is loaded in the cluster,
 `<model>@<deploy_id>` variant to choose between deployments of the same model
 - and a well-configured client chooses among them by sending the exact name.
 
+**Deployments are named by their `deployment_name`.** Each node announces its
+deployment's name beside the `deploy_id` (`Announce.deployment_name`, optional,
+empty from an earlier version), and `GET /v1/models` lists a named, ready
+deployment by that name; with more than one head (layer 0) it also lists
+`<deployment_name>@<node_id>` per head, which pins that head as `inference_head`
+does (`openai::named_deployments`, `resolve_model_and_head`; chat, completions and
+messages). A deployment from earlier-version peers keeps its model label and
+`<model>@<deploy_id>`. The model label of a named deployment is no longer listed
+but is still accepted, so a client pinned to it keeps working.
+
 `GET /v1/models` and `GET /v1/models/{id}` only announce models published by
 live peers, including the local model when there is an active assignment. The
 CLI's `default_model` and the persisted deployment registry do not enter this

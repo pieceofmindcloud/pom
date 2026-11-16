@@ -13,6 +13,9 @@ pub(super) struct PeerView {
     pub(super) short_id: String,
     pub(super) addr: String,
     pub(super) model: String,
+    /// The operator's name for the deployment this peer serves (empty on an
+    /// earlier version's peer): what the screens show and `/v1` takes.
+    pub(super) deployment_name: String,
     pub(super) start_layer: u32,
     pub(super) end_layer: u32,
     pub(super) total_layers: u32,
@@ -531,6 +534,7 @@ pub(super) async fn cluster(headers: HeaderMap, State(state): State<GatewayState
             node_id: p.node_id.clone(),
             addr: p.addr.clone(),
             model: p.model.clone(),
+            deployment_name: p.deployment_name.clone(),
             start_layer: p.start_layer,
             end_layer: p.end_layer,
             total_layers: p.total_layers,

@@ -77,6 +77,21 @@ pub enum DeployStrategy {
 
 pub(super) const MAX_DEPLOYMENT_NAME_CHARS: usize = 128;
 
+/// `name` as an API identifier: ASCII letters, digits, `.`, `_` and `-`; every
+/// other run of characters (spaces, `@`, `&`, accents...) becomes one `-`, and the
+/// ends lose their `-`.
+pub(crate) fn api_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+            out.push(c);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
 pub(crate) fn normalize_deployment_name(
     requested: Option<&str>,
     fallback: &str,
@@ -85,6 +100,10 @@ pub(crate) fn normalize_deployment_name(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(fallback.trim());
+    // Clients name the deployment in `/v1` (`model`), so the name is an API
+    // identifier: letters, digits, `.`, `_` and `-`; anything else becomes `-`.
+    let name = api_name(name.strip_suffix(".gguf").unwrap_or(name));
+    let name = name.as_str();
     if name.is_empty() {
         return Err("the deployment name cannot be empty".to_string());
     }

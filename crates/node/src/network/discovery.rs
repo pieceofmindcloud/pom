@@ -1234,6 +1234,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
     let P2PMessage::Announce {
         node_id,
         deploy_id,
+        deployment_name,
         pubkey,
         addr,
         addr_candidates,
@@ -1291,6 +1292,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
 
     let peer = PeerInfo {
         deploy_id,
+        deployment_name,
         node_id: node_id.clone(),
         pubkey: pubkey.clone(),
         cluster_id,

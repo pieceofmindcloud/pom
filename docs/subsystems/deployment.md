@@ -41,7 +41,10 @@ about both cases before sending the request.
 
 The request also accepts `deployment_name` (an operational name separate from
 `group`), `strategy: "simple" | "complete"` and `preferred_node_ids`. An empty
-name uses the model name and names longer than 128 characters are refused.
+name uses the model name. The name is what clients ask `/v1` for, so it is an API
+identifier (`deploy::api_name`): ASCII letters, digits, `.`, `_` and `-`, any other
+run of characters becoming one `-`, a trailing `.gguf` dropped; the Deploy field
+applies the same rule as it is typed. Names longer than 128 characters are refused.
 `group` stays the technical identity used by the catalog, gossip and routing.
 The simple strategy uses the smallest sufficient set of peers; the complete one
 prefers the finest existing cuts and spreads the load across more machines. No

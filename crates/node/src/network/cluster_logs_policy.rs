@@ -285,6 +285,7 @@ mod tests {
                 addr_candidates: vec![format!("127.0.0.1:{gateway_port}")],
                 model: "model".into(),
                 deploy_id: String::new(),
+                deployment_name: String::new(),
                 start_layer: 0,
                 end_layer: 1,
                 total_layers: 2,

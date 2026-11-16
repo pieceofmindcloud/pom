@@ -706,6 +706,7 @@ impl NodeConfig {
         LayerAssignment {
             model: self.model_label.clone(),
             deploy_id: self.deploy_id.clone(),
+            deployment_name: self.deployment_name.clone(),
             total_layers: self.total_layers,
             start_layer: self.start_layer,
             end_layer: self.end_layer,

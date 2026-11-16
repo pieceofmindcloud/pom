@@ -1848,6 +1848,10 @@ impl GatewayState {
                     .as_ref()
                     .map(|assignment| assignment.deploy_id.clone())
                     .unwrap_or_default(),
+                deployment_name: local
+                    .as_ref()
+                    .map(|assignment| assignment.deployment_name.clone())
+                    .unwrap_or_default(),
                 node_id: self.network.node_id.clone(),
                 tls: self.network.tls_enabled(),
                 pubkey: self.network.pubkey.clone(),

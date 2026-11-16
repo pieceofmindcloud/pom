@@ -290,12 +290,10 @@ describe("plugin UI registry", () => {
   it("replaces claimed native links and inserts a plugin's new menus right after its own entries", () => {
     setPluginUi([plugin]);
     const admin = navForProfile("admin");
-    const logsGroup = admin.find((s) => s.labelKey === "nav.logs");
-    expect(logsGroup?.children?.map((c) => c.labelKey)).toContain("plugin:acme:logs");
-    expect(logsGroup?.children?.map((c) => c.labelKey)).not.toContain("nav.requestLogs");
-    expect(logsGroup?.children?.find((c) => c.labelKey === "plugin:acme:logs")?.to).toBe("/logs");
-    // The plugin already holds a leaf of Logs, so its new entry follows that section.
-    const logsIndex = admin.findIndex((s) => s.labelKey === "nav.logs");
+    // Logs is one entry (`/logs`, the deployment logs are its tab); the plugin takes it over.
+    const logsIndex = admin.findIndex((s) => s.to === "/logs");
+    expect(admin[logsIndex]).toMatchObject({ labelKey: "plugin:acme:logs", pluginCode: "acme" });
+    // The plugin already holds the Logs entry, so its new entry follows it.
     expect(admin[logsIndex + 1]).toMatchObject({ labelKey: "plugin:acme:extra", to: "/acme/extra" });
     // Without a plugin again, POM's fallback comes back, as one entry for the one purchase.
     setPluginUi([]);
@@ -316,11 +314,10 @@ describe("plugin UI registry", () => {
     };
     setPluginUi([plugin, statisticsPlugin]);
     const navigation = navForProfile("admin");
-    const logs = navigation.find((section) => section.labelKey === "nav.logs");
+    const logs = navigation.find((section) => section.to === "/logs");
     const statistics = navigation.find((section) => section.to === "/statistics");
 
-    expect(logs?.children?.map(({ labelKey }) => labelKey)).toContain("plugin:acme:logs");
-    expect(logs?.children?.map(({ labelKey }) => labelKey)).not.toContain("nav.requestLogs");
+    expect(logs?.labelKey).toBe("plugin:acme:logs");
     expect(statistics?.labelKey).toBe("plugin:logs:stats");
     expect(resolvePluginRoute("/statistics")?.code).toBe("logs");
   });

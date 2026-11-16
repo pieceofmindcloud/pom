@@ -757,6 +757,10 @@ pub enum P2PMessage {
         /// which makes the grouping fall back to the model label.
         #[serde(default)]
         deploy_id: String,
+        /// The operator's name for that deployment (`deployment_name`), what a
+        /// client asks for in `/v1`. Empty on an earlier version's peer.
+        #[serde(default)]
+        deployment_name: String,
         start_layer: u32,
         end_layer: u32,
         total_layers: u32,
@@ -924,6 +928,9 @@ pub struct PeerInfo {
     /// grouping falls back to the label. See `models/deployment.rs`.
     #[serde(default)]
     pub deploy_id: String,
+    /// The operator's name for the deployment; empty on an earlier version's peer.
+    #[serde(default)]
+    pub deployment_name: String,
     pub start_layer: u32,
     pub end_layer: u32,
     pub total_layers: u32,
@@ -2648,6 +2655,7 @@ impl Network {
             addr_candidates,
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
             deploy_id: assignment.map(|a| a.deploy_id.clone()).unwrap_or_default(),
+            deployment_name: assignment.map(|a| a.deployment_name.clone()).unwrap_or_default(),
             start_layer: assignment.map(|a| a.start_layer).unwrap_or(0),
             end_layer: assignment.map(|a| a.end_layer).unwrap_or(0),
             total_layers: assignment.map(|a| a.total_layers).unwrap_or(0),
@@ -3781,6 +3789,7 @@ impl Network {
                 node_id,
                 pubkey,
                 deploy_id,
+                deployment_name,
                 addr,
                 addr_candidates,
                 model,
@@ -3833,6 +3842,7 @@ impl Network {
 
                 let mut peer = PeerInfo {
                     deploy_id,
+                    deployment_name,
                     node_id: node_id.clone(),
                     pubkey,
                     cluster_id,
@@ -4851,6 +4861,7 @@ mod tests {
 
         let asgn = LayerAssignment {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             model: "qwen35".into(),
             total_layers: 32,
             start_layer: 0,
@@ -5534,6 +5545,7 @@ mod tests {
     fn an_advertised_ipv6_survives_into_the_peer_urls() {
         let peer = PeerInfo {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             tls: false,
             node_id: "n".into(),
             pubkey: "p".into(),
@@ -5590,6 +5602,7 @@ mod tests {
     fn peer_lists_are_split_to_fit_the_path_mtu() {
         let peer = PeerInfo {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             tls: false,
             node_id: "7b09e99c538b0f79daf0cf9111d9e5e912094c7c999273b8d2df3a446f6630ec".into(),
             pubkey: "a".repeat(64),
@@ -5686,6 +5699,7 @@ mod tests {
     fn peer_with_candidates(candidates: Vec<&str>) -> PeerInfo {
         PeerInfo {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             tls: false,
             node_id: "n1".into(),
             pubkey: "p".into(),
@@ -5839,6 +5853,7 @@ mod tests {
                 addr_candidates: vec![stale.into()],
                 model: "qwen".into(),
                 deploy_id: String::new(),
+                deployment_name: String::new(),
                 start_layer: 28,
                 end_layer: 31,
                 total_layers: 32,
@@ -6148,6 +6163,7 @@ mod tests {
     fn dummy_peer(node_id: &str, addr: &str) -> PeerInfo {
         PeerInfo {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             tls: false,
             node_id: node_id.into(),
             pubkey: "p".into(),
@@ -6272,6 +6288,7 @@ mod tests {
             addr_candidates: vec!["127.0.0.1:42777".into()],
             model: String::new(),
             deploy_id: String::new(),
+            deployment_name: String::new(),
             start_layer: 0,
             end_layer: 0,
             total_layers: 0,
@@ -7688,6 +7705,7 @@ mod tests {
             addr_candidates: vec!["192.0.2.10:42777".into()],
             model: String::new(),
             deploy_id: String::new(),
+            deployment_name: String::new(),
             start_layer: 0,
             end_layer: 0,
             total_layers: 0,

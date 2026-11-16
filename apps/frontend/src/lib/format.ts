@@ -106,7 +106,21 @@ export function optionalBasename(path: string | null | undefined): string | null
 }
 
 /** Human-readable model label; the catalog identity stays unchanged. */
+/**
+ * A deployment name as an API identifier, as the node keeps it
+ * (`deploy::api_name`): letters, digits, `.`, `_` and `-`; any other run of
+ * characters becomes one `-`. `typing` keeps a trailing `-` so the field can be typed in.
+ */
+export function apiName(value: string, typing = false): string {
+  const name = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+/, "");
+  return typing ? name : name.replace(/-+$/, "");
+}
+
 export function deployModelDisplayName(name: string): string {
+  return apiName(deployModelDisplayName0(name));
+}
+
+function deployModelDisplayName0(name: string): string {
   return name
     .replace(/\.gguf$/i, "")
     // the part number of a split GGUF (`-00001-of-00004`): the deployment is the whole model

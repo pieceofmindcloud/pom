@@ -765,6 +765,7 @@ mod ipv6_tests {
     fn peer(addr: &str, start: u32, end: u32) -> PeerInfo {
         PeerInfo {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             tls: false,
             node_id: "n".repeat(64),
             pubkey: "p".into(),

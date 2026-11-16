@@ -37,7 +37,7 @@ use crate::gateway::{
     log_output_limit, GatewayState, GenEvent, GenSummary, GenerationInput, OutputTokenLimit,
     DEFAULT_MAX_TOKENS,
 };
-use crate::openai::{approx_tokens, cors_headers, preflight, resolve_model};
+use crate::openai::{approx_tokens, cors_headers, preflight};
 use crate::tool_call::{
     parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call,
     render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef, ToolSignatures,
@@ -601,12 +601,12 @@ async fn messages(
     }
     let request_details = body;
 
-    let model = match req.model.clone() {
-        Some(m) if !m.is_empty() => match resolve_model(&state, m).await {
-            Ok(model) => model,
+    let (model, named_head) = match req.model.clone() {
+        Some(m) if !m.is_empty() => match crate::openai::resolve_model_and_head(&state, m).await {
+            Ok(resolved) => resolved,
             Err(error) => return error_response(StatusCode::NOT_FOUND, "not_found_error", error),
         },
-        _ => state.active_model().await,
+        _ => (state.active_model().await, None),
     };
     let task_budget = req
         .output_config
@@ -701,6 +701,7 @@ async fn messages(
 
     let inference_token = auth.token().to_string();
     let params = ResponseParams {
+        preferred_head: named_head,
         state,
         caller: auth.into_caller(),
         inference_token,
@@ -758,6 +759,8 @@ fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'
 /// Both receive exactly the same thing, so the list travels together instead
 /// of being typed twice and growing on one side only.
 struct ResponseParams {
+    /// The head a `<deployment_name>@<node_id>` pinned.
+    preferred_head: Option<String>,
     state: GatewayState,
     caller: crate::reqlog::Caller,
     inference_token: String,
@@ -783,6 +786,7 @@ struct ResponseParams {
 
 async fn blocking_response(params: ResponseParams) -> Response {
     let ResponseParams {
+        preferred_head: named_head,
         state,
         caller,
         inference_token,
@@ -819,7 +823,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
             budget,
             stops,
             cache_key,
-            preferred_head: None,
+            preferred_head: named_head.clone(),
             request_details,
         },
     )
@@ -906,6 +910,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
 
 fn stream_response(params: ResponseParams) -> Response {
     let ResponseParams {
+        preferred_head: named_head,
         state,
         caller,
         inference_token,
@@ -941,7 +946,7 @@ fn stream_response(params: ResponseParams) -> Response {
             budget,
             stops,
             cache_key,
-            preferred_head: None,
+            preferred_head: named_head.clone(),
             request_details,
         },
         tx,

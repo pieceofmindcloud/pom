@@ -689,6 +689,8 @@ export interface PeerView {
   short_id: string;
   addr: string;
   model: string;
+  /** The operator's name for the deployment (what `/v1` takes); absent or empty on an older node. */
+  deployment_name?: string;
   start_layer: number;
   end_layer: number;
   total_layers: number;

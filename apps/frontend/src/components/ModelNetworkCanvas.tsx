@@ -6,7 +6,7 @@ import { PeerDetailDialog } from "./PeerDetailCard";
 import { GpuTemperature } from "./GpuTemperature";
 import { AlertTooltip, Button, Dot } from "./ui";
 import { canSeePeerDetails } from "../lib/access";
-import { canvasModelIds, graphFromCluster, selectedCanvasModel, type GraphRange } from "../lib/networkGraph";
+import { canvasModelIds, canvasModelLabel, graphFromCluster, selectedCanvasModel, type GraphRange } from "../lib/networkGraph";
 import { pipelinePeers } from "../lib/networkPeers";
 import { useProfile } from "../lib/profile";
 import { useI18n } from "../i18n/provider";
@@ -555,7 +555,7 @@ export function ModelNetworkCanvas({
   // scrolls, so they stay put while the map is panned or zoomed.
   return <section className="relative h-full min-h-0 w-full overflow-hidden">
     <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 rounded-xl border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
-      <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label={t("canvas.modelGroupAria")}>{modelIds.length ? modelIds.map((name) => <button key={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{name}</button>) : <span className="px-2 text-xs text-muted">{t("canvas.noModel")}</span>}{extraModels.map((extra) => <button key={extra.id} type="button" onClick={() => setModel(extra.id)} aria-pressed={false} className="flex h-8 shrink-0 items-center gap-1 rounded-md px-3 font-mono text-xs text-muted hover:bg-raised hover:text-fg"><ImageIcon className="h-3 w-3" aria-label={t("imageMap.badge")} />{extra.label}</button>)}</div>
+      <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label={t("canvas.modelGroupAria")}>{modelIds.length ? modelIds.map((name) => <button key={name} title={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{canvasModelLabel(cluster, name)}</button>) : <span className="px-2 text-xs text-muted">{t("canvas.noModel")}</span>}{extraModels.map((extra) => <button key={extra.id} type="button" onClick={() => setModel(extra.id)} aria-pressed={false} className="flex h-8 shrink-0 items-center gap-1 rounded-md px-3 font-mono text-xs text-muted hover:bg-raised hover:text-fg"><ImageIcon className="h-3 w-3" aria-label={t("imageMap.badge")} />{extra.label}</button>)}</div>
       {/*
         Full coverage with an unreadable machine is not complete (see Dashboard).
         The badge loses the green and gains the `?` glued to the number, which is what

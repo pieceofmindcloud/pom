@@ -178,7 +178,8 @@ pick whichever backend is available at runtime. Build modes and variables are in
    → `docs/subsystems/inference.md`, `docs/subsystems/parallelism.md`
 4. **Security** - between nodes it is always mutual TLS with certificates derived
    from each node's key; the network key alone opens nothing, admins are named by
-   a signed trust chain and other members carry short-lived membership tokens.
+   a signed trust chain and other members carry short-lived roster vouches signed
+   by an admin.
    → `docs/subsystems/security-model.md`
 
 ## Repository map

@@ -27,7 +27,7 @@ Direct first, then a hole-punched connection, then a relay: n0's public ones, a 
 :::
 
 :::note Mutual TLS, always
-Between machines every call is mutual TLS with certificates derived from the node keys. The connection key alone opens nothing: the caller must also be an admin of the trust chain or a member with a valid token.
+Between machines every call is mutual TLS with certificates derived from the node keys. The connection key alone opens nothing: the caller must also be an admin of the trust chain or a member the roster vouches.
 :::
 
 :::deep crates/node/src/network/AGENTS.md

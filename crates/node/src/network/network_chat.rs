@@ -537,8 +537,8 @@ pub struct NetworkChat {
     /// database and written back on every change.
     admissions: Mutex<Vec<crate::network_lobby::AdmissionRecord>>,
     /// On a secondary admin: the principal's admission list, as last read
-    /// from it (`membership::spawn_roster_keeper`). It is what lets a
-    /// secondary issue membership tokens; the last read is persisted in
+    /// from it (`webui::spawn_roster_keeper`). It is what lets a
+    /// secondary vouch admitted roles; the last read is persisted in
     /// `pom.db` (`local_settings` key `roster_mirror`) so a restart while the
     /// principal is offline keeps the member list.
     roster_mirror: Mutex<Vec<crate::network_lobby::AdmissionRecord>>,

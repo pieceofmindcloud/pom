@@ -27,7 +27,7 @@ Direto primeiro, depois uma conexão com hole punching, depois um relé: os púb
 :::
 
 :::note TLS mútuo, sempre
-Entre máquinas, toda chamada é TLS mútuo com certificados derivados das chaves dos nós. A chave de conexão sozinha não abre nada: quem chama também precisa ser admin da cadeia de confiança ou membro com token válido.
+Entre máquinas, toda chamada é TLS mútuo com certificados derivados das chaves dos nós. A chave de conexão sozinha não abre nada: quem chama também precisa ser admin da cadeia de confiança ou membro que o roster endossa.
 :::
 
 :::deep crates/node/src/network/AGENTS.md

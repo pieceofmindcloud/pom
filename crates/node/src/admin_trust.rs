@@ -1581,8 +1581,8 @@ pub(crate) fn control_issuer_is_admin(
 }
 
 /// Whether `node_id` with `pubkey` is an admin of `document` today: its
-/// principal, or a secondary whose grant was not revoked. A membership
-/// token is checked against this, and against nothing else.
+/// principal, or a secondary whose grant was not revoked. A vouch and a
+/// revocation are checked against this, and against nothing else.
 pub(crate) fn is_admin_key(document: &AdminTrustDocument, node_id: &str, pubkey: &str) -> bool {
     std::iter::once(&document.primary)
         .chain(document.grants.iter().map(|grant| &grant.subject))

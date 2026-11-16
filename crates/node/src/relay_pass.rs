@@ -3,12 +3,12 @@
 //!
 //! A visitor that relays for its network (`RelayGate::anonymous`) cannot admit
 //! by membership: the endpoints that reach it are ephemeral and name no node.
-//! It admits by a pass instead - a compact token like the membership token
-//! (`crate::membership`), signed by an admin of the chain, naming the network,
+//! It admits by a pass instead - a compact token signed with the helpers of
+//! `crate::membership`, signed by an admin of the chain, naming the network,
 //! the relay URL it opens and an expiry, and nothing about its holder. The
 //! relay checks it against its own copy of the chain and learns only that an
-//! admin let someone in. Admins hand passes out with the membership token
-//! renewal (`webui::membership`), a fresh one per relay and ephemeral
+//! admin let someone in. Admins hand passes out on the member's keeper tick
+//! (`webui::membership`), a fresh one per relay and ephemeral
 //! endpoint.
 //!
 //! A pass binds to the first endpoint that uses it (`PassLedger`): the relay
@@ -29,7 +29,7 @@ use std::collections::HashMap;
 /// a pass cannot stand in for anything else and nothing else for it.
 const HEADER: &str = r#"{"alg":"EdDSA","typ":"pom-relay-pass"}"#;
 
-/// A pass lasts as long as a membership token, and is renewed with it.
+/// A pass lasts ten minutes; the member keeper asks for newer ones every tick.
 pub(crate) const PASS_TTL_SECS: i64 = 10 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

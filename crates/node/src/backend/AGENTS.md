@@ -674,10 +674,10 @@ boundary.
   it works with the principal offline. The chain names admins only: a
   worker's or visitor's role is decided by the admission roster when it names
   the member - the principal's own list, or its mirror on a secondary
-  (`webui/membership.rs` below) - by the roster vouch when it reaches this
-  node (`AdminTrust::vouched_role`), and by the membership token as the
-  legacy form (`peer_role_is_attested`); a non-admin caller of a
-  `ServingMember` route needs one of the three (`caller_may_ask`). `chain_status` feeds
+  (`webui/membership.rs` below) - and otherwise by the roster vouch that
+  reached this node (`AdminTrust::vouched_role`, `peer_role_is_attested`); a
+  non-admin caller of a
+  `ServingMember` route needs the roster or the vouch (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
 - Image models live outside this folder, in `crates/node/src/`:
   `components.rs` (a node serves components, `POST /api/ui/components/apply|release`;

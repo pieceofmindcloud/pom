@@ -937,8 +937,8 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
 /// announce is only what a node says about itself, so a machine admitted as
 /// one stays one whatever it announces: on the admins the admission list
 /// decides, on every node the roster vouch that reached it
-/// (`AdminTrust::vouched_role`), then the membership token, and only with
-/// none of these does the announce itself decide.
+/// (`AdminTrust::vouched_role`), and only with neither does the announce
+/// itself decide.
 impl GatewayState {
     /// Whether this node runs as a visitor (`crate::profile::NodeProfile`).
     pub(crate) fn local_profile_is_visitor(&self) -> bool {

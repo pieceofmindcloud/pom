@@ -2592,13 +2592,19 @@ mod tests {
     fn a_service_that_runs_slices_serves_ranges_the_node_cuts() {
         let avalon = json!({"stages": true, "stage_architectures": ["qwen4exp"]});
         assert!(serves_whole_ranges(&avalon, Some("qwen4exp")));
-        assert!(!runs_ranges(&avalon, Some("qwen4exp")), "the node cuts the slice");
+        assert!(
+            !runs_ranges(&avalon, Some("qwen4exp")),
+            "the node cuts the slice"
+        );
         assert!(!serves_whole_ranges(&avalon, Some("deepseek4")));
         assert!(!serves_whole_ranges(&avalon, None));
         let strata = json!({"stages": true, "stage_ranges": ["qwen4exp"]});
         assert!(serves_whole_ranges(&strata, Some("qwen4exp")));
         assert!(!serves_whole_ranges(&strata, Some("qwen35moe")));
-        assert!(!serves_whole_ranges(&json!({"stages": false}), Some("qwen4exp")));
+        assert!(!serves_whole_ranges(
+            &json!({"stages": false}),
+            Some("qwen4exp")
+        ));
     }
 
     #[test]

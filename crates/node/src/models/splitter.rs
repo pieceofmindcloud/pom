@@ -221,6 +221,23 @@ fn align_up(n: u64) -> u64 {
     (n + a - 1) & !(a - 1)
 }
 
+/// A GGUF key as it is written before its type: u64 length, then the bytes.
+fn encode_key(key: &str) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(8 + key.len() + 64);
+    buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+    buf.extend_from_slice(key.as_bytes());
+    buf
+}
+
+/// `<prefix>.blk.<N>` -> (prefix, N): metadata that belongs to one layer.
+fn per_layer_key(key: &str) -> Option<(&str, u32)> {
+    let (prefix, layer) = key.rsplit_once(".blk.")?;
+    if prefix.is_empty() || layer.is_empty() || !layer.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((prefix, layer.parse().ok()?))
+}
+
 fn encode_kv_u32(key: &str, value: u32) -> Vec<u8> {
     let mut buf = Vec::with_capacity(8 + key.len() + 4 + 4);
     let kb = key.as_bytes();
@@ -959,6 +976,17 @@ fn split_impl(
                 continue;
             }
             None => {}
+        }
+        // Metadata of one layer, named after it (`<prefix>.blk.<N>`, as Avalon's
+        // `avalon.experts_packed.blk.N`): the slice renumbers its layers from 0,
+        // so the key follows its layer, and a layer outside the range drops it.
+        if let Some((prefix, layer)) = per_layer_key(key) {
+            if (start_layer..=end_layer).contains(&layer) && entry.value_start >= 4 {
+                let mut buf = encode_key(&format!("{prefix}.blk.{}", layer - start_layer));
+                buf.extend_from_slice(&mm[entry.value_start - 4..entry.end]);
+                kv_out.push(KvOut::Encoded(buf));
+            }
+            continue;
         }
         if key.ends_with(".block_count") {
             kv_out.push(KvOut::Encoded(encode_kv_u32(key, n_split)));
@@ -2959,6 +2987,17 @@ fn qwen35_hybrid_test_gguf_bytes(n_blocks: u32, full_attn_interval: u32) -> Vec<
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn per_layer_metadata_keys_are_recognized() {
+        assert_eq!(
+            per_layer_key("avalon.experts_packed.blk.32"),
+            Some(("avalon.experts_packed", 32))
+        );
+        assert_eq!(per_layer_key("qwen4exp.block_count"), None);
+        assert_eq!(per_layer_key("x.blk.3a"), None);
+        assert_eq!(per_layer_key(".blk.3"), None);
+    }
 
     #[test]
     fn payload_reads_are_ordered_by_source_part_and_offset() {

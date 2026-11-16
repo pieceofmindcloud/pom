@@ -10,6 +10,8 @@ import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../t
 import { CARD_HEIGHT, deploymentLayoutKey, writePositions } from "../lib/networkLayout";
 import { SERVICE_TETHER_HEIGHT } from "./PluginServices";
 
+const zoomOf = (element: HTMLElement) => parseFloat(/scale\(([^)]+)\)/.exec(element.style.transform)![1]);
+
 
 // jsdom has no PointerEvent nor pointer capture: a MouseEvent that keeps the
 // pointer fields, and no-op captures
@@ -895,34 +897,34 @@ describe("ModelNetworkCanvas: machine window", () => {
 describe("ModelNetworkCanvas: pan and zoom, as on the Deploy map", () => {
   afterEach(cleanup);
 
-  it("pans by dragging the background, not a card", () => {
+  it("pans freely by dragging the background, not a card", () => {
     mount();
     const scroll = screen.getByTestId("dashboard-map-scroll");
-    scroll.scrollLeft = 100;
-    scroll.scrollTop = 80;
+    const layer = () => scroll.querySelector<HTMLElement>("[data-map-background]")!;
     const background = scroll.querySelector<HTMLElement>("[data-map-background]")!;
     fireEvent.pointerDown(background, { button: 0, clientX: 300, clientY: 300, pointerId: 1 });
     fireEvent.pointerMove(scroll, { clientX: 260, clientY: 270, pointerId: 1 });
     fireEvent.pointerUp(scroll, { clientX: 260, clientY: 270, pointerId: 1 });
-    expect(scroll.scrollLeft).toBe(140);
-    expect(scroll.scrollTop).toBe(110);
+    // past any edge: no scrollbar is needed to move the map anywhere
+    expect(layer().style.transform).toBe("translate(-40px, -30px) scale(1)");
+    expect(scroll.style.backgroundPosition).toBe("-40px -30px");
 
     const card = scroll.querySelector("article")!;
     fireEvent.pointerDown(card, { button: 0, clientX: 300, clientY: 300, pointerId: 2 });
     fireEvent.pointerMove(scroll, { clientX: 200, clientY: 200, pointerId: 2 });
-    expect(scroll.scrollLeft).toBe(140);
+    expect(layer().style.transform).toBe("translate(-40px, -30px) scale(1)");
   });
 
   it("zooms with the wheel and the trackpad pinch", async () => {
     mount();
     const scroll = screen.getByTestId("dashboard-map-scroll");
     const layer = () => scroll.querySelector<HTMLElement>("[data-map-background]")!;
-    expect(layer().style.transform).toBe("scale(1)");
+    expect(layer().style.transform).toBe("translate(0px, 0px) scale(1)");
     fireEvent.wheel(scroll, { deltaY: 200, clientX: 10, clientY: 10 });
-    await waitFor(() => expect(parseFloat(layer().style.transform.slice(6))).toBeLessThan(1));
-    const out = parseFloat(layer().style.transform.slice(6));
+    await waitFor(() => expect(zoomOf(layer())).toBeLessThan(1));
+    const out = zoomOf(layer());
     fireEvent.wheel(scroll, { deltaY: -40, ctrlKey: true, clientX: 10, clientY: 10 });
-    await waitFor(() => expect(parseFloat(layer().style.transform.slice(6))).toBeGreaterThan(out));
+    await waitFor(() => expect(zoomOf(layer())).toBeGreaterThan(out));
   });
 
   it("keeps the toolbar out of the area that scrolls", () => {

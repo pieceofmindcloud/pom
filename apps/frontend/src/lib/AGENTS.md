@@ -442,6 +442,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   "Continue" stayed disabled with no warning.
 
 ### queries.ts
+- `usePanZoom.ts` - free pan and zoom of the Dashboard and Deploy maps: the view is a
+  translate plus a scale (`contentStyle`), the dotted background follows it
+  (`surfaceStyle`), the wheel zooms around the pointer through a native non-passive
+  listener, `toMap` turns a pointer into map coordinates for card drags, and
+  `resetView` returns to the origin at zoom 1. With a key (`map-view.dashboard`,
+  `map-view.deploy`) the last view is saved in `localStorage` 250 ms after it stops
+  changing and restored on reload; unreadable or blocked storage opens at the origin.
 - `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):
   a valid server session means available, a localhost policy
   refusal means the local-only state, and other refusals keep the token gate.

@@ -576,7 +576,7 @@ inference does not start.
 
 ## 3. iroh path (internet)
 
-The internet path runs on an **iroh endpoint** (iroh 1.3): QUIC connections
+The internet path runs on an **iroh endpoint** (iroh 1.4): QUIC connections
 dialed by public key, not by address. `p2p.rs` holds the transport pieces
 (endpoint id, address text, request/response framing, outbound connections)
 and `discovery.rs` builds the endpoint and everything that rides on it.

@@ -274,7 +274,10 @@ last):
   `admitted_at` at or before the member's last revocation holds nothing
   (`AdminTrust::vouched_role`, persisted as `<trust>.vouches.json`), and the
   keepers exchange ledgers with an admin every 30 s
-  (`POST /api/internal/membership/vouches`).
+  (`POST /api/internal/membership/vouches`). A network open to anyone with
+  the anchor is vouched from the live announce the way it used to be
+  tokened, and a peer the chain holds any revocation for is never vouched
+  again - the ban is as final there as the token answer was.
   Every machine that is not an admin also asks an admin (the principal first,
   then the secondaries) for its relay passes over `POST
   /api/internal/membership/relays`, signed with its own key; the admin answers

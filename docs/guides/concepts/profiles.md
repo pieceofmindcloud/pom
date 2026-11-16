@@ -45,7 +45,7 @@ Hiding a button is only presentation. The real authorization happens on the node
 The role is chosen in the admission request and the admin decides when approving. A machine admitted as a visitor stays one, and the principal refuses to promote it; only a worker can be promoted to secondary admin, in My Network > Administrators.
 
 :::deep docs/subsystems/security-model.md
-Roles, trust chain and membership tokens
+Roles, trust chain and roster vouches
 :::
 
 :::deep docs/subsystems/web-ui.md

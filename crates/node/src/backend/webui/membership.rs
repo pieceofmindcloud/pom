@@ -469,9 +469,10 @@ pub(crate) async fn sign_vouches(state: &GatewayState) -> Vec<crate::membership:
     }
     // A network open to anyone with the anchor admits by the key, not by a
     // list: the admin vouches what a live peer announces, the way it used to
-    // issue those peers tokens. A ban cuts these too - an approval younger
-    // than the ban is what holds - and a peer that goes quiet stops being
-    // signed, so its vouch ages out within the vouch window.
+    // issue those peers tokens. A ban is final for such a peer, as it was in
+    // the token answer: an admin signs a peer the chain holds any revocation
+    // for no vouch, and a peer that goes quiet stops being signed, so its
+    // vouch ages out within the vouch window.
     if state.auth.read().await.network.open_admission() {
         for peer in state.network.alive_peers().await {
             if peer.node_id == state.network.node_id || newest.contains_key(&peer.node_id) {
@@ -480,11 +481,7 @@ pub(crate) async fn sign_vouches(state: &GatewayState) -> Vec<crate::membership:
             if crate::admin_trust::is_admin_key(&document, &peer.node_id, &peer.pubkey) {
                 continue;
             }
-            if state
-                .admin_trust
-                .revoked_node_at(&peer.node_id)
-                .is_some_and(|revoked| now <= revoked)
-            {
+            if state.admin_trust.revoked_node_at(&peer.node_id).is_some() {
                 continue;
             }
             let role = if peer.profile == crate::profile::NodeProfile::Visitor {
@@ -1358,5 +1355,90 @@ mod vouch_tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("the approval did not vouch the member");
+    }
+
+    /// `POST /api/internal/membership/relays` - the route that carries the
+    /// passes a member needs to dial the network's visitor relays. It
+    /// answers only a member the admin's roster admits, an admin signs its
+    /// own passes, and a machine nobody admitted gets nothing.
+    #[tokio::test]
+    async fn the_relay_route_answers_only_members_the_roster_admits() {
+        let state = testkit::state_with("principal", vec![]).await;
+        let member = crate::admin_trust::AuthorityPrincipal {
+            node_id: "member-1".into(),
+            peer_id: String::new(),
+            pubkey: "ab".repeat(32),
+        };
+
+        // Not admitted: nothing.
+        let response = internal_relays(
+            InternalNodeAuth {
+                principal: Some(member.clone()),
+            },
+            State(state.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(testkit::body_of(response).await["reason"], "not_admitted");
+
+        // Approved on the list: the passes it signs for it, with it. No
+        // visitor relays are in sight here, so the list is empty - what a
+        // member behind NAT reaches through the tunnel's allow list
+        // (`infer_tunnel`).
+        state
+            .network_chat
+            .request_admission(
+                "member-1",
+                Default::default(),
+                crate::config::EnrollmentRole::Worker,
+            )
+            .unwrap();
+        assert!(state
+            .network_chat
+            .decide_admission("member-1", Some(AdmissionStatus::Approved)));
+        let response = internal_relays(
+            InternalNodeAuth {
+                principal: Some(member.clone()),
+            },
+            State(state.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(testkit::body_of(response).await["relays"], json!([]));
+
+        // A ban is final for this answer, as it was in the token route it
+        // replaces: the admin asks for none and gets none.
+        let revocation = crate::membership::revoke(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            "member-1",
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+        state.admin_trust.merge_revocations(vec![revocation]);
+        let response = internal_relays(
+            InternalNodeAuth {
+                principal: Some(member),
+            },
+            State(state.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(testkit::body_of(response).await["reason"], "not_admitted");
+
+        // An admin signs its own passes every keeper tick: it asks for none.
+        let response = internal_relays(
+            InternalNodeAuth {
+                principal: Some(state.authority_principal.clone()),
+            },
+            State(state.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            testkit::body_of(response).await["reason"],
+            "admins_sign_their_own_passes"
+        );
     }
 }

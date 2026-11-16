@@ -542,7 +542,8 @@ boundary.
   roster cannot name the member - `peer_role_is_attested`,
   `gateway::peer_is_visitor`, `Network::is_member_key`, `roles_of` - and on a
   network open to anyone with the anchor the admin signs the live peers'
-  announces as vouches too, the way it used to issue those peers tokens; the
+  announces as vouches too, the way it used to issue those peers tokens (a
+  peer holding any revocation is never signed, as in the token answer); the
   token itself was retired 2026-11-15 (spec 10.1, C3: no compatibility
   bridge).
 - `webui/gpu_metrics.rs` - the GPU energy and temperature feed of the logs

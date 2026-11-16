@@ -674,7 +674,7 @@ pub(crate) async fn validate_internal_node_headers(
             caller,
             route,
             origin,
-            "node-to-node call refused: the caller is not a member (no admin key, no valid membership token)"
+            "node-to-node call refused: the caller is not a member (no admin key, no roster vouch)"
         );
         return Err(AuthRejection::InvalidKey);
     }

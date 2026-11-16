@@ -133,7 +133,9 @@ carries no credential of its own.
 1. **Sign**: every admin signs a vouch for every approval it sees - its own
    list, its mirror of the principal's on a secondary - newer than the last
    ban. On a network open to anyone with the anchor the admin signs what a
-   live peer announces instead, the way it used to issue those peers tokens.
+   live peer announces instead, the way it used to issue those peers tokens,
+   and a peer carrying any revocation is never signed again - the ban is as
+   final there as the token answer was.
    An approval is published at once (`apply_decision` -> `publish_vouches`),
    and the keeper re-signs every 30 s; the renewal is what lets a dropped
    member age out.

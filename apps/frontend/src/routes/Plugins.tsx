@@ -31,8 +31,7 @@ function stateTone(state: PluginStatus["state"] | null): Tone {
 }
 
 /** Cards per page of the store; two columns from `xl`, so an even number fills the rows. */
-// TEMPORARY: small to test the pagination; raise it (e.g. 20) once checked.
-export const PAGE_SIZE = 4;
+export const PAGE_SIZE = 20;
 /** The reference plugin the "Develop your plugin" tab puts first. */
 const EXAMPLE_PLUGIN_CODE = "base";
 const EXAMPLE_PLUGIN_REPOSITORY = "https://github.com/pieceofmindcloud/pom-plugin-base";

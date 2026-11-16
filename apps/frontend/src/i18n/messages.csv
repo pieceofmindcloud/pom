@@ -2540,6 +2540,8 @@ plugins.noLicenseRequired,No license required,Não exige licença
 plugins.open,Open plugin,Abrir plugin
 plugins.openFailed,The plugin did not start,O plugin não iniciou
 plugins.openNamed,Open {name},Abrir {name}
+plugins.localSubtitle,"Known only to this machine: a source in development, a GitHub repository or an active plugin outside the store.","Conhecidos só por esta máquina: uma fonte em desenvolvimento, um repositório do GitHub ou um plugin ativo fora da loja."
+plugins.localTitle,On this machine,Nesta máquina
 plugins.pageNext,Next,Próxima
 plugins.pagePrevious,Previous,Anterior
 plugins.pageStatus,Page {page} of {pages},Página {page} de {pages}

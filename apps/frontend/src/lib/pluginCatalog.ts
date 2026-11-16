@@ -79,6 +79,8 @@ export interface PublicPluginCatalogQuery {
   /** One-based page in store order (featured, then the POM team's, then by name). */
   page?: number;
   perPage?: number;
+  /** Codes the store leaves out of the page and its total (the example plugin, listed apart). */
+  exclude?: string[];
 }
 
 /** The operating systems a plugin publishes builds for, in a fixed display order. */
@@ -253,6 +255,7 @@ export async function fetchPublicPluginCatalog(signal?: AbortSignal, query: Publ
   if (query.q?.trim()) params.set("q", query.q.trim());
   if (query.page !== undefined) params.set("page", String(query.page));
   if (query.perPage !== undefined) params.set("per_page", String(query.perPage));
+  if (query.exclude?.length) params.set("exclude", query.exclude.join(","));
   const search = params.toString();
   return normalizePublicPluginCatalog(await api.get<unknown>(search ? `${PLUGIN_CATALOG_PATH}?${search}` : PLUGIN_CATALOG_PATH, { signal }));
 }

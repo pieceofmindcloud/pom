@@ -1288,7 +1288,7 @@ file and applies it live), `thermal`. `leave` accepts an optional
 `LeaveRequest { node_id }` and **forwards** to the peer when the id is someone
 else's (the panel only talks to its own node).
 
-`GET /api/ui/plugin-catalog` (with `q`, `page`, `per_page`) and
+`GET /api/ui/plugin-catalog` (with `q`, `page`, `per_page` and `exclude`, up to 20 comma-separated plugin codes the store leaves out of the page and its total) and
 `GET /api/ui/plugin-catalog/:code` are the public store, read by the node for
 the browser: open to every profile, they send the license server no credential,
 pass on only those three parameters (bounded, else 400), and return its JSON

@@ -4743,13 +4743,15 @@ pub(crate) struct PluginCatalogQuery {
     q: Option<String>,
     page: Option<u32>,
     per_page: Option<u32>,
+    /// Comma-separated plugin codes the store leaves out of the page and its total.
+    exclude: Option<String>,
 }
 
 /// Largest store answer passed on to the browser.
 const PLUGIN_CATALOG_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// The store URL for a listing, or `None` when the query is out of bounds.
-/// Only these three parameters are passed on.
+/// Only these four parameters are passed on.
 fn plugin_catalog_url(base: &str, query: &PluginCatalogQuery) -> Option<String> {
     let mut url =
         reqwest::Url::parse(&format!("{}/v1/plugins", base.trim_end_matches('/'))).ok()?;
@@ -4772,6 +4774,20 @@ fn plugin_catalog_url(base: &str, query: &PluginCatalogQuery) -> Option<String> 
                 return None;
             }
             pairs.append_pair("per_page", &per_page.to_string());
+        }
+        if let Some(exclude) = query.exclude.as_deref().filter(|e| !e.is_empty()) {
+            let codes: Vec<&str> = exclude.split(',').collect();
+            let valid_code = |code: &str| {
+                (2..=64).contains(&code.len())
+                    && code.starts_with(|c: char| c.is_ascii_lowercase())
+                    && code
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            };
+            if codes.len() > 20 || !codes.iter().all(|code| valid_code(code)) {
+                return None;
+            }
+            pairs.append_pair("exclude", exclude);
         }
     }
     let url = url.to_string();
@@ -5411,6 +5427,7 @@ mod tests {
                     q: q.map(str::to_owned),
                     page,
                     per_page,
+                    exclude: None,
                 },
             )
         };
@@ -5425,6 +5442,22 @@ mod tests {
         assert!(url(Some(&"x".repeat(201)), None, None).is_none());
         assert!(url(None, Some(0), None).is_none());
         assert!(url(None, None, Some(101)).is_none());
+        let excluding = |exclude: &str| {
+            plugin_catalog_url(
+                base,
+                &PluginCatalogQuery {
+                    exclude: Some(exclude.to_owned()),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(
+            excluding("base,pom_x2").as_deref(),
+            Some("https://license.example/v1/plugins?exclude=base%2Cpom_x2")
+        );
+        assert!(excluding("Base").is_none());
+        assert!(excluding("base,../admin").is_none());
+        assert!(excluding(&vec!["ab"; 21].join(",")).is_none());
         assert_eq!(
             plugin_catalog_entry_url(base, "pom-plugin_base2").as_deref(),
             Some("https://license.example/v1/plugins/pom-plugin_base2")

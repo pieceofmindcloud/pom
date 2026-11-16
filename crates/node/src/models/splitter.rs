@@ -5287,7 +5287,10 @@ mod tests {
         let path = dir.join("unknown.gguf");
         std::fs::write(&path, bytes).unwrap();
         let error = crate::gguf::read_layout(&path).unwrap_err().to_string();
-        assert!(error.contains("GGML dtype 99") && error.contains("token_embd.weight"));
+        assert!(
+            error.contains("GGML dtype 99") && error.contains("token_embd.weight"),
+            "{error}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -5303,7 +5306,8 @@ mod tests {
         let layout_error = crate::gguf::read_layout(&whole).unwrap_err().to_string();
         assert!(
             layout_error.contains("llama.future_layer_metadata")
-                && layout_error.contains("length 3")
+                && layout_error.contains("length 3"),
+            "{layout_error}"
         );
         let split_error = split(&whole, &out, 0, 0, true, true, |_| {})
             .unwrap_err()

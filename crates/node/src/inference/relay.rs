@@ -3741,7 +3741,7 @@ mod tests {
                 let response = response.clone();
                 async move {
                     processed.fetch_add(1, Ordering::Relaxed);
-                    tokio::time::sleep(Duration::from_millis(350)).await;
+                    tokio::time::sleep(Duration::from_millis(3000)).await;
                     response
                 }
             }),
@@ -3753,10 +3753,11 @@ mod tests {
         });
 
         let step = step_with(&format!("http://{address}"), false, None);
-        // The caller's deadline (250 ms) is smaller than the peer's response
-        // (350 ms): the frame expires after the body reaches the peer.
+        // The caller's deadline (1 s) is smaller than the peer's response
+        // (3 s): the frame expires after the body reaches the peer. The margins
+        // are wide so a loaded test run still delivers the body in time.
         let result = with_frame_deadline(
-            Instant::now() + Duration::from_millis(250),
+            Instant::now() + Duration::from_millis(1000),
             send_frame_or_tunnel(
                 &crate::peer_client::PeerClients::new(Duration::from_secs(600)),
                 &step,

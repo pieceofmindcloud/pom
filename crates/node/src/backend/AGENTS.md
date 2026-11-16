@@ -1111,9 +1111,11 @@ kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and
   passes alone and in the full `cargo test -p node --bin pom`, but failed twice in a row
   (2026-11-08) when run filtered to `deploy:: webui::` together: it depends on test order or
   shared state, not yet traced.
-- In the dev container ten tests fail at this branch's head, outside this folder: two
-  `splitter` tests expect English error text the pinned `llama-engine` gives in Portuguese, and
-  eight inference lab, relay, server reload and machine-address tests not investigated.
+- `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is` fails
+  (outside this folder): with two hops and the gateway on the head a token costs about
+  3.2 network legs in a debug build and 4.6 in an optimized one, against the minimum of 2,
+  so it is not build overhead. Not yet traced: a regression of the direct reply or a
+  bench that drifted from it.
 
 ## Maintaining this file
 

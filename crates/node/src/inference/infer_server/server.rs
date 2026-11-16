@@ -2137,7 +2137,9 @@ mod tests {
         let test_started = std::time::Instant::now();
         let cleanup = tokio::spawn(run_native_cleanup(move || {
             cleanup_started_by_task.store(true, Ordering::Release);
-            std::thread::sleep(std::time::Duration::from_millis(250));
+            // Long enough that health answering before it ends cannot be luck,
+            // even on a loaded test run.
+            std::thread::sleep(std::time::Duration::from_millis(2000));
         }));
 
         // On the buggy implementation this yield polls the cleanup task first
@@ -2155,14 +2157,14 @@ mod tests {
                 .unwrap();
             test_started.elapsed()
         });
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(75);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(1000);
         let health_response = tokio::time::timeout_at(deadline, health).await;
 
         let elapsed = health_response
             .expect("a health request must be polled while native cleanup is running")
             .unwrap();
         assert!(
-            elapsed < std::time::Duration::from_millis(150),
+            elapsed < std::time::Duration::from_millis(1500),
             "health was not polled until native cleanup ended: {elapsed:?}"
         );
         cleanup.await.unwrap().unwrap();

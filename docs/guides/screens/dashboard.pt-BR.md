@@ -11,7 +11,7 @@ order: 10
 O Painel é a primeira tela do administrador: mostra se o modelo em serviço está completo, quais máquinas o carregam, quão rápido cada uma responde e como uma pergunta vai do gateway pelas máquinas e volta.
 :::
 
-![O Painel de uma rede com três máquinas servindo um modelo, na visão Fluxo, com as propriedades da implantação à direita.](../images/pt-BR/dashboard.webp)
+![O Painel de uma rede com uma máquina servindo um modelo e o gateway fechando o ciclo, na visão Fluxo, com as propriedades da implantação à direita.](../images/pt-BR/dashboard.webp)
 
 ## A barra do topo
 

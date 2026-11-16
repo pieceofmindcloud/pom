@@ -11,6 +11,8 @@ order: 285
 Payments is where the network's principal decides whether visitors pay for inference, sets the price of each model, gives credit to the networks its visitors come from, and sees what came in beside what the machines are paid for the work.
 :::
 
+![Payments: the charging choice, the prices per model and the visitor network accounts.](../images/en/payments.webp)
+
 :::steps
 ### Set the prices
 Each model gets a price for 1000 input tokens and 1000 output tokens, in credits. A model without a price stays free. A price set on a deployment (Deploy, POM settings) replaces the one here when it goes up.

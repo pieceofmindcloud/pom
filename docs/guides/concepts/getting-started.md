@@ -53,7 +53,7 @@ Not on the same local network: UDP discovery is enough. Across different network
 ### Can I run two nodes on one machine?
 Yes, as long as each has its own working directory (POM_HOME) and its own ports, for example --port 42778 --gateway-port 8091 on the second one.
 ### I lost the invitation. Now what?
-On the administrator, Settings > Sharing shows the trust root and the connection key again.
+On the administrator, My Network > Sharing shows the trust root and the connection key again.
 :::
 
 :::deep docs/subsystems/operations.md

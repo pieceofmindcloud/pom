@@ -8,7 +8,7 @@ order: 90
 ---
 
 :::lead
-Transfers shows a file an admin still on an older version offers to this machine, and its progress. It is not in the menu: the bell links to it when an offer arrives. Files are no longer sent between machines - each machine serves from its own copy of the model - and the model downloads moved to the Downloads tab of Search Models, the Hugging Face plugin's screen.
+Transfers shows a file an admin still on an older version offers to this machine, and its progress. It is not in the menu: the bell links to it when an offer arrives, and Models shows it as a tab while a transfer runs. Files are no longer sent between machines - each machine serves from its own copy of the model - and the model downloads moved to the Downloads tab of Search Models, the Hugging Face plugin's screen.
 :::
 
 :::steps

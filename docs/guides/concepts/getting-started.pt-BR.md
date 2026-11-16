@@ -53,7 +53,7 @@ Na mesma rede local, não: a descoberta por UDP basta. Entre redes diferentes, v
 ### Posso rodar dois nós na mesma máquina?
 Sim, desde que cada um tenha o próprio diretório de trabalho (POM_HOME) e portas próprias, por exemplo --port 42778 --gateway-port 8091 no segundo.
 ### Perdi o convite. E agora?
-No administrador, Configurações > Compartilhamento mostra de novo a raiz de confiança e a chave de conexão.
+No administrador, Minha Rede > Compartilhamento mostra de novo a raiz de confiança e a chave de conexão.
 :::
 
 :::deep docs/subsystems/operations.md

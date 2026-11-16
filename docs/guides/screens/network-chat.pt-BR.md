@@ -11,7 +11,7 @@ order: 40
 O Chat da rede é uma conversa entre as máquinas da rede, não com um modelo: as pessoas que operam cada máquina escrevem aqui, e arquivos podem ir junto. À direita, quem está online.
 :::
 
-![O Chat da rede, com as mensagens no meio e as nove máquinas online à direita.](../images/pt-BR/network-chat.webp)
+![O Chat da rede, com as mensagens no meio e as máquinas online à direita.](../images/pt-BR/network-chat.webp)
 
 :::cards
 ### Rede

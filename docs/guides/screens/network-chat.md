@@ -11,7 +11,7 @@ order: 40
 The Network Chat is a conversation between the machines of the network, not with a model: the people operating each machine write here, and files can go along. On the right, who is online.
 :::
 
-![The Network Chat, with the messages in the middle and the nine machines online on the right.](../images/en/network-chat.webp)
+![The Network Chat, with the messages in the middle and the machines online on the right.](../images/en/network-chat.webp)
 
 :::cards
 ### Network

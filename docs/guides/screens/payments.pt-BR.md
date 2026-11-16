@@ -11,6 +11,8 @@ order: 285
 Pagamentos é onde o principal da rede decide se os visitantes pagam pela inferência, define o preço de cada modelo, dá crédito às redes de onde vêm os visitantes e vê o que entrou ao lado do que as máquinas recebem pelo trabalho.
 :::
 
+![Pagamentos: a escolha da cobrança, os preços por modelo e as contas das redes visitantes.](../images/pt-BR/payments.webp)
+
 :::steps
 ### Defina os preços
 Cada modelo ganha um preço por 1000 tokens de entrada e 1000 tokens de saída, em créditos. Um modelo sem preço continua gratuito. Um preço definido numa implantação (Implantar, configurações do POM) substitui o daqui quando ela sobe.

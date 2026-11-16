@@ -22,8 +22,12 @@ Leve a impressão digital até a outra máquina por um canal em que você confia
 **Baixe** o documento de confiança e adicione na outra máquina, em Redes > Adicionar rede. Uma rede privada também precisa da chave de conexão, que só o principal entrega.
 :::
 
+:::note A chave de conexão
+A mesma string em todas as máquinas da rede: ela autentica as rotas de administração e a sincronização entre os nós, mas sozinha não abre nada, porque toda chamada entre máquinas também é TLS mútuo de um admin ou de um membro com token válido. Esta tela a mostra com o endereço de bootstrap e a URL base da API; **Gerar outra** a troca só nesta máquina, e as outras deixam de aceitar esta até receberem a chave nova. Só quem tem autoridade vê o botão.
+:::
+
 :::note Raiz de confiança, o endereço antigo
-A entrada Raiz de confiança abre esta mesma tela; ela fica para links antigos.
+O endereço antigo da Raiz de confiança (`/config/trust`) ainda abre a parte da raiz de confiança desta tela, para links antigos; ele não está mais no menu.
 :::
 
 :::deep docs/subsystems/security-model.md

@@ -11,7 +11,7 @@ order: 10
 The Dashboard is the first screen of an administrator: it shows whether the model in service is complete, which machines carry it, how fast each one answers and how a question travels from the gateway through the machines and back.
 :::
 
-![The Dashboard of a network with three machines serving one model, in the Flow view, with the deployment properties on the right.](../images/en/dashboard.webp)
+![The Dashboard of a network with one machine serving a model and the gateway closing the cycle, in the Flow view, with the deployment properties on the right.](../images/en/dashboard.webp)
 
 ## The bar at the top
 

@@ -16,7 +16,7 @@ Cada plugin roda num processo próprio ao lado do nó. A licença ou o repositó
 
 :::steps
 ### Abra Plugins
-Em Configurações > Plugins aparece o catálogo, com o que está ativo nesta máquina.
+Em Plugins, no menu principal, aparece o catálogo, com o que está ativo nesta máquina.
 ### Ative por licença
 Cole a chave de licença no formulário. A resposta diz quais plugins aquela chave concedeu e instalou.
 ### Ou instale do GitHub

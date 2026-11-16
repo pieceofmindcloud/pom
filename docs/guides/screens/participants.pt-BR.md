@@ -15,7 +15,7 @@ Participantes da rede lista as máquinas que esta conhece na rede: o nome, se a 
 
 :::cards
 ### verificado
-A máquina provou a identidade: o certificado dela deriva da chave, e ela tem um token de membro assinado por um admin.
+A máquina provou a identidade: o certificado dela deriva da chave, e o roster atesta o que ela é.
 ### Versão
 A versão do POM que ela anuncia. Âmbar quer dizer que não é a mesma desta máquina.
 ### Rota

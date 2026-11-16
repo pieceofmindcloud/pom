@@ -45,7 +45,7 @@ Esconder um botão é só apresentação. A autorização de verdade é feita pe
 O papel é escolhido no pedido de admissão e o admin decide ao aprovar. Uma máquina admitida como visitante continua visitante, e o principal se recusa a promovê-la; só um worker pode ser promovido a admin secundário, em Minha Rede > Administradores.
 
 :::deep docs/subsystems/security-model.md
-Papéis, cadeia de confiança e tokens de membro
+Papéis, cadeia de confiança e atestações do roster
 :::
 
 :::deep docs/subsystems/web-ui.md

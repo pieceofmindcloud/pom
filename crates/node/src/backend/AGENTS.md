@@ -735,8 +735,10 @@ boundary.
   `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`.
 - `delegation.rs` - the member gateway and the payment gate for visitors
   (`POST /v1/gateway/delegate`, `member_layer`): every member that is not an
-  admin delegates, in every access mode - a visitor always (phase A), a worker
-  unless the network's `worker_delegation` is false (phase B, refinement 8.4)
+  admin delegates - the one shape the product has, since decision 5 of
+  2026-11-15 deleted the access-mode knobs: a visitor always (phase A), a
+  worker unless the network's `worker_delegation` is false (phase B,
+  refinement 8.4)
   - and the entry is always an admin the chain proves
   (`entry_nodes`, phase A of
   `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`); with no
@@ -1171,6 +1173,15 @@ kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and
   passes alone and in the full `cargo test -p node --bin pom`, but failed twice in a row
   (2026-11-08) when run filtered to `deploy:: webui::` together: it depends on test order or
   shared state, not yet traced.
+- Selector mismatch between asking and running (inherited from develop's `fcb4f4da`,
+  2026-11-16): the generation path keeps an `@<deploy_id>` no peer announced
+  (`resolve_label` holds it on purpose - "refusing here would swap 'this deployment did
+  not answer' for 'I served from another one'"), while `chat_capabilities` matches that id
+  against the announcements and answers `coverage: "unavailable"` when it finds none. The
+  interface then shows no model for a request it would still run. The test
+  `chat_capabilities_answer_for_a_model_served_elsewhere_on_a_node_that_serves_nothing`
+  asked such an id and went red with the change; its fixture now announces the id the ask
+  names, so the two paths still disagree in the open.
 
 ## Maintaining this file
 

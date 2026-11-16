@@ -6691,6 +6691,7 @@ mod tests {
                 addr_candidates: vec!["203.0.113.9:42777".into()],
                 model: "qwen".into(),
                 deploy_id: String::new(),
+                deployment_name: String::new(),
                 start_layer: 0,
                 end_layer: 1,
                 total_layers: 2,

@@ -3397,7 +3397,14 @@ with the ledger is the crate `crates/metering-core`; the node side is
   and `webui::profile_network_tests::chat_capabilities_reads_mmproj_from_a_remote_sliced_head_config`
   (`thinking`/mmproj answered `unavailable` where the test expects `supported`); the whole
   module passes when run alone (10 green) and so does each of them. Same shape as the item
-  above: measured, not chased, no change of expectation.
+  above: measured, not chased, no change of expectation. A member of this family that fails
+  **alone** is not this flake - that is how the selector mismatch recorded in
+  `crates/node/src/backend/AGENTS.md` showed up. The same shape reached
+  `webui::network_chat_settings_tests::secondary_admin_forwards_the_toggle_to_the_principal`
+  (2026-11-16): the secondary's forward to the principal (`forward_network_chat_to_primary`,
+  since 2026-09-09) answers `Err => bad_request`, so a `PEER_TIMEOUT` on the local hop reads
+  as `400 the principal node is unreachable` and the test sees 400 where it expects 200; it
+  passes alone and in the module.
 - **The forwarding hop's `network_ms` includes the next hop.** When the head is
   the gateway itself (`local` transport) and forwards to the next peer inside
   the same call, its `round_trip_ms` covers the next hop's whole round trip, and

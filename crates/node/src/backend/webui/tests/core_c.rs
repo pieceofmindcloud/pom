@@ -349,6 +349,8 @@ mod profile_network_tests {
         // while another machine serves the whole model.
         let mut remote = peer("outro", "salem", 1);
         remote.model = "qwen".into();
+        remote.deploy_id = "d-4b521593".into();
+        remote.deployment_name = "qwen".into();
         remote.start_layer = 0;
         remote.end_layer = 15;
         remote.total_layers = 16;

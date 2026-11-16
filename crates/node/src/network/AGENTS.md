@@ -698,8 +698,9 @@ dedicated or member, with iroh's hole punching), are in
 ## The visitor view (the admin-hub shape)
 
 `Network::set_visitor_view` is set once at startup by
-`payments::runtime::install` to "admin entry nodes only", whatever the
-network's `inference_access` says (phase A of
+`payments::runtime::install` to "admin entry nodes only" - the one shape the
+product has, since decision 5 of 2026-11-15 deleted the access-mode knobs
+(phase A of
 `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). It narrows
 what visitors learn, on both sides: `peer_list_for` a visitor lists only the
 admins announcing `gateway/delegate-v1`; `hides` keeps a visitor from ever

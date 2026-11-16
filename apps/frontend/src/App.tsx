@@ -10,7 +10,7 @@ import {
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
 import { ChatSessionProvider } from "./lib/chatStore";
-import { useAdminSurface, usePluginUi } from "./lib/queries";
+import { useAdminSurface, useNode, usePluginUi } from "./lib/queries";
 import { pluginUiSnapshot, resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
 import { PluginScreen } from "./components/PluginScreen";
 import { PluginLoading } from "./components/PluginLoading";
@@ -380,6 +380,16 @@ function RouteFallback({ fullScreen = false }: { fullScreen?: boolean }) {
  * The chat holds a live stream and a scroll position, so it renders outside the
  * page transition: unmounting it to animate would drop tokens mid-answer.
  */
+/**
+ * A screen of a feature still in development (`DEV_ONLY_ROUTES` in `components/nav.ts`):
+ * outside development mode its address goes back to the Dashboard.
+ */
+function DevOnly({ children }: { children: React.ReactNode }) {
+  const { data: node, isLoading } = useNode();
+  if (isLoading) return null;
+  return node?.pom_dev_mode === true ? <>{children}</> : <Navigate to="/" replace />;
+}
+
 /** `/transfers/send` from before Send file joined the Transfers screen. */
 function TransfersSendRedirect() {
   const { search } = useLocation();
@@ -655,8 +665,8 @@ export default function App() {
                         <Route path="/config/network" element={<Page>{isDemoUser() ? <DemoNetwork /> : <NetworkSettings />}</Page>} />
                         <Route path="/config/network/participants" element={<Page><NetworkParticipants /></Page>} />
                         <Route path="/config/my-machine" element={<Page><MyMachine /></Page>} />
-                        <Route path="/config/credit" element={<Page><MyCredit /></Page>} />
-                        <Route path="/config/payments" element={<Page><Payments /></Page>} />
+                        <Route path="/config/credit" element={<Page><DevOnly><MyCredit /></DevOnly></Page>} />
+                        <Route path="/config/payments" element={<Page><DevOnly><Payments /></DevOnly></Page>} />
                         <Route path="/config/usage" element={<Page><MyBudget /></Page>} />
                         <Route path="/config/my-keys" element={<Page><MyKeys /></Page>} />
                         <Route path="/config/budget" element={<Navigate to="/config/usage" replace />} />

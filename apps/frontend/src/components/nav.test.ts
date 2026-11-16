@@ -186,3 +186,14 @@ describe("navForProfile", () => {
     expect(JSON.stringify(NAV.map((s) => (s.children ?? []).map((c) => c.to)))).toBe(before);
   });
 });
+
+describe("screens still in development", () => {
+  const routes = (devMode: boolean, profile: "admin" | "visitor") =>
+    navForProfile(profile, true, { devMode }).flatMap((section) => [section.to, ...(section.children ?? []).map((child) => child.to)]);
+
+  it("shows Payments and Credit only in development mode", () => {
+    expect(routes(false, "admin")).not.toContain("/config/payments");
+    expect(routes(true, "admin")).toContain("/config/payments");
+    expect(routes(false, "visitor")).not.toContain("/config/credit");
+  });
+});

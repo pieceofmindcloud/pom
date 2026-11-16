@@ -759,7 +759,10 @@ mod tests {
 
     #[test]
     fn the_folder_is_under_dot_comfyui_images() {
-        assert_eq!(images_dir(Path::new("/w")), Path::new("/w/.imagestudio/images"));
+        assert_eq!(
+            images_dir(Path::new("/w")),
+            Path::new("/w/.imagestudio/images")
+        );
     }
 
     #[test]

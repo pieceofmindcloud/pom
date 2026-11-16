@@ -787,7 +787,11 @@ pub(super) async fn chat_capabilities(
     State(state): State<GatewayState>,
     Query(query): Query<ChatCapabilitiesQuery>,
 ) -> impl IntoResponse {
-    Json(chat_capabilities_value(&state, &query.model, None, false).await)
+    // A deployment name (what the Chat lists) stands for `<model>@<deploy_id>`.
+    let peers = state.all_peers().await;
+    let selector = crate::openai::lookup_id(&peers, query.model.trim());
+    let (_, deploy_id) = crate::deployment::split_selector(&selector);
+    Json(chat_capabilities_value(&state, &selector, deploy_id, false).await)
 }
 
 /// The OpenAI model catalog uses the same head/projector check as the Chat.

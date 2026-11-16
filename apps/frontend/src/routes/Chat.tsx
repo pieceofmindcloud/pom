@@ -918,11 +918,17 @@ function ChatScreen() {
   const toast = useToast();
 
   const available = useMemo(
-    () => chatModelOptions([
-      ...(models.data ?? []).map((m) => m.id),
-      ...(node.data?.active_model ? [node.data.active_model] : []),
-      ...(cluster.data?.model_inventory.filter((entry) => entry.complete).map((entry) => entry.model_id) ?? []),
-    ]),
+    // `/v1/models` is the source of the servable names (a deployment by its
+    // `deployment_name`); the node's and the cluster's model labels are only
+    // the fallback while it has not answered, or they bring the `.gguf` back.
+    () => chatModelOptions(
+      models.data && models.data.length > 0
+        ? models.data.map((m) => m.id)
+        : [
+            ...(node.data?.active_model ? [node.data.active_model] : []),
+            ...(cluster.data?.model_inventory.filter((entry) => entry.complete).map((entry) => entry.model_id) ?? []),
+          ],
+    ),
     [cluster.data?.model_inventory, models.data, node.data?.active_model],
   );
 

@@ -2283,7 +2283,10 @@ pub(super) async fn inference_heads(
     Query(query): Query<InferenceHeadsQuery>,
 ) -> Json<InferenceHeadsResponse> {
     let requested_model = query.model.trim().to_string();
-    let (model, deploy_id) = crate::deployment::split_selector(&requested_model);
+    let peers = state.all_peers().await;
+    // A deployment name (what the Chat lists) stands for `<model>@<deploy_id>`.
+    let selector = crate::openai::lookup_id(&peers, &requested_model);
+    let (model, deploy_id) = crate::deployment::split_selector(&selector);
     if model.is_empty() {
         return Json(InferenceHeadsResponse {
             model: requested_model,
@@ -2295,7 +2298,6 @@ pub(super) async fn inference_heads(
         });
     }
 
-    let peers = state.all_peers().await;
     let mut heads = crate::pipeline::model_head_candidates(&peers, model, deploy_id);
     // a head still loading its model is not a choice: a request sent to it waits until it is ready
     heads.retain(|peer| !peer.is_warming());

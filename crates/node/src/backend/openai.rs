@@ -687,7 +687,7 @@ async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> im
 
 /// The id the capacity, vision and price lookups read: a deployment name (or
 /// `<name>@<node_id>`) becomes its `<model>@<deploy_id>`; anything else is itself.
-fn lookup_id(peers: &[crate::network::PeerInfo], id: &str) -> String {
+pub(crate) fn lookup_id(peers: &[crate::network::PeerInfo], id: &str) -> String {
     resolve_named(peers, id).map(|(selector, _)| selector).unwrap_or_else(|| id.to_owned())
 }
 

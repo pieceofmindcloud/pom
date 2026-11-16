@@ -213,6 +213,23 @@ impl PkarrNode {
         Ok(())
     }
 
+    /// Empties this node's record: the signed packet carries an unparseable
+    /// value, so every resolver - older builds included - reads `None` and
+    /// stops dialing the addresses the previous record held. A node turning
+    /// direct-only must not leave its machine dialable by key
+    /// (spec 2026-11-15).
+    pub async fn retire_record(&self) -> Result<()> {
+        let sp = SignedPacket::builder()
+            .txt(
+                crate::brand::dns_record().as_str().try_into()?,
+                "-".try_into()?,
+                300,
+            )
+            .sign(&self.keypair)?;
+        self.client.publish(&sp).await?;
+        Ok(())
+    }
+
     /// Resolves a key (`pk:...` or z-base-32). Any failure becomes `None`.
     pub async fn resolve(&self, key: &str) -> Option<ResolvedPeer> {
         let pk: pkarr::PublicKey = match key.try_into() {
@@ -388,5 +405,48 @@ mod tests {
             .unwrap();
         assert_eq!(dial.ip_addrs().count(), 1);
         assert_eq!(dial.relay_urls().count(), 1);
+    }
+
+    /// A node turning direct-only empties its record: a resolver that never
+    /// saw the old one finds nothing, so the machine the record used to point
+    /// at stops being dialable by key (spec 2026-11-15).
+    #[tokio::test]
+    async fn a_retired_record_leaves_nothing_to_resolve() {
+        let testnet = mainline::Testnet::builder(5).build().unwrap();
+        let client = || {
+            let mut builder = Client::builder();
+            builder
+                .no_default_network()
+                .bootstrap(&testnet.bootstrap)
+                .dht(|dht| {
+                    dht.bind_address = Some(std::net::Ipv4Addr::LOCALHOST);
+                    dht
+                })
+                .dht_request_timeout(std::time::Duration::from_millis(500));
+            builder.build().unwrap()
+        };
+        let keypair = Keypair::random();
+        let publisher = PkarrNode::with_client(client(), keypair.clone());
+        publisher
+            .publish(&PkarrRecord {
+                addrs: vec!["[2001:db8::1]:52777".into()],
+                gateway_port: Some(8080),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        publisher.retire_record().await.unwrap();
+
+        // A resolver that never saw the first record: the retired packet is
+        // the only one its cache can hold.
+        let resolver = PkarrNode::with_client(client(), Keypair::random());
+        let authority = hex::encode(keypair.public_key().as_bytes());
+        for _ in 0..20 {
+            if resolver.resolve_public_peer(&authority).await.is_none() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        panic!("the retired record stayed resolvable");
     }
 }

@@ -171,8 +171,11 @@ and `build-and-run.md` for the scripts and variables.
 ## Architecture in one paragraph
 
 A single Rust binary (`crates/node`, package `node`) that coordinates LLM layers
-across machines. Each node discovers peers over UDP and an iroh endpoint, announces the layer
-range it serves, and any node can be the gateway: `POST /api/generate` and the
+across machines. Each node discovers peers over UDP and an iroh endpoint - a
+machine may turn iroh off as a whole (`--no-iroh`: it speaks and is reached on
+its announced addresses only) - announces the layer
+range it serves, and inference runs through an admin entry node (admin-hub
+routing): `POST /api/generate` and the
 `/v1` routes run **only** the distributed pipeline - with no plan covering
 `0..total_layers` the request fails with a message, there is no fallback to
 Ollama. Each peer's inference server (`/v1/prefill`, `/v1/step`) loads the model

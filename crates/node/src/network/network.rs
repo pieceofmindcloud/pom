@@ -130,6 +130,9 @@ pub struct RelayGate {
     members: std::sync::RwLock<std::collections::HashSet<String>>,
     /// The operator lets this node relay for pass holders (`anonymous`).
     anonymous: AtomicBool,
+    /// iroh is off on this node (`--no-iroh`): it serves no relay of any kind
+    /// and is reachable only by address (`Network::direct_only`).
+    direct_only: AtomicBool,
     /// The chain passes are checked against, and the passes seen.
     passes: std::sync::RwLock<Option<PassTrust>>,
     pass_ledger: std::sync::Mutex<crate::relay_pass::PassLedger>,
@@ -169,6 +172,9 @@ pub struct RelayStatus {
     pub anonymous: bool,
     /// It relays for pass holders right now.
     pub anonymous_serving: bool,
+    /// iroh is off on this node (`--no-iroh`): no relay of any kind, reachable
+    /// only by address.
+    pub direct_only: bool,
 }
 
 impl RelayGate {
@@ -184,6 +190,7 @@ impl RelayGate {
             url: std::sync::RwLock::new(None),
             policy: std::sync::atomic::AtomicU8::new(0),
             anonymous: AtomicBool::new(false),
+            direct_only: AtomicBool::new(false),
             passes: std::sync::RwLock::new(None),
             pass_ledger: std::sync::Mutex::new(Default::default()),
             #[cfg(test)]
@@ -208,6 +215,16 @@ impl RelayGate {
         self.anonymous.store(anonymous, Ordering::Relaxed);
     }
 
+    /// iroh off, fixed for the run (`--no-iroh`): the gate holds it whatever
+    /// the screens or the network policy later ask for.
+    pub fn set_direct_only(&self, direct_only: bool) {
+        self.direct_only.store(direct_only, Ordering::Relaxed);
+    }
+
+    pub fn direct_only(&self) -> bool {
+        self.direct_only.load(Ordering::Relaxed)
+    }
+
     /// Relaying for pass holders right now: asked for, the internet reaches
     /// this node, the server is up and there is a URL to hand out.
     /// The network's relay policy, as the principal last set it.
@@ -220,7 +237,8 @@ impl RelayGate {
     }
 
     pub fn anonymous_serving(&self) -> bool {
-        self.policy().allows_any()
+        !self.direct_only()
+            && self.policy().allows_any()
             && self.anonymous.load(Ordering::Relaxed)
             && self.available.load(Ordering::Relaxed)
             && self.reachable.load(Ordering::Relaxed)
@@ -297,12 +315,13 @@ impl RelayGate {
 
     /// A public relay: it relays for any node of any network.
     pub fn everyone(&self) -> bool {
-        self.policy().allows_any() && self.everyone.load(Ordering::Relaxed)
+        !self.direct_only() && self.policy().allows_any() && self.everyone.load(Ordering::Relaxed)
     }
 
     /// Whether this node relays at all right now.
     pub fn serving(&self) -> bool {
-        self.policy().allows_any()
+        !self.direct_only()
+            && self.policy().allows_any()
             && self.available.load(Ordering::Relaxed)
             && (self.everyone()
                 || (self.cluster.load(Ordering::Relaxed) && self.reachable.load(Ordering::Relaxed)))
@@ -355,6 +374,7 @@ impl RelayGate {
             serving: self.serving(),
             anonymous: self.anonymous.load(Ordering::Relaxed),
             anonymous_serving: self.anonymous_serving(),
+            direct_only: self.direct_only(),
         }
     }
 }
@@ -828,6 +848,12 @@ pub enum P2PMessage {
         /// Model unloaded by idle, keeping the deployment announced.
         #[serde(default)]
         idle: bool,
+        /// iroh is off on this node (`--no-iroh`, spec 2026-11-15): it is
+        /// reached only on the addresses it announces - no relay home, no
+        /// tunnel, no pkarr record. `serde(default)` keeps older nodes
+        /// parseable; the announce signature covers it.
+        #[serde(default)]
+        direct_only: bool,
         /// Trigger for the network Chat's authenticated gate.
         #[serde(default)]
         network_chat_enabled: bool,
@@ -976,6 +1002,11 @@ pub struct PeerInfo {
     /// The peer is alive and announced, but without the weights in memory.
     #[serde(default)]
     pub idle: bool,
+    /// The peer runs with iroh off (`--no-iroh`, spec 2026-11-15): it is
+    /// reached on the addresses it announced, holds no relay and no tunnel.
+    /// Carried by the peer's own signed announce.
+    #[serde(default)]
+    pub direct_only: bool,
 }
 
 /// Extract the host part of an addr string for use in HTTP URLs.
@@ -1440,6 +1471,10 @@ pub struct Network {
     visitor_view: Arc<std::sync::atomic::AtomicU8>,
     /// A worker admitted as a validator (`set_validator`).
     validator: Arc<std::sync::atomic::AtomicBool>,
+    /// iroh is off on this node (`--no-iroh`, spec 2026-11-15): it keeps no
+    /// relay client, publishes no record to pkarr, offers no relay, and is
+    /// reached only on the addresses it announces. Fixed for the run.
+    direct_only: Arc<std::sync::atomic::AtomicBool>,
     pub profile: Arc<std::sync::RwLock<crate::profile::NodeProfile>>,
     /// The name this machine goes by: `node_name` from the config, or the
     /// system hostname. Read with `hostname()`; the operator renames the
@@ -1984,6 +2019,7 @@ impl Network {
             profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Worker)),
             visitor_view: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             validator: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            direct_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hostname: std::sync::RwLock::new(String::new()),
             advertise_addr: std::sync::RwLock::new(None),
             tp: std::sync::RwLock::new(None),
@@ -2134,6 +2170,28 @@ impl Network {
 
     pub fn is_validator(&self) -> bool {
         self.validator.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// iroh off, fixed at startup (`--no-iroh`): no gossip, no relay client,
+    /// no pkarr record, no relay offer - the node is reached on its addresses.
+    pub fn is_direct_only(&self) -> bool {
+        self.direct_only.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Only the startup wiring calls it: the mode is fixed for the run.
+    pub fn set_direct_only(&self, direct_only: bool) {
+        self.direct_only
+            .store(direct_only, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether the peer in the table runs with iroh off (`--no-iroh`), as its
+    /// own signed announce said.
+    pub(crate) async fn peer_direct_only(&self, node_id: &str) -> bool {
+        self.peers
+            .read()
+            .await
+            .get(node_id)
+            .is_some_and(|peer| peer.direct_only)
     }
 
     pub fn profile(&self) -> crate::profile::NodeProfile {
@@ -2715,6 +2773,7 @@ impl Network {
                 .capacity,
             cluster_logs_enabled: self.cluster_logs_enabled(),
             idle: self.is_idle(),
+            direct_only: self.is_direct_only(),
             network_chat_enabled: self.network_chat_enabled(),
             signature: None,
         }
@@ -3818,6 +3877,7 @@ impl Network {
                 runtime_capacity,
                 cluster_logs_enabled,
                 idle,
+                direct_only,
                 network_chat_enabled,
                 cluster_id,
                 trust_version,
@@ -3878,6 +3938,7 @@ impl Network {
                     tp,
                     runtime_capacity,
                     idle,
+                    direct_only,
                 };
 
                 self.remember_public_discovery_peer(&peer).await;
@@ -5587,6 +5648,7 @@ mod tests {
             tp: None,
             runtime_capacity: None,
             idle: false,
+            direct_only: false,
         };
         assert_eq!(
             peer.inference_url().as_deref(),
@@ -5643,6 +5705,7 @@ mod tests {
             tp: None,
             runtime_capacity: None,
             idle: false,
+            direct_only: false,
         };
 
         for count in [0usize, 1, 2, 3, 5, 12] {
@@ -5739,6 +5802,7 @@ mod tests {
             tp: None,
             runtime_capacity: None,
             idle: false,
+            direct_only: false,
         }
     }
 
@@ -5881,6 +5945,7 @@ mod tests {
                 idle: false,
                 cluster_logs_enabled: false,
                 network_chat_enabled: false,
+                direct_only: false,
             },
             current.parse().unwrap(),
             &assignment,
@@ -6201,6 +6266,7 @@ mod tests {
             tp: None,
             runtime_capacity: None,
             idle: false,
+            direct_only: false,
         }
     }
 
@@ -6313,6 +6379,7 @@ mod tests {
             tp: None,
             runtime_capacity: None,
             idle: false,
+            direct_only: false,
         }
     }
 
@@ -6571,6 +6638,100 @@ mod tests {
 
         gate.set_policy(RelayPolicy::All);
         assert!(gate.allows(&member, None, "conn-4"));
+    }
+
+    /// `--no-iroh`: the gate holds the mode against everything - no relay for
+    /// members, for the public or for pass holders, nothing offered - even
+    /// when the options, the reachability and the network policy all ask for
+    /// a relay (spec 2026-11-15).
+    #[test]
+    fn a_direct_only_node_relays_for_nobody_whatever_is_asked() {
+        use crate::config::RelayPolicy;
+        let member = crate::p2p::random_endpoint_id().to_string();
+        let stranger = crate::p2p::random_endpoint_id().to_string();
+        let gate = RelayGate::new(true, true, true);
+        gate.set_members([member.clone()]);
+        gate.set_reachable(true);
+        gate.set_url(Some("http://203.0.113.9:52777".into()));
+        gate.set_policy(RelayPolicy::All);
+        assert!(gate.serving(), "before the flag: a public relay");
+
+        gate.set_direct_only(true);
+        assert!(!gate.serving());
+        assert!(!gate.everyone());
+        assert!(!gate.anonymous_serving());
+        assert_eq!(gate.offer(), None);
+        assert!(!gate.allows(&member, None, "conn-1"));
+        assert!(!gate.allows(&stranger, None, "conn-2"));
+        assert!(gate.status().direct_only);
+    }
+
+    /// The announce carries the mode: a peer that says it runs with iroh off
+    /// is stored that way, and that is what makes an admin answer it with no
+    /// relay passes and the relay screens show it locked (spec 2026-11-15).
+    #[tokio::test]
+    async fn an_announce_marks_a_direct_only_peer() {
+        let net = Network::new("local".into(), "pubkey".into(), 0, vec![], Some(8181), None)
+            .await
+            .unwrap();
+        let assignment = Arc::new(RwLock::new(None));
+        net.handle_message(
+            P2PMessage::Announce {
+                node_id: "worker".into(),
+                pubkey: "worker-key".into(),
+                cluster_id: None,
+                trust_version: None,
+                pom_version: String::new(),
+                pom_build: String::new(),
+                relay: None,
+                anon_tunnel: None,
+                signature: None,
+                addr: "203.0.113.9:42777".into(),
+                addr_candidates: vec!["203.0.113.9:42777".into()],
+                model: "qwen".into(),
+                deploy_id: String::new(),
+                start_layer: 0,
+                end_layer: 1,
+                total_layers: 2,
+                memory_mb: 0.0,
+                timestamp: Utc::now(),
+                inference_port: Some(8181),
+                inference_quic_port: None,
+                inference_frame_capabilities: Vec::new(),
+                gateway_port: Some(8080),
+                gateway_quic_port: None,
+                profile: crate::profile::NodeProfile::Worker,
+                tls: true,
+                quic: false,
+                hostname: "worker".into(),
+                capabilities: Vec::new(),
+                disk_total_mb: 0,
+                disk_free_mb: 0,
+                endpoint_id: None,
+                endpoint_addrs: Vec::new(),
+                tp: None,
+                runtime_capacity: None,
+                idle: false,
+                direct_only: true,
+                cluster_logs_enabled: false,
+                network_chat_enabled: false,
+            },
+            "127.0.0.1:42777".parse().unwrap(),
+            &assignment,
+        )
+        .await;
+
+        let stored = net.peers.read().await["worker"].clone();
+        assert!(stored.direct_only);
+        assert!(net.peer_direct_only("worker").await);
+        assert!(!net.peer_direct_only("nobody").await);
+
+        // The node's own announce says the same when the mode is on.
+        net.set_direct_only(true);
+        let P2PMessage::Announce { direct_only, .. } = net.self_announce(None) else {
+            unreachable!();
+        };
+        assert!(direct_only);
     }
 
     /// Whom a node relays for: everyone on a public relay; the members of
@@ -7765,6 +7926,7 @@ mod tests {
             cluster_logs_enabled: false,
             idle: false,
             network_chat_enabled: false,
+            direct_only: false,
         };
         sign_announce(&mut announce, key);
         announce

@@ -2092,6 +2092,7 @@ impl GatewayState {
                 tp: self.network.tp_identity(),
                 runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
                 idle: self.network.is_idle(),
+                direct_only: self.network.is_direct_only(),
             });
         }
         peers

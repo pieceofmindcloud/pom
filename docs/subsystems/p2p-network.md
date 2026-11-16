@@ -69,6 +69,47 @@ address, and an IP written into a document goes stale. Therefore:
   (`HashMap<node_id, PeerInfo>`). The gossip path enters through
   `Network::insert_admitted_peer`.
 
+### Direct-only nodes (`--no-iroh`, spec 2026-11-15)
+
+A machine can turn the iroh line off as a whole: `--no-iroh` / `POM_NO_IROH=1`
+fixes the mode for the run (`Network::is_direct_only`, held by `RelayGate` too
+so the relay screens and answers say "no" whatever is asked later). What such
+a node gives up: gossip (no subscribe, no publish - its announce round is the
+sealed direct announce to every peer it dialed, the visitor's path), any relay
+client (n0's, dedicated, member: nothing enters the endpoint's map and
+`apply_policy` never adds one), the embedded relay server (`--serve-relay`
+refuses to coexist with the flag), hole punching, both tunnels (the ephemeral
+endpoint of `anon_tunnel` is never started; `relay_passes` hands it no
+passes), and pkarr **publication** - the mode change empties the node's record
+once (`PkarrNode::retire_record`) so the machine stops being dialable by key.
+pkarr **resolution** stays on: the node still cold-dials the principals and
+`--pkarr-peers` by key, learns their addresses into the endpoint, and speaks
+from there.
+
+What it keeps: the whole LAN path, plain QUIC/HTTP hops, control calls, mDNS,
+lobby, cluster logs, Chat, file transfer - all of it direct. Its announce
+carries `direct_only: true` (signature-covered), which is how admins and
+screens know. The mode is the operator's declaration of reachability and POM
+measures it: a direct-only candidate whose addresses stop answering is refused
+by planning with today's "machine unreachable", never rescued by a punch or a
+relay. An admin that serves the internet should keep iroh - it is where
+NAT-hidden visitors enter. Design:
+`docs/superpowers/specs/2026-11-15-direct-only-node-design.md`.
+
+What such a node **sees** is what it dials, and the principal is enough:
+`spawn_pkarr_bootstrap` resolves the chain's principals and `--pkarr-peers` by
+key, and the dial round enters those addresses in the endpoint's address book
+(`p2p.learn`) and in the dialed set; every announce round then sends the
+sealed announce to the dialed and learned peers on `pom/announce-direct/1`,
+which is also the connection that first opens each one. What a direct-only
+worker does not need is a full table: it never plans - the admin holds its
+announce (the direct announce is answered like a gossip one), plans, deploys,
+fans out `reload_model`, dials its serving hops and names the transfer
+sources by URL when it commands a slice pull. The LAN path is untouched: UDP
+announces are what always talk. What is genuinely lost is mesh gossip at that
+one node, and with it the self-healing of a worker that knows only other
+workers - the hub is its path to everyone else.
+
 ### Admission before the `peers` table
 
 Transport discovery is not network membership. The process can learn an address
@@ -791,6 +832,9 @@ one record in the DHT, so the two would overwrite each other.
   record changed (home relay changed, public address observed, pin changed) or
   every 30 min (`PKARR_REFRESH`) so it does not vanish from the DHT.
   `set_geo_label` republishes immediately when the admin edits the network.
+  A direct-only node (`--no-iroh`) publishes nothing: the republisher never
+  starts and the mode change empties the record once (`retire_record`), so its
+  machine - which the hub line exists to hide - is not dialable by key either.
 - **Resolution**: `resolve` returns `ResolvedPeer { endpoint_id, record }`; any
   failure becomes `None`, never an error. `resolve_dial_addr` turns the record
   into one `EndpointAddr` holding the direct addresses and the relays together

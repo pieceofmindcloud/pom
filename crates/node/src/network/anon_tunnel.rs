@@ -274,6 +274,9 @@ pub struct AnonTunnels {
     /// Every pass handed to an endpoint: a relay binds a pass to the first
     /// endpoint that used it, so a pass goes to one endpoint only.
     used_passes: Mutex<HashSet<String>>,
+    /// An iroh endpoint is never made: a direct-only node (`--no-iroh`) homes
+    /// no tunnel anywhere (spec 2026-11-15).
+    off: bool,
 }
 
 impl AnonTunnels {
@@ -291,6 +294,21 @@ impl AnonTunnels {
             current: tokio::sync::RwLock::new(None),
             retiring: Mutex::new(Vec::new()),
             used_passes: Mutex::new(HashSet::new()),
+            off: false,
+        }
+    }
+
+    /// The tunnels are off for this node: nothing is homed, nothing is dialed
+    /// through them (`--no-iroh`).
+    pub fn disabled(
+        secret: SecretKey,
+        node_id: String,
+        handler: AnonHandler,
+        is_member: MemberCheck,
+    ) -> Self {
+        Self {
+            off: true,
+            ..Self::new(secret, node_id, handler, is_member)
         }
     }
 
@@ -299,6 +317,9 @@ impl AnonTunnels {
     /// one in the map, a relay no longer handed out leaves it, and after
     /// `ROTATE_AFTER` a new endpoint takes the unused passes.
     pub async fn sync(&self, relays: &[AnonymousRelay]) {
+        if self.off {
+            return;
+        }
         if let Ok(mut retiring) = self.retiring.lock() {
             retiring.retain(|(_, since)| since.elapsed() < RETIRE_AFTER);
         }

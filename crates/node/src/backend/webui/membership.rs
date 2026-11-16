@@ -133,6 +133,13 @@ pub(crate) async fn relay_passes(
     state: &GatewayState,
     member: &str,
 ) -> Vec<crate::network::AnonymousRelay> {
+    // A direct-only member (`--no-iroh`) holds no ephemeral endpoint and dials
+    // no visitor relay: passes for it would go nowhere (spec 2026-11-15).
+    if member == state.network.node_id && state.network.is_direct_only()
+        || state.network.peer_direct_only(member).await
+    {
+        return Vec::new();
+    }
     let now = chrono::Utc::now().timestamp();
     let document = state.admin_trust.document();
     let mut relays = Vec::new();
@@ -1165,6 +1172,28 @@ mod relay_pass_tests {
             now
         )
         .is_ok());
+
+        // A peer whose announce said it runs with iroh off (`--no-iroh`) is
+        // handed no passes: it holds no ephemeral endpoint and dials no
+        // visitor relay (spec 2026-11-15).
+        admin
+            .network
+            .peers
+            .write()
+            .await
+            .get_mut("asker")
+            .expect("asker is on the table")
+            .direct_only = true;
+        assert!(relay_passes(&admin, "asker").await.is_empty());
+
+        // The same node asking for itself while direct-only: the same answer.
+        let mut self_direct = crate::gateway::testkit::state_with("self-direct", vec![]).await;
+        self_direct.admin_trust = std::sync::Arc::new(
+            crate::admin_trust::AdminTrust::in_memory(trust.document()).unwrap(),
+        );
+        self_direct.network.set_direct_only(true);
+        let own = self_direct.network.node_id.clone();
+        assert!(relay_passes(&self_direct, &own).await.is_empty());
     }
 }
 

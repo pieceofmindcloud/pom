@@ -503,7 +503,8 @@ boundary.
   `internal_relays` answers on any admin with the passes it signs for the
   member that called (`relay_passes`: each visitor's anonymous relay the
   admin sees, with a fresh relay pass, only for a URL on a public host among
-  that visitor's own addresses, `relay_url_is_peers`); `spawn_membership_keeper`
+  that visitor's own addresses, `relay_url_is_peers`; nothing for a peer whose
+  announce said direct-only - it dials no relay, `peer_direct_only`); `spawn_membership_keeper`
   stores them in `Network::set_anonymous_relays`, an admin signing its own
   every tick, a member asking `/api/internal/membership/relays` - it looks
   again every 2 s while no admin is in sight, and backs off from 2 s to the

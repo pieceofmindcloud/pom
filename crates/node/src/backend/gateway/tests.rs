@@ -3186,6 +3186,7 @@ mod peer_visibility_tests {
             tp: None,
             runtime_capacity: None,
             idle: false,
+            direct_only: false,
         }
     }
 
@@ -4067,6 +4068,7 @@ pub(crate) mod testkit {
                 max_new_tokens: 256,
             }),
             idle: false,
+            direct_only: false,
         }
     }
 

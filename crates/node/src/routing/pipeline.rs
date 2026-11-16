@@ -802,6 +802,7 @@ mod ipv6_tests {
             tp: None,
             runtime_capacity: None,
             idle: false,
+            direct_only: false,
         }
     }
 

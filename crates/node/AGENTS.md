@@ -95,7 +95,10 @@ public relay), `--no-cluster-relay`, `--no-relay-transfers` (the three are the
 `relay` section of the config file, see `p2p-network.md`),
 `--no-default-relays`,
 `--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
-access), `--no-tls` (remote HTTP for browser/client requests behind an HTTPS
+access), `--no-iroh` (iroh as a whole off: no gossip, no relay client or
+server, no tunnels, no pkarr publication - the node speaks and is reached on
+its announced addresses only, spec 2026-11-15; refuses `--serve-relay`),
+`--no-tls` (remote HTTP for browser/client requests behind an HTTPS
 proxy; peer mTLS remains on).
 `--relay-peers` (relay URLs) adds to the `pom.json`'s `relay_peers` (`merged_relay_peers`,
 config first); `--no-default-relays` drops n0's public relays, as `--bootstrap` does to `bootstrap_nodes`. There is no flag for

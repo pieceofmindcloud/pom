@@ -351,8 +351,8 @@ pub struct Discovery {
     router: iroh::protocol::Router,
     _gossip: Gossip,
     _relay_server: Option<iroh_relay::server::Server>,
-    gossip_tx: GossipSender,
-    gossip_rx: GossipReceiver,
+    gossip_tx: Option<GossipSender>,
+    gossip_rx: Option<GossipReceiver>,
     mdns: Option<iroh_mdns_address_lookup::MdnsAddressLookup>,
     dedicated_relays: Vec<RelayUrl>,
     /// n0's public relays this run may use (`--no-default-relays` empties it),
@@ -381,6 +381,7 @@ impl Discovery {
         udp_port: u16,
         relay_urls: &[String],
         use_default_relays: bool,
+        direct_only: bool,
         network: Arc<Network>,
         secret: SecretKey,
         tunnel_rx: mpsc::Receiver<TunnelOutbound>,
@@ -401,28 +402,33 @@ impl Discovery {
                 None => warn!("relay_peers: {text} is not a relay URL (https://... or http://...)"),
             }
         }
-        let public_relays: Vec<(RelayUrl, Arc<iroh::RelayConfig>)> = if use_default_relays {
-            let defaults = iroh::RelayMode::Default.relay_map();
-            defaults
-                .urls::<Vec<RelayUrl>>()
-                .into_iter()
-                .filter_map(|url| Some((url.clone(), defaults.get(&url)?)))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let public_relays: Vec<(RelayUrl, Arc<iroh::RelayConfig>)> =
+            if use_default_relays && !direct_only {
+                let defaults = iroh::RelayMode::Default.relay_map();
+                defaults
+                    .urls::<Vec<RelayUrl>>()
+                    .into_iter()
+                    .filter_map(|url| Some((url.clone(), defaults.get(&url)?)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
         // The network's relay policy decides the first map too; the policy
         // round keeps the map in line with it afterwards (`apply_relay_policy`).
+        // A direct-only node keeps no relay client at all (`--no-iroh`): the
+        // map stays empty whatever the policy asks for.
         let relay_policy = network.relay_gate().policy();
         let relay_map = iroh::RelayMap::empty();
-        if relay_policy.allows_public() {
-            for (url, config) in &public_relays {
-                relay_map.insert(url.clone(), config.clone());
+        if !direct_only {
+            if relay_policy.allows_public() {
+                for (url, config) in &public_relays {
+                    relay_map.insert(url.clone(), config.clone());
+                }
             }
-        }
-        if relay_policy.allows_any() {
-            for url in &dedicated_relays {
-                relay_map.insert(url.clone(), relay_config(url));
+            if relay_policy.allows_any() {
+                for url in &dedicated_relays {
+                    relay_map.insert(url.clone(), relay_config(url));
+                }
             }
         }
         network.set_dedicated_relays(dedicated_relays.iter().map(|url| url.to_string()));
@@ -489,20 +495,35 @@ impl Discovery {
             .max_message_size(GOSSIP_MAX_MESSAGE_BYTES)
             .spawn(endpoint.clone());
         let router = Self::router(&endpoint, &gossip, &ctx, tracker);
-        let topic = gossip
-            .subscribe(topic_id(), Vec::new())
-            .await
-            .context("gossip subscription")?;
-        let (gossip_tx, gossip_rx) = topic.split();
+        // A direct-only node is never a gossip neighbor: it holds no topic
+        // subscription, publishes nothing on the topic, and asks nobody to
+        // join it (`--no-iroh`, spec 2026-11-15). Its announces go to the
+        // peers it dialed, the way a visitor's already do.
+        let (gossip_tx, gossip_rx) = if direct_only {
+            (None, None)
+        } else {
+            let topic = gossip
+                .subscribe(topic_id(), Vec::new())
+                .await
+                .context("gossip subscription")?;
+            let (tx, rx) = topic.split();
+            (Some(tx), Some(rx))
+        };
 
-        let relay_server = match start_relay_server(port, network.relay_gate()).await {
-            Ok(server) => {
-                info!("p2p: relay server on TCP {port}");
-                Some(server)
-            }
-            Err(error) => {
-                warn!("p2p: no relay server, this node will not relay for its cluster: {error:#}");
-                None
+        let relay_server = if direct_only {
+            None
+        } else {
+            match start_relay_server(port, network.relay_gate()).await {
+                Ok(server) => {
+                    info!("p2p: relay server on TCP {port}");
+                    Some(server)
+                }
+                Err(error) => {
+                    warn!(
+                        "p2p: no relay server, this node will not relay for its cluster: {error:#}"
+                    );
+                    None
+                }
             }
         };
         network.relay_gate().set_available(relay_server.is_some());
@@ -524,12 +545,12 @@ impl Discovery {
                 let network = members.clone();
                 Box::pin(async move { network.is_member_key(&node_id, &pubkey).await })
             });
-            Arc::new(AnonTunnels::new(
-                secret.clone(),
-                network.node_id.clone(),
-                handler,
-                is_member,
-            ))
+            Arc::new(if direct_only {
+                // `--no-iroh`: no ephemeral endpoint, homed nowhere, ever.
+                AnonTunnels::disabled(secret.clone(), network.node_id.clone(), handler, is_member)
+            } else {
+                AnonTunnels::new(secret.clone(), network.node_id.clone(), handler, is_member)
+            })
         };
 
         let (announce_tx, announce_rx) = mpsc::channel(64);
@@ -726,7 +747,7 @@ impl Discovery {
             _gossip,
             _relay_server,
             gossip_tx,
-            mut gossip_rx,
+            gossip_rx,
             mdns,
             dedicated_relays,
             public_relays,
@@ -739,6 +760,15 @@ impl Discovery {
             anon,
         } = self;
         let endpoint = router.endpoint().clone();
+        // The topic exists only when this node subscribes: a direct-only node
+        // keeps `None` and its select arm stays silent forever
+        // (`--no-iroh`, spec 2026-11-15). The shape mirrors `mdns_events`.
+        let mut gossip_events: std::pin::Pin<
+            Box<dyn futures::Stream<Item = Result<GossipEvent, iroh_gossip::api::ApiError>> + Send>,
+        > = match gossip_rx {
+            Some(gossip_rx) => Box::pin(gossip_rx),
+            None => Box::pin(futures::stream::pending()),
+        };
         let mut mdns_events: std::pin::Pin<
             Box<dyn futures::Stream<Item = iroh_mdns_address_lookup::DiscoveryEvent> + Send>,
         > = match &mdns {
@@ -755,7 +785,7 @@ impl Discovery {
         let network = ctx.network.clone();
         loop {
             tokio::select! {
-                event = gossip_rx.next() => {
+                event = gossip_events.next() => {
                     match event {
                         Some(Ok(GossipEvent::Received(message))) => {
                             handle_announce(&ctx, &message.content).await;
@@ -772,15 +802,22 @@ impl Discovery {
                         }
                         Some(Ok(GossipEvent::Lagged)) => debug!("gossip: receiver lagged"),
                         Some(Err(error)) => warn!("gossip: {error}"),
+                        // Only a subscribed node has the stream at all; when a
+                        // subscription that existed closes, the run loop ends
+                        // as it did before. A direct-only node never enters
+                        // this arm: its stream is `pending()` forever.
                         None => break,
                     }
                 }
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
                     let sealed = seal_announce(&secret, &data);
-                    if network.is_visitor() {
+                    if network.is_visitor() || network.is_direct_only() {
                         // The topic is shared by every network: a visitor's
-                        // announce goes only to its admins and workers.
+                        // announce goes only to its admins and workers. A
+                        // direct-only node has no topic either: the same
+                        // sealed direct announce, to every peer it dialed
+                        // (`--no-iroh`).
                         for (peer_id, addrs) in
                             direct_announce_targets(&network, endpoint.id(), &policy.dialed).await
                         {
@@ -797,8 +834,10 @@ impl Discovery {
                                 }
                             });
                         }
-                    } else if let Err(error) = gossip_tx.broadcast(sealed.into()).await {
-                        debug!("gossip broadcast: {error}");
+                    } else if let Some(gossip_tx) = &gossip_tx {
+                        if let Err(error) = gossip_tx.broadcast(sealed.into()).await {
+                            debug!("gossip broadcast: {error}");
+                        }
                     }
                 }
                 addr = dial_rx.recv() => {
@@ -813,7 +852,7 @@ impl Discovery {
                     if policy.forget_failed_join(addr.id, std::time::Instant::now()) {
                         debug!("gossip: {} is no neighbor, asking it to join again", addr.id.fmt_short());
                     }
-                    join_gossip(&gossip_tx, &mut policy, addr.id).await;
+                    join_gossip(gossip_tx.as_ref(), &mut policy, addr.id).await;
                 }
                 event = mdns_events.next() => {
                     if let Some(iroh_mdns_address_lookup::DiscoveryEvent::Discovered { endpoint_info, .. }) = event {
@@ -825,7 +864,7 @@ impl Discovery {
                             && !policy.joined.contains(&id)
                         {
                             info!("mDNS: {}", id.fmt_short());
-                            join_gossip(&gossip_tx, &mut policy, id).await;
+                            join_gossip(gossip_tx.as_ref(), &mut policy, id).await;
                         }
                     }
                 }
@@ -844,8 +883,12 @@ impl Discovery {
                         }
                     }
                     // With no relay allowed, no tunnel through a visitor's
-                    // anonymous relay either.
-                    if network.is_detached() || !network.relay_gate().policy().allows_any() {
+                    // anonymous relay either. A direct-only node has neither
+                    // (`--no-iroh`).
+                    if network.is_detached()
+                        || network.is_direct_only()
+                        || !network.relay_gate().policy().allows_any()
+                    {
                         anon.sync(&[]).await;
                         network.set_anon_tunnel(None);
                     } else {
@@ -1087,7 +1130,10 @@ async fn apply_relay_policy(
     }
 }
 
-async fn join_gossip(gossip: &GossipSender, policy: &mut PolicyState, peer: EndpointId) {
+async fn join_gossip(gossip: Option<&GossipSender>, policy: &mut PolicyState, peer: EndpointId) {
+    let Some(gossip) = gossip else {
+        return;
+    };
     if policy.joined.insert(peer) {
         if let Err(error) = gossip.join_peers(vec![peer]).await {
             debug!("gossip: join {}: {error}", peer.fmt_short());
@@ -1104,7 +1150,7 @@ async fn join_gossip(gossip: &GossipSender, policy: &mut PolicyState, peer: Endp
 async fn apply_policy(
     ctx: &Ctx,
     endpoint: &iroh::Endpoint,
-    gossip: &GossipSender,
+    gossip: &Option<GossipSender>,
     dedicated: &[RelayUrl],
     public: &[(RelayUrl, Arc<iroh::RelayConfig>)],
     udp_port: u16,
@@ -1114,6 +1160,12 @@ async fn apply_policy(
     let network = &ctx.network;
     let peers = network.alive_peers().await;
     let gate = network.relay_gate();
+    // A direct-only node keeps no relay client: the policy round finds no
+    // dedicated and no public relays to put on its endpoint, whatever the
+    // network allows (`--no-iroh`).
+    let direct_only = network.is_direct_only();
+    let dedicated: &[RelayUrl] = if direct_only { &[] } else { dedicated };
+    let public: &[(RelayUrl, Arc<iroh::RelayConfig>)] = if direct_only { &[] } else { public };
     let relay_policy = gate.policy();
     apply_relay_policy(endpoint, relay_policy, dedicated, public, policy).await;
     gate.set_members(peers.iter().filter_map(|peer| peer.endpoint_id.clone()));
@@ -1139,12 +1191,14 @@ async fn apply_policy(
         .map(|host| format!("http://{host}:{relay_port}"));
     gate.set_url(offer_url);
 
-    // Member relays: the ones the table announces, beside the dedicated ones,
-    // up to a cap. A dedicated relay is a public one and carries no file
-    // transfer, so a node behind NAT needs a member relay as well.
+    // Member relays: the ones the table announces, beside the dedicated
+    // ones, up to a cap. A dedicated relay is a public one and carries no
+    // file transfer, so a node behind NAT needs a member relay as well.
+    // A direct-only node (`--no-iroh`) is never a relay client: no punch,
+    // no relay path, whatever the network policy allows (spec 2026-11-15).
     let wanted: Vec<RelayUrl> = peers
         .iter()
-        .filter(|_| relay_policy.allows_any())
+        .filter(|_| relay_policy.allows_any() && !network.is_direct_only())
         .filter(|peer| peer.node_id != network.node_id)
         .filter_map(|peer| peer.relay.as_ref()?.url.as_deref().and_then(p2p::relay_url))
         .filter(|url| !dedicated.contains(url))
@@ -1179,7 +1233,11 @@ async fn apply_policy(
     // Gossip membership: every admitted peer this node has not asked yet.
     // Asked again only when this node has no neighbor left, which HyParView
     // cannot repair alone, and then not more than once per interval.
+    // A direct-only node has no topic to keep members on (`--no-iroh`) - it
+    // still learns their dial addresses, which is how its own calls reach
+    // them directly.
     if !network.is_detached() {
+        let direct_only = network.is_direct_only();
         let mut admitted = Vec::new();
         for peer in &peers {
             let Some(id) = peer.endpoint_id.as_deref().and_then(p2p::parse_endpoint_id) else {
@@ -1189,21 +1247,25 @@ async fn apply_policy(
                 continue;
             }
             ctx.p2p.learn(id, &peer.endpoint_dialable_addrs());
-            join_gossip(gossip, policy, id).await;
+            if !direct_only {
+                join_gossip(gossip.as_ref(), policy, id).await;
+            }
             admitted.push(id);
         }
         let now = std::time::Instant::now();
         let rejoin_due = policy
             .isolated_rejoin
             .is_none_or(|last| now.duration_since(last) >= ISOLATED_REJOIN_INTERVAL);
-        if policy.neighbors.is_empty() && !admitted.is_empty() && rejoin_due {
+        if !direct_only && policy.neighbors.is_empty() && !admitted.is_empty() && rejoin_due {
             policy.isolated_rejoin = Some(now);
             debug!(
                 "gossip: no neighbor, asking {} peer(s) again",
                 admitted.len()
             );
-            if let Err(error) = gossip.join_peers(admitted).await {
-                debug!("gossip: rejoin: {error}");
+            if let Some(gossip) = gossip {
+                if let Err(error) = gossip.join_peers(admitted).await {
+                    debug!("gossip: rejoin: {error}");
+                }
             }
         }
     }
@@ -1262,6 +1324,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         runtime_capacity,
         cluster_logs_enabled,
         idle,
+        direct_only,
         network_chat_enabled,
         cluster_id,
         trust_version,
@@ -1330,6 +1393,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         tp,
         runtime_capacity,
         idle,
+        direct_only,
     };
     network.remember_public_discovery_peer(&peer).await;
     // Never `admit_peer` here: the probe may need the tunnel, and a probe per

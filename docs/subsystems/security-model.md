@@ -291,10 +291,10 @@ own.
 
 ## Charging visitors
 
-A charging network (`docs/subsystems/payments.md`) runs
-`inference_access = member_gateway_only` (the deprecated `direct` and
-`member_gateway` keep parsing for older nodes but open no visitor path on any
-released node): a visitor never reaches a worker's inference port
+A charging network (`docs/subsystems/payments.md`) charges on the member
+gateway - every visitor enters through an admin entry node, the only shape
+the product has (the `inference_access` knob that once named alternatives was
+deleted 2026-11-15, C3): a visitor never reaches a worker's inference port
 (`visitor_must_use_gateway`) and learns only the entry nodes
 the policy allows, so it cannot skip the entry node that charges it. The gate
 holds visitors only: a delegating worker is a member and is not charged. The

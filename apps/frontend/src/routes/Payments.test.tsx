@@ -18,7 +18,6 @@ vi.mock("../lib/toast", () => ({ useToast: () => ({ success: vi.fn(), fromError:
 const overview = {
   cut_off: [{ node_id: "old-visitor-node", name: "old-laptop", version: "1.0.0" }],
   enabled: false,
-  inference_access: "direct",
   prices: {},
   principal: true,
   accounts: [],
@@ -57,7 +56,6 @@ describe("Payments", () => {
     expect(api.post).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole("button", { name: /turn on anyway/i }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith("/api/ui/network/settings", expect.objectContaining({
-      inference_access: "member_gateway_only",
       payments: { enabled: true, prices: {} },
     })));
   });

@@ -10,19 +10,12 @@ Code: `crates/node/src/payments/` (the x402 prepaid credit core and
 
 `NetworkSettings` (saved and fanned out like every network setting):
 
-- `inference_access`: deprecated 2026-11-15 (decision 5 of
-  `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). `direct`
-  and `member_gateway` open nothing on a new node: every visitor delegates to
-  an admin entry node, whatever the file says. They keep parsing and being
-  written so older nodes read the same config; the node warns on load when a
-  file carries one, and a new network defaults to `member_gateway_only` - the
-  only value whose name still says something. They die in the dated release
-  that retires the membership token (phase C3), the moment the last gate that
-  honored them stops being fed. `enabled` payments still validate against
-  `member_gateway_only`; that gate collapses together with the enum.
-- `entry_nodes`: `admins` (default) or `admins_and_workers`. Parsed and
-  preserved; the entry node is always an admin the chain proves, for a visitor
-  and for a worker alike.
+- Retired knobs (phase C3, 2026-11-15): `inference_access` and `entry_nodes`
+  are deleted from `NetworkSettings` - the admin entry node is the only entry
+  the product has. A `pom.json` that still carries them loads (serde ignores
+  keys the node no longer has) and a new node never writes them; the deletion
+  carries no compatibility bridge, by decision 5 of
+  `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`.
 - `worker_delegation` (default true): whether a **worker** hands its own
   generation requests to an admin entry node, like a visitor does (phase B of
   `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). Set false
@@ -30,8 +23,7 @@ Code: `crates/node/src/payments/` (the x402 prepaid credit core and
   measurably need to keep planning directly; visitors still always delegate.
   Absent (an older principal) reads as the default.
 - `payments`: `{enabled, prices: {<model>: {in_micro_per_1k, out_micro_per_1k}}}`.
-  `enabled` requires `member_gateway_only` (`validate_network_settings`). A
-  model without a price is free. Amounts are micro-credits (`1 = 1e-6`).
+  A model without a price is free. Amounts are micro-credits (`1 = 1e-6`).
 
 ## Prices
 
@@ -50,15 +42,15 @@ reads, can also be edited on the Payments screen.
 Every member that is not an admin hands `/v1/chat/completions`,
 `/v1/completions`, `/v1/messages` and `/api/generate` (after its own API key
 check, `member_layer`) to an admin entry node with `POST /v1/gateway/delegate`,
-a signed peer call: a visitor always, whatever the network's
-`inference_access` says; a worker unless the network opened the escape hatch
-`worker_delegation = false`. An admin never delegates - it is itself an entry
+a signed peer call: a visitor always; a worker unless the network opened the
+escape hatch `worker_delegation = false`. An admin never delegates - it is
+itself an entry
 node. Entry nodes are the admins the trust chain proves that announce
 `gateway/delegate-v1`, nearest by measured RTT; with none in sight the caller
 gets `503 no_entry_node`, it does not plan for itself (except a worker under
-the escape hatch). The entry node accepts only a signed caller the roster,
-its vouch (`AdminTrust::vouched_role`), or - the legacy form - a membership
-token attests - a visitor or a worker; an admin caller is refused
+the escape hatch). The entry node accepts only a signed caller the roster or
+its vouch (`AdminTrust::vouched_role`)
+attests - a visitor or a worker; an admin caller is refused
 `409 plan_locally` - runs the request through its own router marked
 `Delegated`, and streams the answer back. The caller's identity in the audit
 is `visitor:<node>` or `member:<node>`; the fee of a charging network falls on

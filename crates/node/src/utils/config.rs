@@ -259,18 +259,6 @@ pub struct NetworkSettings {
     /// block; a missing block is metering off.
     #[serde(default)]
     pub metering: MeteringSettings,
-    /// How visitors reach the models. Deprecated 2026-11-15 (spec decision 5):
-    /// `direct` and `member_gateway` are history that keeps parsing for older
-    /// nodes, the node warns on load, and a new network defaults to
-    /// `member_gateway_only`. Every value means delegation today: see
-    /// `backend/delegation.rs`.
-    #[serde(default)]
-    pub inference_access: InferenceAccess,
-    /// Which members the file names as entry nodes. The visitor's entry is
-    /// always an admin of the chain now; the value is preserved for older
-    /// nodes.
-    #[serde(default)]
-    pub entry_nodes: EntryNodes,
     /// Whether a **worker** hands its own generation requests to an admin
     /// entry node, like a visitor does. Default true: the hub shape of
     /// `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`,
@@ -314,76 +302,10 @@ impl Default for NetworkSettings {
             location_precision: LocationPrecision::default(),
             location: None,
             metering: MeteringSettings::default(),
-            inference_access: InferenceAccess::default(),
-            entry_nodes: EntryNodes::default(),
             worker_delegation: default_worker_delegation(),
             payments: PaymentsSettings::default(),
         }
     }
-}
-
-/// How a network's `pom.json` says visitors reach the models. Since phase A
-/// of the admin-hub routing
-/// (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`) no code
-/// branches on the value: visitors always delegate to an admin entry node.
-/// Deprecated with a date - 2026-11-15, decision 5 of that spec:
-/// `direct` and `member_gateway` open nothing on any released node, they stay
-/// parsed and written only so an older node keeps reading the config, and the
-/// default of a new network is `member_gateway_only`. The deprecated values
-/// are removed in the dated release that retires the membership token
-/// (phase C3), the moment the last gate that honored them stops being fed.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InferenceAccess {
-    /// Deprecated 2026-11-15: the every-member-is-a-gateway mode of the older
-    /// nodes. Parsed and written for them; no new node honors it.
-    Direct,
-    /// Deprecated 2026-11-15: the mixed charging mode of the older nodes.
-    /// Parsed and written for them; no new node honors it.
-    MemberGateway,
-    /// The form whose name still says something, and the default of a new
-    /// network since the deprecation.
-    #[default]
-    MemberGatewayOnly,
-}
-
-impl InferenceAccess {
-    /// Whether a visitor hands its requests to an entry node. Since the
-    /// admin-hub routing (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`)
-    /// this is always true: every released network's visitor delegates to an
-    /// admin entry node, whatever the persisted value says. The values stay
-    /// parsed and written so an older node keeps reading the config; the
-    /// difference between them survives only as legacy on older nodes. It
-    /// disappears with the dated removal of the deprecated variants.
-    pub fn delegates(self) -> bool {
-        true
-    }
-
-    /// Whether the value is one of the two deprecated forms. The load path
-    /// warns with it, so the operator sees the deprecation on the screen.
-    pub fn is_deprecated(self) -> bool {
-        matches!(self, Self::Direct | Self::MemberGateway)
-    }
-
-    /// The value as it is spelled in the config file.
-    pub fn json_name(self) -> &'static str {
-        match self {
-            Self::Direct => "direct",
-            Self::MemberGateway => "member_gateway",
-            Self::MemberGatewayOnly => "member_gateway_only",
-        }
-    }
-}
-
-/// Which members the `pom.json` names as entry nodes for visitors. Since
-/// phase A of the admin-hub routing the visitor's entry is always an admin of
-/// the chain; the value stays parsed and written for older nodes.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum EntryNodes {
-    #[default]
-    Admins,
-    AdminsAndWorkers,
 }
 
 fn default_worker_delegation() -> bool {
@@ -391,8 +313,9 @@ fn default_worker_delegation() -> bool {
 }
 
 /// Charging visitors (`docs/superpowers/specs/2026-11-09-visitor-charging-design.md`).
-/// Off: nothing is charged. On, it needs `inference_access =
-/// member_gateway_only`, so no visitor reaches a worker without an entry node.
+/// Off: nothing is charged. On, every visitor reaches the models through an
+/// admin entry node - the only shape the product has since the admin-hub
+/// routing, so charging never depends on a worker's gateway.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct PaymentsSettings {
@@ -428,15 +351,7 @@ impl NetworkSettings {
 /// Validate the network block wherever it is edited, not only during setup.
 /// Public networks need the coarse geographic key because discovery groups by
 /// country and city before measuring peer latency.
-/// A charging network must carry `member_gateway_only` while the deprecated
-/// forms exist: a mixed-version cluster still has nodes that branch on the
-/// value, and charging must keep the mode those older nodes enforce. The gate
-/// collapses when the enum does, in the dated release of phase C3.
 pub fn validate_network_settings(settings: &NetworkSettings) -> Result<()> {
-    if settings.payments.enabled && settings.inference_access != InferenceAccess::MemberGatewayOnly
-    {
-        anyhow::bail!("charging visitors needs inference access through network members only");
-    }
     if settings.visibility == NetworkVisibility::Public {
         if settings.public_name.trim().is_empty() {
             anyhow::bail!("public networks need a public name");
@@ -1063,16 +978,6 @@ impl Config {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config at {:?}", path))?;
         let mut config = parse_config(&content, &path)?;
-        if config.network.inference_access.is_deprecated() {
-            tracing::warn!(
-                "inference_access '{}' in {} is deprecated (2026-11-15): every visitor \
-                 delegates to an admin entry node whatever the file says. The value is \
-                 kept only so older nodes keep reading the config, and retires with the \
-                 dated release that retires the membership token.",
-                config.network.inference_access.json_name(),
-                path.display()
-            );
-        }
         let (admin_access_token, migrated) =
             migrate_admin_access_token(config.admin_access_token.clone())?;
         if migrated {
@@ -1984,52 +1889,35 @@ mod tests {
     }
 
     #[test]
-    fn charging_visitors_needs_member_gateway_only() {
-        let mut settings = NetworkSettings::default();
-        settings.payments.enabled = true;
-        // The new default is `member_gateway_only` (deprecation 2026-11-15),
-        // so a fresh network may charge. The deprecated forms are refused as
-        // before: a mixed-version cluster still branches on them.
-        assert!(validate_network_settings(&settings).is_ok());
-        settings.inference_access = InferenceAccess::Direct;
-        assert!(validate_network_settings(&settings).is_err());
-        settings.inference_access = InferenceAccess::MemberGateway;
-        assert!(validate_network_settings(&settings).is_err());
-        settings.inference_access = InferenceAccess::MemberGatewayOnly;
-        assert!(validate_network_settings(&settings).is_ok());
+    fn a_config_written_by_an_older_node_loads_with_the_retired_keys_ignored() {
+        // C3 (2026-11-15) deleted `inference_access` and `entry_nodes`
+        // outright (spec decision 5, no compatibility bridge): a file that
+        // still carries them loads - serde ignores keys the node no longer
+        // has - and they disappear from the next write on. The values had
+        // meant nothing since phase A of the admin-hub routing.
+        let old: NetworkSettings = serde_json::from_str(
+            r#"{"inference_access":"direct","entry_nodes":"admins_and_workers","payments":{"enabled":true}}"#,
+        )
+        .unwrap();
+        assert!(old.payments.enabled);
+        let written = serde_json::to_string(&old).unwrap();
+        assert!(!written.contains("inference_access"));
+        assert!(!written.contains("entry_nodes"));
     }
 
     #[test]
-    fn access_policy_defaults_to_member_gateway_only_and_charging_off() {
+    fn a_fresh_network_defaults_to_delegation_and_charging_off() {
         let fresh: NetworkSettings = serde_json::from_str("{}").unwrap();
-        // Deprecation 2026-11-15 (spec decision 5) flipped the parsed default.
-        assert_eq!(fresh.inference_access, InferenceAccess::MemberGatewayOnly);
-        assert_eq!(fresh.entry_nodes, EntryNodes::Admins);
         assert!(!fresh.payments.enabled);
         // The constructed default is the parsed default: what a network built
         // in code writes must equal what an absent field reads as.
         assert_eq!(fresh, NetworkSettings::default());
         assert!(fresh.worker_delegation);
-        assert!(!fresh.inference_access.is_deprecated());
-        // The deprecated values keep parsing for older nodes, warn on load,
-        // and none of the three changes delegation.
-        for (raw, expected) in [
-            (r#""direct""#, InferenceAccess::Direct),
-            (r#""member_gateway""#, InferenceAccess::MemberGateway),
-        ] {
-            let settings: NetworkSettings =
-                serde_json::from_str(&format!(r#"{{"inference_access":{raw}}}"#)).unwrap();
-            assert_eq!(settings.inference_access, expected);
-            assert!(settings.inference_access.is_deprecated());
-            assert_eq!(settings.inference_access.json_name(), raw.trim_matches('"'));
-        }
-        let set: NetworkSettings = serde_json::from_str(
-            r#"{"inference_access":"member_gateway_only","entry_nodes":"admins_and_workers","payments":{"enabled":true}}"#,
-        )
-        .unwrap();
-        assert!(set.inference_access.delegates());
-        assert_eq!(set.entry_nodes, EntryNodes::AdminsAndWorkers);
-        assert!(set.payments.enabled);
+        // Charging stands on the shape of the network - every visitor enters
+        // through an admin - not on a retired knob: a fresh network may charge.
+        let mut settings = NetworkSettings::default();
+        settings.payments.enabled = true;
+        assert!(validate_network_settings(&settings).is_ok());
     }
 
     #[test]

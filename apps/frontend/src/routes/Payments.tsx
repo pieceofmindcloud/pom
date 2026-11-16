@@ -1,10 +1,10 @@
 /**
- * Charging visitors (the principal's screen): the switch and the access
- * policy it needs, the price of each model, the visitor networks' accounts
+ * Charging visitors (the principal's screen): the switch, the price of each
+ * model, the visitor networks' accounts
  * with their balances, granting credit, and the ledger.
  *
- * The switch and the prices are network settings (`NetworkSettings.payments`,
- * `inference_access`), saved through `/api/ui/network/settings` like the rest
+ * The switch and the prices are network settings (`NetworkSettings.payments`),
+ * saved through `/api/ui/network/settings` like the rest
  * of the network; the accounts and the ledger come from `/api/ui/payments`
  * (`crates/node/src/payments/runtime.rs`). See
  * `docs/superpowers/specs/2026-11-09-visitor-charging-design.md`.
@@ -23,7 +23,6 @@ type Overview = {
   /** Visitors in sight on an older release: turning charging on cuts them off. */
   cut_off: { node_id: string; name: string; version: string }[];
   enabled: boolean;
-  inference_access: string;
   prices: Record<string, Price>;
   principal: boolean;
   accounts: {
@@ -114,8 +113,6 @@ export function Payments() {
       }
       await api.post("/api/ui/network/settings", {
         ...network,
-        // Charging needs every visitor to go through an entry node.
-        inference_access: enabled ? "member_gateway_only" : network.inference_access ?? "direct",
         payments: { enabled, prices: priceMap },
       });
       toast.success(t("payments.saved"));

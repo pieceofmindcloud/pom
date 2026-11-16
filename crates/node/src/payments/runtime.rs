@@ -142,9 +142,9 @@ pub(crate) fn install(state: &GatewayState) {
     }
     spawn_lease_sweeper(state.clone());
     // The admin-hub shape (`delegation`): a visitor always delegates to an
-    // admin entry node and learns only the admins, whatever the persisted
-    // `inference_access` / `entry_nodes` say (older values keep parsing; they
-    // no longer open a direct visitor path).
+    // admin entry node and learns only the admins - the one shape the product
+    // has (the `inference_access` / `entry_nodes` knobs were deleted in 2026-11-15,
+    // C3).
     state.network.set_visitor_view(Some(true));
 }
 
@@ -645,7 +645,6 @@ pub(crate) async fn overview(State(state): State<GatewayState>) -> Response {
     Json(json!({
         "cut_off": visitors_cut_off(&state).await,
         "enabled": settings.payments.enabled,
-        "inference_access": settings.inference_access,
         "prices": settings.payments.prices,
         "principal": is_principal(&state),
         "accounts": accounts,

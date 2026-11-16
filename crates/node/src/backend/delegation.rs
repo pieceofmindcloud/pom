@@ -16,9 +16,9 @@
 //!   body) comes back unchanged. Entry nodes are the admins the trust chain
 //!   proves, announcing `gateway/delegate-v1`, by measured RTT. A request
 //!   moves to the next entry node only when it got no answer. With none:
-//!   `503 no_entry_node` - the persisted `inference_access` no longer opens a
-//!   path where the member plans itself (a worker plans itself only when the
-//!   network opened the escape hatch).
+//!   `503 no_entry_node` - no persisted setting opens a path where a visitor
+//!   plans itself (a worker plans itself only when the network opened the
+//!   `worker_delegation` escape hatch).
 //! - **On the entry node** ([`delegate_route`]): only a signed call from a
 //!   member that is not an admin (an admin is itself an entry node: `409
 //!   plan_locally`). When the network charges, the fee falls on visitors -
@@ -687,7 +687,6 @@ mod tests {
         peer.profile = crate::profile::NodeProfile::Visitor;
         let state = testkit::state_with("entry", vec![peer]).await;
         let mut settings = crate::config::NetworkSettings::default();
-        settings.inference_access = crate::config::InferenceAccess::MemberGatewayOnly;
         settings.payments.enabled = charge;
         settings.payments.prices.insert(
             "priced".into(),

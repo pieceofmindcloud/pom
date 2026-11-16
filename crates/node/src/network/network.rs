@@ -6776,8 +6776,8 @@ mod tests {
         assert_eq!(to_worker, vec!["visitor-a", "visitor-b", "worker"]);
     }
 
-    /// In the default shape (`payments::runtime::install` sets it, whatever the
-    /// network's `inference_access` says) a visitor is listed only the admin
+    /// In the default shape (`payments::runtime::install` sets it) a visitor is
+    /// listed only the admin
     /// entry nodes, a node kept from visitors does not announce to them, and
     /// a visitor's own table holds nobody but the admins.
     #[tokio::test]

@@ -333,8 +333,8 @@ guides.
 
 1. Confirmed: workers delegate too (delivered in B2, with the
    `worker_delegation` escape hatch of 8.4).
-2. Confirmed: `entry_nodes` fixed to admins (delivered in phase A;
-   `admins_and_workers` keeps parsing).
+2. Confirmed: `entry_nodes` fixed to admins (delivered in phase A; the enum
+   itself went out with C3 - the key is deleted, not renamed).
 3. Confirmed: pin until a peer dies or the session ages out; no proactive
    rebalance (delivered in B3).
 4. Confirmed: **full token removal with roster vouches** (phase C). The
@@ -379,12 +379,17 @@ guides.
      work - a node on a pre-C3 build cannot hold a vouch, and one updated
      node cuts unmigrated peers out of the role gates. The machines of a
      network move onto the roster together.
-5. Confirmed (2026-11-15): **deprecate now**. `direct` and `member_gateway`
-   are deprecated: they keep parsing and writing for older nodes and are
-   never honored by a new node; the node warns on load when a file carries
-   one; the new default is `member_gateway_only`, and the charging gate
-   collapses together with the enum. The dated removal rides on the same
-   release as C3, the moment the old versions' gates stop being fed.
+5. Confirmed (2026-11-15): **deprecate now** - delivered the same day as the
+   deprecation (`direct` and `member_gateway` kept parsing, warning on load;
+   the new default `member_gateway_only`; the charging gate unchanged). The
+   C3 ruling recorded above then superseded the deprecation with **outright
+   deletion, no compatibility bridge**: the `InferenceAccess` and `EntryNodes`
+   enums and their `NetworkSettings` fields are deleted, the load warning goes
+   with the enum, and the charging gate collapses - a `pom.json` that still
+   carries the keys loads, serde ignoring them, and a new node never writes
+   them. Charging stands on the member gateway alone: it is the only entry
+   shape the product has (`payments.md`). The Payments screen lost the
+   `inference_access` it used to write with the save.
 
 ## 11. Out of scope
 

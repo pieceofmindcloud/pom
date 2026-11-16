@@ -25,15 +25,13 @@ Nothing here talks to peers; everything is used by `main.rs` and
   `NetworkSettings` holds name, organization, description, rules, channels,
   visibility (`local`, `private`, `public`), access policy and geo location
   (country, city, coordinates and canonical label). It also holds
-  visitor charging: `inference_access` (`direct` | `member_gateway` |
-  `member_gateway_only`) - deprecated 2026-11-15, decision 5 of the
-  admin-hub routing spec: `direct` and `member_gateway` open nothing on a new
-  node, keep parsing and warning on load for older ones, and a new network
-  defaults to `member_gateway_only`; the enum collapses in the dated removal
-  that retires the membership token -, `entry_nodes` and `payments`
-  (`enabled`, `prices` per model as `ModelPrice`); `validate_network_settings`
-  refuses charging without `member_gateway_only` while the deprecated forms
-  exist (`docs/subsystems/payments.md`). `worker_delegation`
+  visitor charging - `inference_access` and `entry_nodes` were **deleted**
+  2026-11-15 (phase C3, decision 5 of the admin-hub routing spec: no
+  compatibility bridge; a file that still carries the keys loads, serde
+  ignoring them, and a new node never writes them) - and `payments`
+  (`enabled`, `prices` per model as `ModelPrice`; charging stands on the
+  member gateway, the only entry shape the product has,
+  `docs/subsystems/payments.md`). `worker_delegation`
   (default true, phase B of the admin-hub routing) says whether a worker hands
   its requests to an admin entry node (`backend/delegation.rs`); it is absent
   from older files and reads as the default. `NetworkSettings`'s `Default` is

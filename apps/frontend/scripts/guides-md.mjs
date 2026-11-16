@@ -4,7 +4,8 @@
  *
  * A guide is a file per language: `<name>.md` is English, `<name>.pt-BR.md` is
  * Brazilian Portuguese. The front matter carries the navigation (`id`, `label`,
- * `summary`, `title`, `order`); the body is plain markdown plus fenced
+ * `summary`, `title`, `order`; `draft: true` keeps a guide of a feature still
+ * in development out of every build, POM's and the website's); the body is plain markdown plus fenced
  * directives for the blocks markdown has no word for:
  *
  *   :::lead            the opening sentence, set larger
@@ -217,6 +218,7 @@ export function parseGuide(text, file) {
       blocks,
     },
     order: Number.isFinite(meta.order) ? meta.order : 1000,
+    draft: meta.draft === "true",
     images,
   };
 }

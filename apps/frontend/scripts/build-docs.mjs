@@ -260,7 +260,9 @@ for (const file of guideFiles) {
   const human = file.startsWith("docs/human/");
   const group = human ? "human" : file.split("/")[2];
   if (!GROUPS.includes(group)) throw new Error(`${file}: unknown guide group "${group}" (one of ${GROUPS.join(", ")})`);
-  const { guide, order, images } = parseGuide(readFileSync(join(repo, file), "utf8"), file);
+  const { guide, order, draft, images } = parseGuide(readFileSync(join(repo, file), "utf8"), file);
+  // A draft documents a feature still in development: not shown, its images not published.
+  if (draft) continue;
   if (parsed[locale].has(guide.id)) throw new Error(`${file}: duplicate guide id "${guide.id}"`);
   for (const block of guide.blocks) {
     if (block.kind === "image") block.src = publish(block.src);

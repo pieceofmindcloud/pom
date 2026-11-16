@@ -78,6 +78,12 @@ Deeper
     ]);
   });
 
+  it("marks a guide with draft: true so the build leaves it out", () => {
+    const draft = parseGuide(FRONT.replace("---\n", "---\ndraft: true\n"), "docs/guides/screens/g.md");
+    expect(draft.draft).toBe(true);
+    expect(parseGuide(FRONT, "docs/guides/screens/g.md").draft).toBe(false);
+  });
+
   it("refuses what it does not know", () => {
     expect(() => parseGuide(`${FRONT}:::nope\nx\n:::\n`, "f.md")).toThrow(/unknown directive/);
     expect(() => parseGuide(`${FRONT}:::note T\nnever closed\n`, "f.md")).toThrow(/not closed/);

@@ -32,7 +32,7 @@ folder only renders them:
   folder explained for people, beside the folder's `AGENTS.md` (the front
   matter's `reference`). Only the folders that need it have one.
 
-The folder under `docs/guides/` is the sidebar group; `order` sorts inside it.
+The folder under `docs/guides/` is the sidebar group; `order` sorts inside it. A guide with `draft: true` in its front matter documents a feature still in development: the build leaves it and its images out, so it shows neither in the panel nor on the website (Payments and Credit today).
 The format (front matter plus `:::lead`, `:::note`, `:::warn`, `:::steps`,
 `:::cards`, `:::faq`, `:::stats`, `:::checklist`, `:::diagram <id>`,
 `:::video <youtube url>`, `:::deep <doc>`, `## ` headings, tables, code and

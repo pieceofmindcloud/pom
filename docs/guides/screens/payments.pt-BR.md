@@ -5,6 +5,7 @@ summary: Cobre dos visitantes que usam os modelos da sua rede
 title: Pagamentos
 route: /config/payments
 order: 285
+draft: true
 ---
 
 :::lead

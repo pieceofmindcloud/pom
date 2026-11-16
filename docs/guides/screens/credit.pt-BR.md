@@ -5,6 +5,7 @@ summary: O crédito da sua rede numa rede que cobra visitantes
 title: Crédito
 route: /config/credit
 order: 287
+draft: true
 ---
 
 :::lead

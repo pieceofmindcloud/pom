@@ -5,6 +5,7 @@ summary: Charge the visitors that use your network's models
 title: Payments
 route: /config/payments
 order: 285
+draft: true
 ---
 
 :::lead

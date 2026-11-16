@@ -5,6 +5,7 @@ summary: Your network's credit on a network that charges visitors
 title: Credit
 route: /config/credit
 order: 287
+draft: true
 ---
 
 :::lead

@@ -303,6 +303,17 @@ POM routes never mix.
 
 ## Public GitHub repositories and local preferences
 
+**Bundled plugins.** A new installation has no plugin, and searching and
+downloading models is the Hugging Face plugin's screen, so every node installs
+that plugin by itself from its public repository and keeps it on the newest
+release for its platform (`BUNDLED_PLUGINS`, `spawn_bundled_plugins` in
+`crates/node/src/plugins.rs`): a first pass 20 s after start, then every six
+hours, through the same GitHub repository install below, with nothing shown to
+the operator. Prereleases are skipped. A plugin code already held by a license,
+a local development build or another repository is left alone, and so is a
+bundled plugin the operator uninstalled: the uninstall is recorded
+(`plugin_bundled_declined:<code>`) and never undone by the node.
+
 The **Add from GitHub** card, at the top of the Plugins screen and above
 license activation, registers URLs directly on the node. The flow is local to
 POM and does not query the catalog, eligibility or any license server endpoint.

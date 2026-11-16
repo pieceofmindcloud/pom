@@ -370,7 +370,15 @@ endpoint protocol (ALPN) separate from the inference tunnel. The `GatewayState` 
 with the `/api/ui/network-chat` routes; the cluster policy is applied by the
 `network_chat_policy` ratchet.
 
-`src/plugins.rs` manages licensed plugins and independent local installs:
+`src/plugins.rs` manages licensed plugins and independent local installs.
+`BUNDLED_PLUGINS` (today the Hugging Face plugin) are kept installed and current
+by `spawn_bundled_plugins` (started in `main.rs`): 20 s after start, then every 6 h
+(15 min after a failure), `ensure_bundled_plugin` registers the public repository,
+refreshes it and installs its newest non-prerelease release for this platform,
+silently. It skips a code held by a license, a local build or another repository,
+and one the operator uninstalled (`plugin_bundled_declined:<code>`, written by
+`deactivate`).
+
 `PluginManager` creates a `PluginRuntime` for codes granted by a license or when a
 local GitHub release is installed. Licensed runtimes persist in
 `plugin_license:<code>` and keep their license/heartbeat cycle. Every persisted

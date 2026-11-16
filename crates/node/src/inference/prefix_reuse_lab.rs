@@ -1330,8 +1330,10 @@ async fn unknown_session_during_prefill_is_recovered() {
 #[tokio::test]
 async fn unknown_session_recovery_is_bounded() {
     for transport in Transport::all() {
+        // A loop never ends; a generous bound keeps a debug build under a
+        // loaded parallel run (five seconds for three transports was not) from failing.
         let measurement = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(30),
             conversation_with_hops_fault(transport, 1, true, 2, Some((1, 1, usize::MAX))),
         )
         .await
@@ -1372,8 +1374,10 @@ async fn unknown_session_recovery_is_bounded() {
 #[tokio::test]
 async fn mid_prefill_transport_failure_does_not_corrupt_recurrent_session() {
     for transport in Transport::all() {
+        // A loop never ends; a generous bound keeps a debug build under a
+        // loaded parallel run (five seconds for three transports was not) from failing.
         let measurement = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(30),
             conversation_with_hops_transport_fault(transport, 1, true, 2, Some((1, 1, 2))),
         )
         .await

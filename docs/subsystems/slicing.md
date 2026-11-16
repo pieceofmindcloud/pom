@@ -178,6 +178,10 @@ The engine's `gguf` module reads the GGUF without loading weights:
   outside the final range and kept in it. A start-relative count that is not a
   non-negative scalar integer fitting in `u32` refuses the layout with the key
   and the cause, without copying an ambiguous value.
+- Per-layer keys (`<prefix>.blk.<N>`, such as Avalon's
+  `avalon.experts_packed.blk.N`, which describes one layer's packed experts)
+  follow their layer: a slice renames them to the local index and drops those
+  of layers outside its range (`per_layer_key` in `splitter.rs`).
 - `attention.recurrent_layers` - hybrid attention/SSM models, such as
   Qwen3.8-27B: without an explicit array under this key, llama.cpp decides on
   its own which layers are recurrent (they carry `ssm_conv1d.weight`) through a

@@ -20,11 +20,11 @@
 //! (dial only, over n0's relays when no direct path answers) so it also runs
 //! in setup mode, where the node has no cluster endpoint yet.
 
-use anyhow::{Context, Result};
 use crate::p2p::Codec;
+use crate::p2p::{EndpointAddr, EndpointId};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::prelude::*;
-use crate::p2p::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -207,6 +207,13 @@ pub enum LobbyRequest {
         identity: LobbyIdentity,
         card: LobbyCard,
         role: crate::config::EnrollmentRole,
+        /// The candidate's home statement (`crate::home_statement`): which
+        /// network a visitor's requests are charged to. Older nodes send none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        home: Option<String>,
+        /// A worker asking to join as a validator (validators spec, 1).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        validator: bool,
     },
     /// A member asks the principal for the network's current connection key,
     /// because the one it holds stopped being accepted - it missed a
@@ -214,6 +221,11 @@ pub enum LobbyRequest {
     /// member list (an approved admission record). It does not depend on the
     /// lobby being open, and works for unlisted networks too.
     ClaimKey { identity: LobbyIdentity },
+    /// A member visiting another network asks its home principal for a fresh
+    /// home statement (`crate::home_statement`): answered by the principal to
+    /// an admin of its chain or a worker it admitted and did not ban, lobby
+    /// open or not. An older principal does not know it and refuses it.
+    HomeStatement { identity: LobbyIdentity },
     /// A node says it is leaving the network. It is the same notice a member
     /// sends its principal over the cluster's control channel, for when that
     /// channel is not there: the principal never came to admit this node, or
@@ -302,6 +314,9 @@ pub struct AdmissionGrant {
     /// that started local would be joined with discovery off.
     #[serde(default)]
     pub network: Option<crate::config::NetworkSettings>,
+    /// The machine was admitted as a validator: it sets `Config.validator`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub validator: bool,
 }
 
 impl std::fmt::Debug for AdmissionGrant {
@@ -334,6 +349,13 @@ pub struct AdmissionRecord {
     pub requested_at: String,
     #[serde(default)]
     pub decided_at: Option<String>,
+    /// The account the candidate's home statement names (`net:<key>`), when
+    /// it sent one: the account its requests are charged to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// A worker admitted as a validator.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub validator: bool,
 }
 
 /// Admission records kept at once; the oldest decided ones go first. The
@@ -405,6 +427,8 @@ pub fn apply_admission_request(
         records.remove(oldest);
     }
     records.push(AdmissionRecord {
+        account: None,
+        validator: false,
         node_id: node_id.to_string(),
         card,
         role,
@@ -471,6 +495,9 @@ pub struct LobbyResponse {
     /// to `Post`, `Fetch` and `Admission`.
     #[serde(default)]
     pub messages_closed: bool,
+    /// The home statement a `HomeStatement` request asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement: Option<String>,
 }
 
 impl LobbyResponse {
@@ -983,31 +1010,21 @@ impl Codec for LobbyCodec {
     type Request = LobbyRequest;
     type Response = LobbyResponse;
 
-    async fn read_request<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Request>
+    async fn read_request<T>(&mut self, io: &mut T) -> std::io::Result<Self::Request>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_msg(io, LobbyLimits::FRAME_BYTES).await
     }
 
-    async fn read_response<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Response>
+    async fn read_response<T>(&mut self, io: &mut T) -> std::io::Result<Self::Response>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_msg(io, LobbyLimits::RESPONSE_BYTES).await
     }
 
-    async fn write_request<T>(
-        &mut self,
-        io: &mut T,
-        request: Self::Request,
-    ) -> std::io::Result<()>
+    async fn write_request<T>(&mut self, io: &mut T, request: Self::Request) -> std::io::Result<()>
     where
         T: AsyncWrite + Unpin + Send,
     {
@@ -1025,7 +1042,6 @@ impl Codec for LobbyCodec {
         write_msg(io, &response, LobbyLimits::RESPONSE_BYTES).await
     }
 }
-
 
 // ── Candidate side ───────────────────────────────────────────────────────────
 
@@ -1315,6 +1331,7 @@ mod tests {
                 LobbyRequest::Fetch { .. }
                 | LobbyRequest::Admission { .. }
                 | LobbyRequest::ClaimKey { .. }
+                | LobbyRequest::HomeStatement { .. }
                 | LobbyRequest::Leave { .. }
                 | LobbyRequest::Publish { .. }
                 | LobbyRequest::Info
@@ -1338,6 +1355,7 @@ mod tests {
                 pending: false,
                 admission: None,
                 messages_closed: false,
+                statement: None,
                 messages: vec![LobbyMessage {
                     message_id: "m1".into(),
                     sender_node_id: node_id,
@@ -1568,7 +1586,13 @@ mod tests {
         let now = chrono::Utc::now();
         let mut records = Vec::new();
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Worker, now),
+            apply_admission_request(
+                &mut records,
+                "a",
+                card("alpha"),
+                EnrollmentRole::Worker,
+                now
+            ),
             Ok(AdmissionStatus::Pending)
         );
         // Asking again while pending only refreshes what the admin will read.
@@ -1606,7 +1630,13 @@ mod tests {
             None
         );
         assert_eq!(
-            apply_admission_request(&mut records, "a", card("alpha"), EnrollmentRole::Worker, now),
+            apply_admission_request(
+                &mut records,
+                "a",
+                card("alpha"),
+                EnrollmentRole::Worker,
+                now
+            ),
             Err("admission_rejected")
         );
         let later = now + chrono::Duration::seconds(ADMISSION_RETRY_AFTER_SECS + 1);

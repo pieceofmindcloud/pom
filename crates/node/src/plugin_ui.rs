@@ -41,7 +41,10 @@ pub(crate) struct MenuItem {
     /// section; the parent's `to` stays required so that hosts without submenu
     /// support show at least the main destination.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<MenuChild>,
+    pub children: Vec<MenuChild>,    /// Where a leaf goes in POM's menu: `"settings"` puts it inside the Settings
+    /// section. Dropping it sent such an entry to the root of the menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
 }
 
 /// A submenu. Same rules as a first-level item, with no grandchildren.
@@ -782,6 +785,16 @@ mod tests {
         assert!(parsed.is_shell_asset("docs/guides/logs.pt-BR.md"));
         assert!(!parsed.is_shell_asset("docs/guides/absent.md"));
         assert!(!parsed.is_shell_asset("ui/logs.js"));
+    }
+
+    #[test]
+    fn a_menu_entry_keeps_its_settings_section_for_the_screen() {
+        let mut value = manifest();
+        value["menu"][0]["section"] = json!("settings");
+        let parsed = PluginUiManifest::parse("logs", value).expect("valid");
+        assert_eq!(parsed.menu[0].section.as_deref(), Some("settings"));
+        let served = serde_json::to_value(&parsed.menu[0]).unwrap();
+        assert_eq!(served["section"], "settings");
     }
 
     #[test]

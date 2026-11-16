@@ -676,6 +676,36 @@ boundary.
   `cache_ms` sets how long a verdict is reused. Also the node's own Budget
   routes (`/api/ui/quota`, `/reset`, `/request`). Contract:
   `docs/subsystems/http-api.md`, "Token budgets, checked before the pipeline".
+- `metering.rs` - GPU work metering, node side: the metering context the
+  inference server reads (refreshed from `NetworkSettings.metering` every 5 s
+  by `spawn_refresher`, absent while metering is off), the TOPLOC proof buffer
+  of a session, the stores `metering_proofs` / `metering_tokens` /
+  `metering_outbox` (schema in `SCHEMA`, created by `db.rs`), the gateway's
+  bundle (`mint_ticket`, `finish_bundle`, the consumer through the task-local
+  `CONSUMER` set by `spawn_logged_generation_with_stops`), the outbox delivery
+  and the ledger's node operations (`node_op`). The gateway's collector is
+  `gateway::generation::MeterCollect`. Spec
+  `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`.
+- `delegation.rs` - the member gateway and the payment gate for visitors
+  (`POST /v1/gateway/delegate`, `visitor_layer`): the entry node holds the
+  request's worst case, refuses in the route's vocabulary (`speak`), and
+  settles at the summary with the metering bundle (`GenSummary.metering_bundle`,
+  also held back on the plugin engine path until the stages' receipts are in);
+  the visitor relays the answer and records `x_pom.payment`
+  (`tap_payment`). See `docs/subsystems/payments.md`.
+- `metering_verify.rs` - re-execution for the ledger (`node.reexecute`, an
+  asynchronous job): cuts and loads each range of the local whole model, runs
+  the head's sequence teacher-forced with each boundary's codec, and checks the
+  audited hop's TOPLOC chunks: the residual a range hands on, or for the last
+  range (and a calibration's shortened last range, `output_head`) its
+  post-norm rows through the engine's embeddings output, in chunks of
+  `TAIL_CHUNK` positions. In `readings` mode (a validator's answer) the
+  request names chunk positions and no proof, and the job returns this node's
+  reading of each chunk (`read_chunks`); `metering.rs` lets only a validator or
+  an admin answer it, and adds `node.validators` and `node.holds`. A
+  validator (`Config.validator`) refuses the `visitor_refuses` routes
+  (`gateway/state.rs`) and is left out of the deploy survey and targets
+  (`peer_is_validator`).
 - `reqlog.rs` - the audit adapter and the migration fallback. With the plugin
   active, the host writes in `enterprise.db`; independently of that destination, the
   POM's `AuditLog` replicates `begin` and `complete` to the effective admins over the p2p endpoint.
@@ -1081,9 +1111,6 @@ kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and
   passes alone and in the full `cargo test -p node --bin pom`, but failed twice in a row
   (2026-11-08) when run filtered to `deploy:: webui::` together: it depends on test order or
   shared state, not yet traced.
-- In the dev container ten tests fail at this branch's head, outside this folder: two
-  `splitter` tests expect English error text the pinned `llama-engine` gives in Portuguese, and
-  eight inference lab, relay, server reload and machine-address tests not investigated.
 
 ## Maintaining this file
 

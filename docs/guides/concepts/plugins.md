@@ -16,7 +16,7 @@ Each plugin runs in its own process next to the node. The license or GitHub repo
 
 :::steps
 ### Open Plugins
-Settings > Plugins shows the catalog, with what is active on this machine.
+Plugins, in the main menu, shows the catalog, with what is active on this machine.
 ### Activate by license
 Paste the license key in the form. The answer says which plugins that key granted and installed.
 ### Or install from GitHub

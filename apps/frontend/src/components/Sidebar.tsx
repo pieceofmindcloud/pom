@@ -743,7 +743,8 @@ function InferenceMainMenu({
     };
   const { profile, known } = useProfile();
   const networkChat = useNetworkChatOpen();
-  const sections = known ? navForProfile(profile, true, { networkChat }) : [];
+  const { data: node } = useNode();
+  const sections = known ? navForProfile(profile, true, { networkChat, devMode: node?.pom_dev_mode === true }) : [];
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
@@ -830,7 +831,7 @@ export function SidebarContent({
       ) : (
         <nav className="flex min-h-0 flex-1 flex-col">
           <ScrollableNav className={clsx("pb-4 pt-[5px]", collapsed ? "px-2" : "px-3")}>
-            {(known ? navForProfile(profile, true, { networkChat }) : []).map((s) => (
+            {(known ? navForProfile(profile, true, { networkChat, devMode: node?.pom_dev_mode === true }) : []).map((s) => (
               <Section
                 key={s.labelKey}
                 section={s}

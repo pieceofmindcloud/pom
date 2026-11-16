@@ -22,6 +22,7 @@ import { MachineIcon } from "../components/MachineIcon";
 import { Markdown } from "../components/Markdown";
 import { AccessFields, DiscoveryChoices, InfoFields, SetupSection } from "../components/NetworkQuickSetup";
 import { RelayOptions } from "../components/RelayOptions";
+import { MeteringPanel } from "../components/MeteringPanel";
 import {
   Badge,
   Button,
@@ -189,6 +190,19 @@ export function NetworkSettings({ participantsOnly = false }: { participantsOnly
             // leaving is for a network it joined, and returns to its own.
             onForgetNetwork={node.data?.own_network && !node.data?.standby_network ? undefined : () => setForgetNetworkConfirm(true)}
             t={t}
+          />
+        )}
+
+        {/* GPU work metering: the principal switches it at run time. */}
+        {networkInfo.data && !isInfer && (
+          <MeteringPanel
+            network={networkInfo.data.network}
+            editable={networkEditable && isAdmin}
+            onSaved={(saved) => {
+              // The form's own draft must not put the old metering back on its next save.
+              setNetworkDraft((draft) => (draft ? { ...draft, metering: saved.metering } : saved));
+              invalidate();
+            }}
           />
         )}
 
@@ -548,7 +562,7 @@ export function AdmittedMachines({ t }: { t: (key: string, values?: Record<strin
             <li key={record.node_id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
               <div className="min-w-0">
                 <p className="truncate text-sm text-fg">{name}</p>
-                <p className="truncate font-mono text-[0.68rem] text-faint">{record.node_id.slice(0, 12)} · {t(`network.enrollment.${record.role}`)}</p>
+                <p className="truncate font-mono text-[0.68rem] text-faint">{record.node_id.slice(0, 12)} · {record.validator ? t("lobby.validatorRole") : t(`network.enrollment.${record.role}`)}</p>
               </div>
               <Button size="sm" variant="danger" loading={revoking === record.node_id} onClick={() => setTarget({ node_id: record.node_id, name })}>
                 {t("network.admittedRevoke")}

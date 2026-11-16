@@ -67,6 +67,9 @@ pub struct LayerAssignment {
     /// label. See `deployment.rs`.
     #[serde(default)]
     pub deploy_id: String,
+    /// The operator's name for that deployment, announced so `/v1` takes it.
+    #[serde(default)]
+    pub deployment_name: String,
     pub total_layers: u32,
     pub start_layer: u32, // inclusive
     pub end_layer: u32,   // inclusive

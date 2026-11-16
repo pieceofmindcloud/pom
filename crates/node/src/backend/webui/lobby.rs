@@ -43,8 +43,15 @@ async fn local_card() -> LobbyCard {
 /// What this node asks of a lobby in one exchange.
 enum Ask {
     Fetch,
-    Post { message_id: String, text: String },
-    Admission { role: crate::config::EnrollmentRole },
+    Post {
+        message_id: String,
+        text: String,
+    },
+    Admission {
+        role: crate::config::EnrollmentRole,
+        home: Option<String>,
+        validator: bool,
+    },
 }
 
 /// An admission request this node made to another network. `grant` is what an
@@ -183,10 +190,16 @@ async fn exchange(
             identity,
             card: card.clone(),
         },
-        Ask::Admission { role } => LobbyRequest::Admission {
+        Ask::Admission {
+            role,
+            home,
+            validator,
+        } => LobbyRequest::Admission {
             identity,
             card: card.clone(),
             role,
+            home,
+            validator,
         },
     };
     let started = Instant::now();
@@ -299,6 +312,9 @@ pub struct AdmissionAsk {
     /// The network's name as the screen lists it, to label the request.
     #[serde(default)]
     pub name: String,
+    /// Ask to join as a validator (a worker that re-runs sampled work).
+    #[serde(default)]
+    pub validator: bool,
 }
 
 /// `POST /api/ui/network-chat/lobby/admission` - ask the network under `key`
@@ -311,7 +327,11 @@ pub(super) async fn lobby_admission(
 ) -> Response {
     exchange(
         &ask.key,
-        Ask::Admission { role: ask.role },
+        Ask::Admission {
+            role: ask.role,
+            home: crate::home_statement::own(&state),
+            validator: ask.validator,
+        },
         Some(&ask.name),
         Some(&state.database),
     )
@@ -533,6 +553,8 @@ pub(super) async fn join_network(
         crate::config::EnrollmentRole::Worker => crate::profile::NodeProfile::Worker,
         crate::config::EnrollmentRole::Visitor => crate::profile::NodeProfile::Visitor,
     };
+    // A validator re-runs sampled work and serves no model.
+    config.validator = grant.validator && request.role == crate::config::EnrollmentRole::Worker;
     config.connection_key = grant.connection_key.trim().to_string();
     config.network = network;
     let relay_hints = metadata
@@ -593,6 +615,10 @@ pub struct AdmissionDecision {
     pub node_id: String,
     /// `approve`, `reject` or `forget`.
     pub decision: String,
+    /// Credit granted to the candidate's account on approval
+    /// (`docs/subsystems/payments.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_micro: Option<i64>,
 }
 
 /// `POST /api/ui/network/admissions` - an admin's decision on one request.
@@ -613,18 +639,17 @@ pub(super) async fn decide_admission(
         return super::apply_decision(&state, decision).await;
     }
     let node_id = decision.node_id.trim().to_string();
-    let banned = decision.decision == "forget"
-        && super::is_approved_member(&state, &node_id)
-        && match super::ban(&state, &node_id).await {
-            Ok(_) => true,
-            Err(error) => {
-                return (
+    let banned =
+        decision.decision == "forget"
+            && super::is_approved_member(&state, &node_id)
+            && match super::ban(&state, &node_id).await {
+                Ok(_) => true,
+                Err(error) => return (
                     StatusCode::CONFLICT,
                     Json(json!({ "error": format!("{error:#}"), "reason": "revocation_refused" })),
                 )
-                    .into_response()
-            }
-        };
+                    .into_response(),
+            };
     let response = super::forward_decision(&state, &decision).await;
     if banned && !response.status().is_success() {
         // The ban already holds; the principal catches up from the

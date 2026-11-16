@@ -1,0 +1,144 @@
+//! `NetworkSettings.metering` (spec 1). Changed by the principal only and
+//! fanned out with the rest of the network settings.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MeteringSettings {
+    /// Off: no bundle nonce is minted, no receipt is built, the hot path is
+    /// unchanged.
+    pub enabled: bool,
+    /// Payout cycle length in seconds, numbered from `cycle::METERING_EPOCH_MS`.
+    pub cycle_secs: u64,
+    /// Closed cycles kept besides the current one; at least 1.
+    pub retain_cycles: u32,
+    /// Receipts re-executed per node at cycle close.
+    pub samples_per_node: u32,
+    /// Random challenges per node per cycle.
+    pub challenges_per_node: u32,
+    /// Weight of each failed sample against pay; above 1 makes cheating a loss.
+    pub penalty_factor: f64,
+    /// Pay weight of a speculative position, one value for the network.
+    pub draft_weight: f64,
+    /// Node id of a dedicated verifier machine; `None`: the ledger admin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verifier: Option<String>,
+    pub gateway_fee: GatewayFee,
+    /// Grace period after a cycle ends before it is frozen, for late receipts.
+    pub grace_secs: u64,
+    /// Re-execute the work of plugin engines (Strata) at audit, with the
+    /// engine's own limits (`toploc::Params::for_engine`). Strata's were
+    /// calibrated on Flash-Next only (they catch 4 skipped layers of 24, not
+    /// 1), so this stays off by default; off, those samples are void and the
+    /// stages are paid on receipts and challenges.
+    pub verify_plugin_engines: bool,
+    /// Validators (validators spec, part 1): how many re-run each sample.
+    pub validators_per_sample: u32,
+    /// A validator's pay per layer position it re-ran, as a fraction of a
+    /// worker's.
+    pub validator_rate: f64,
+    /// The most of a cycle's worker pay that goes to validators.
+    pub validator_share: f64,
+    /// Strikes in a cycle that pause a validator for the next one.
+    pub validator_strikes: u32,
+    /// Cycles a closing cycle waits for validators before it closes on
+    /// receipts and challenges.
+    pub validation_wait_cycles: u32,
+    /// The share of samples the ledger's admin also re-runs, as the
+    /// reference the validators' readings are held to.
+    pub reference_rate: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GatewayFee {
+    pub per_request: f64,
+    pub per_prompt_token: f64,
+}
+
+impl Default for MeteringSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cycle_secs: 7 * 86_400,
+            retain_cycles: 2,
+            samples_per_node: 30,
+            challenges_per_node: 5,
+            penalty_factor: 2.0,
+            draft_weight: 0.5,
+            verifier: None,
+            gateway_fee: GatewayFee::default(),
+            grace_secs: 3_600,
+            verify_plugin_engines: false,
+            validators_per_sample: 2,
+            validator_rate: 0.1,
+            validator_share: 0.05,
+            validator_strikes: 3,
+            validation_wait_cycles: 1,
+            reference_rate: 0.1,
+        }
+    }
+}
+
+impl MeteringSettings {
+    /// The settings with every field in range: an edited or hand-written
+    /// block never breaks the ledger.
+    pub fn normalized(mut self) -> Self {
+        self.cycle_secs = self.cycle_secs.max(60);
+        self.retain_cycles = self.retain_cycles.max(1);
+        self.samples_per_node = self.samples_per_node.max(1);
+        if !self.penalty_factor.is_finite() || self.penalty_factor < 0.0 {
+            self.penalty_factor = 2.0;
+        }
+        if !self.draft_weight.is_finite() {
+            self.draft_weight = 0.5;
+        }
+        self.draft_weight = self.draft_weight.clamp(0.0, 1.0);
+        self.validators_per_sample = self.validators_per_sample.clamp(1, 5);
+        let fraction = |v: f64, default: f64, max: f64| if v.is_finite() { v.clamp(0.0, max) } else { default };
+        self.validator_rate = fraction(self.validator_rate, 0.1, 1.0);
+        self.validator_share = fraction(self.validator_share, 0.05, 0.5);
+        self.reference_rate = fraction(self.reference_rate, 0.1, 1.0);
+        self.validator_strikes = self.validator_strikes.max(1);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_block_is_metering_off_with_the_defaults() {
+        let s: MeteringSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s, MeteringSettings::default());
+        assert!(!s.enabled);
+    }
+
+    #[test]
+    fn out_of_range_values_are_normalized() {
+        let s = MeteringSettings {
+            cycle_secs: 0,
+            retain_cycles: 0,
+            samples_per_node: 0,
+            penalty_factor: f64::NAN,
+            draft_weight: 3.0,
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!((s.cycle_secs, s.retain_cycles, s.samples_per_node), (60, 1, 1));
+        assert_eq!((s.penalty_factor, s.draft_weight), (2.0, 1.0));
+    }
+
+    #[test]
+    fn validator_settings_default_and_clamp() {
+        let s: MeteringSettings = serde_json::from_str(r#"{"enabled": true}"#).unwrap();
+        assert_eq!((s.validators_per_sample, s.validator_strikes, s.validation_wait_cycles), (2, 3, 1));
+        assert_eq!((s.validator_rate, s.validator_share, s.reference_rate), (0.1, 0.05, 0.1));
+        let n = MeteringSettings { validators_per_sample: 9, validator_share: 0.9, validator_rate: f64::NAN, validator_strikes: 0, ..s }
+            .normalized();
+        assert_eq!((n.validators_per_sample, n.validator_share, n.validator_rate, n.validator_strikes), (5, 0.5, 0.1, 1));
+    }
+
+}

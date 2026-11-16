@@ -369,7 +369,7 @@ pub(crate) async fn image_job_begin(
             state.audit.begin(crate::reqlog::AuditRequest {
                 id: audit_id.clone(),
                 received_at: chrono::Utc::now().to_rfc3339(),
-                route: "/comfyui/image".into(),
+                route: "/imagestudio/image".into(),
                 model: request.model,
                 caller,
                 entry_node_id: state.network.node_id.clone(),
@@ -381,7 +381,7 @@ pub(crate) async fn image_job_begin(
         Err(denial) => {
             crate::gateway::record_rejected(
                 &state,
-                "/comfyui/image",
+                "/imagestudio/image",
                 caller,
                 request.model,
                 request.prompt,
@@ -489,7 +489,22 @@ pub(crate) async fn peer_call(
     }) {
         return refuse(StatusCode::PAYLOAD_TOO_LARGE, "params too large");
     }
-    let reply = if node_id == state.network.node_id {
+    let reply = if node_id == state.network.node_id && crate::metering::is_node_op(&code, op) {
+        // The ledger asking its own node (`crate::metering::node_op`).
+        let role = crate::plugin_services::local_role(&state).await;
+        let mut params = params.clone();
+        if let Some(object) = params.as_object_mut() {
+            object.insert("local".into(), serde_json::Value::Bool(true));
+        } else {
+            params = json!({ "local": true });
+        }
+        Some(
+            match crate::metering::node_op(&state, role, op, &params).await {
+                Ok(reply) => reply,
+                Err(error) => json!({ "error": error }),
+            },
+        )
+    } else if node_id == state.network.node_id {
         let caller = json!({
             "node_id": state.network.node_id,
             "head": false,

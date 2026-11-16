@@ -55,6 +55,9 @@ separately). Layout:
 - `three-machine-network.md` - the three-machine network investigation: the
   deploy button that would not enable, the silent gossipsub and the untested
   tunnel.
+- `gpu-work-metering-live-run.md` - the metering checked on three real nodes
+  (CPU, f16 and f8 wires): the two defects it found and the re-executions that
+  passed.
 - `pipeline-telemetry.md` - distributed pipeline telemetry: the
   `outside-node` math, the missing second peer in decode and the
   `remote-stream` instrumentation.
@@ -157,6 +160,14 @@ Notable pairs:
   local clocks, parallel span math and the `outside-node`/TTFT breakdown.
 - `2026-09-23-docker-prebuilt-llama-design.md` - Docker mode with prebuilt
   libraries from the fork.
+- `2026-11-08-gpu-work-metering-design.md` and its plan - paying for GPU work:
+  signed work receipts, gateway bundles, TOPLOC proofs, challenges and sampled
+  re-execution per payout cycle; why zero-knowledge proofs were rejected.
+- `2026-11-09-visitor-charging-design.md` and its plan - charging visitor
+  networks with prepaid credit through member entry nodes.
+- `2026-11-10-validators-design.md` - validators (workers that re-run sampled
+  work, several per sample, paid a share) and keeping the first and last
+  layers on trusted machines so other machines see no prompts.
 
 Plans worth knowing: `2026-09-12-windows-crash-root-cause.md` (`model_loaded`
 tracing and the native `/health` boundaries),

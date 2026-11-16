@@ -24,7 +24,11 @@ Nothing here talks to peers; everything is used by `main.rs` and
   with no migration.
   `NetworkSettings` holds name, organization, description, rules, channels,
   visibility (`local`, `private`, `public`), access policy and geo location
-  (country, city, coordinates and canonical label). `setup_pending` marks a `pom.json` that is only a
+  (country, city, coordinates and canonical label). It also holds
+  visitor charging: `inference_access` (`direct` | `member_gateway` |
+  `member_gateway_only`), `entry_nodes` and `payments` (`enabled`, `prices` per
+  model as `ModelPrice`); `validate_network_settings` refuses charging without
+  `member_gateway_only` (`docs/subsystems/payments.md`). `setup_pending` marks a `pom.json` that is only a
   preference shell (the node left a network): startup then creates a local
   network instead of loading it. `first_run_guide` is the progress of the
   first run guide (`backend/webui/guide.rs`): `None` when there is no guide,

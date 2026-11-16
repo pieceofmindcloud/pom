@@ -333,7 +333,9 @@ mod tests {
 
     #[test]
     fn a_coordinate_that_is_not_a_number_counts_as_absent() {
-        let uri: axum::http::Uri = "/x?latitude=undefined&longitude=&within_km=50&page=1".parse().unwrap();
+        let uri: axum::http::Uri = "/x?latitude=undefined&longitude=&within_km=50&page=1"
+            .parse()
+            .unwrap();
         let Query(query) = Query::<KnownNetworksQuery>::try_from_uri(&uri).unwrap();
         assert_eq!(query.latitude, None);
         assert_eq!(query.longitude, None);
@@ -499,7 +501,12 @@ mod tests {
         };
         let now = unix_now();
         database
-            .remember_public_networks(&[entry("gone")], now - KNOWN_NETWORK_MAX_AGE_SECS - 60, i64::MAX, 10)
+            .remember_public_networks(
+                &[entry("gone")],
+                now - KNOWN_NETWORK_MAX_AGE_SECS - 60,
+                i64::MAX,
+                10,
+            )
             .unwrap();
         database
             .remember_public_networks(&[entry("recent")], now - 60 * 60, i64::MAX, 10)
@@ -507,7 +514,11 @@ mod tests {
         // What the page handler runs before reading: no live answer needed.
         remember_public_networks(&database, &[]);
         let page = known_networks_page(&database, &query(), &Default::default()).unwrap();
-        let listed: Vec<&str> = page.networks.iter().map(|known| known.network.fingerprint.as_str()).collect();
+        let listed: Vec<&str> = page
+            .networks
+            .iter()
+            .map(|known| known.network.fingerprint.as_str())
+            .collect();
         assert_eq!(listed, ["recent"]);
     }
 

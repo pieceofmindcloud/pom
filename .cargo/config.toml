@@ -12,6 +12,10 @@ BINDGEN_EXTRA_CLANG_ARGS = { value = "-I/usr/lib/gcc/x86_64-linux-gnu/13/include
 # pom-plugin-llama.cpp repository). Relative to this root: the `llama.cpp` at the POM root (a checkout
 # or a symlink of the fork). An LLAMA_SOURCE already set in the environment (CI, Docker) prevails.
 LLAMA_SOURCE = { value = "llama.cpp", relative = true, force = false }
+# Test threads get 8 MiB of stack: in a debug build the gateway's generation path
+# (`prefix_reuse_lab`, polled on the test thread by `#[tokio::test]`) overflowed the
+# default 2 MiB and aborted the whole run. Release binaries are not affected.
+RUST_MIN_STACK = { value = "8388608", force = false }
 
 # This profile applies to the *Rust* code. llama.cpp comes from cmake with
 # `--config Release` and has always been optimized - what was at opt-level 0 was

@@ -576,7 +576,7 @@ inference does not start.
 
 ## 3. iroh path (internet)
 
-The internet path runs on an **iroh endpoint** (iroh 1.3): QUIC connections
+The internet path runs on an **iroh endpoint** (iroh 1.4): QUIC connections
 dialed by public key, not by address. `p2p.rs` holds the transport pieces
 (endpoint id, address text, request/response framing, outbound connections)
 and `discovery.rs` builds the endpoint and everything that rides on it.
@@ -916,11 +916,17 @@ request, marked or not. And `infer_tunnel::gateway_path_is_allowed` still
 compares the exact path, with no prefix or wildcard, on the receiving side.
 The one shape matched by segment is a plugin call between nodes
 (`plugin_path_is_allowed`): `/api/internal/plugins/services`,
-`/api/internal/plugins/<code>/peer/<op>` and
-`/api/internal/plugins/<code>/engine/generate`, each segment a plain name
-except `<op>`, which follows the handler's own `valid_peer_op` (dots allowed,
-as in `quota.status`). The
-engine's session files and stage links stay off the tunnel. The
+`/api/internal/plugins/<code>/peer/<op>`,
+`/api/internal/plugins/<code>/engine/generate` and the stage link of a sliced
+plugin model (`<code>/engine/link/<deploy>`, `.../<conn>` and
+`.../<conn>/<seq>`, the last a number), each segment a plain name except
+`<op>`, which follows the handler's own `valid_peer_op` (dots allowed, as in
+`quota.status`). The stage link has to ride the tunnel: when the control plane
+reaches a peer over QUIC or only through the tunnel (NAT), the next stage's
+`control_get` for the link secret and every frame go that way, and refusing
+them left the later stage waiting until its watchdog stopped it. Each link
+route takes `InternalNodeAuth` and checks the caller is a machine of the
+deployment. The engine's session files stay off the tunnel. The
 sender picks the `target` variant; the receiver resolves the port, with the two
 ports it chose itself.
 

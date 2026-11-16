@@ -48,6 +48,8 @@ pub(crate) use tracing::{debug, info, warn};
 mod core;
 #[path = "direct.rs"]
 mod direct;
+#[path = "meter.rs"]
+mod meter;
 #[path = "perf.rs"]
 mod perf;
 #[path = "prefill.rs"]

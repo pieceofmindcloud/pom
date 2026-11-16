@@ -2581,7 +2581,11 @@ runs it through that plugin or fails.
   NVIDIA GPU indices of the machine - and `gpu_devices`, every GPU with its
   `vendor` and its `ordinal` among that vendor's cards, the number its own
   runtime gives it: `HIP_VISIBLE_DEVICES` for an AMD card, which `sysmon`
-  counts after the NVIDIA ones), reads `engine.status` every 2 s and answers
+  counts after the NVIDIA ones; also `cache_type_k`/`cache_type_v` - the
+  installation's own K/V types beside the plugin-named `kv` -, `n_batch`,
+  `n_ubatch` and `sampling`, the deployment's sampling defaults and seed, which
+  an engine that declares `cache_types`, `batch` or `sampling` reads and the
+  others ignore), reads `engine.status` every 2 s and answers
   `/health` with the fields the llama.cpp server publishes: `model_loaded`
   only once the plugin is `ready`, the layer range, `n_ctx_per_session` (the
   whole window: the engine gives it to every request) and
@@ -3184,6 +3188,115 @@ stream wait total/p50/p95. The wait also publishes totals and quantiles for
 production, downstream, channel reservation, queue and previous callback. The
 first control frame keeps the measurement of the transport used to start the
 stream.
+
+## 10.1 GPU work metering
+
+With `NetworkSettings.metering.enabled`, every hop meters the work it computes
+so the network can pay for it (spec `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`,
+plan `docs/superpowers/plans/2026-11-08-gpu-work-metering.md`). The logic shared
+with the ledger is the crate `crates/metering-core`; the node side is
+`inference/infer_server/meter.rs` (the per-session meter) and
+`backend/metering.rs` (context, bundles, outbox, the ledger's node operations).
+
+- **Where the hooks are.** The compute functions (`prefill_blocking`,
+  `prefill_batch_blocking`, `step_blocking`, `step_batch_blocking`) record the
+  input (the decoded tensor, or the head's prompt token ids), the positions
+  computed, cached, decoded and verified, and the encoded output. Every reply
+  mode reaches them, so no forwarding path carries anything new.
+- **Link digests.** A running SHA-256 over each input item (the decoded tensor:
+  rows and bytes, no positions) and over each item the hop forwards to the next
+  hop as that hop will decode it: the relay encoders report every forwarded
+  tensor (`metering::note_forward`, a codec round trip in the frame's format),
+  because in ring, direct and link modes the next hop gets a frame encoded for
+  it, not the reply. In hub mode the reply is what travels, and the meter's own
+  reply digest stands. Hop `n`'s output digest equals hop `n+1`'s input digest
+  for f32, f16, f8 and i4 (checked live, `docs/reports/gpu-work-metering-live-run.md`).
+  The head hashes prompt token ids one position at a time, so the gateway can
+  recompute it from the prompt whatever the chunking; the check stops after the
+  prefilled prompt positions of the head's sequence.
+- **TOPLOC proofs.** Rows a verifier can reproduce (prefill and plain decode
+  steps, not speculative batches) are proved in chunks of 32 positions with
+  `toploc/v1`; each chunk is a Merkle leaf with its positions, stored in
+  `metering_proofs`, and the receipt carries the root (`summ`). The tail
+  outputs tokens, not a hidden state: while metering is on it turns
+  llama.cpp's embeddings output on (`InferState::meter_tail_ready`, the
+  engine's `set_output_embeddings`, no capture callback) and proves its final
+  hidden state after the output norm for each plain decode step
+  (`meter_tail_rows`). Its prefill rows stay unproved: only the last prompt
+  position is an output token, and making every position one would compute
+  vocabulary-wide logits for the whole prompt. A verifier re-runs the last
+  range with the same embeddings output in chunks of 64 positions. Measured
+  2026-11-14 on CPU: no slowdown of the tail, honest re-execution mean 1.1-1.4
+  and median 1 against 28-46 and 21-42 with one or five layers skipped, inside
+  and far outside the llama.cpp limits. The tail proves full chunks of 32 rows
+  only (`ProofBuffer::full_chunks_only`): a chunk of one or two decode rows
+  missed honest re-executions by a steady margin (mean 3.0-3.1, median 3,
+  validators and the admin agreeing with each other), so a short answer
+  leaves the tail's receipt unproved rather than failed.
+- **The receipt rides the end of the turn.** The gateway mints a bundle nonce
+  and sends it as `metering_bundle` in the `/v1/session/rewind` (the normal end
+  of a turn) or `/v1/session/release` it already posts to every step; the hop
+  signs the turn's receipt for that nonce and answers it as `receipt`, the
+  head adding its computed sequence as `metering_tokens` (LE i32, base64). A
+  call without the nonce drops the meter; an older gateway sees the answer it
+  always did. The gateway checks the receipts (`metering_core::receipt::assemble_hops`),
+  countersigns the bundle, keeps the token sequence (`metering_tokens` table)
+  and delivers the bundle to the ledger through `metering_outbox`, off the
+  request path.
+- **Re-execution** (`backend/metering_verify.rs`, `node.reexecute`): the
+  verifier cuts each range of the whole model it holds (virtual slice when
+  enabled, else a real slice under `virtual-slices/metering/`), loads it alone,
+  runs the head's sequence teacher-forced through the ranges in order with each
+  boundary's codec reproduced, and checks the audited hop's chunks with the
+  engine's limits (`toploc::Params::for_engine`: for llama.cpp mean <= 3.0,
+  median <= 2.5, calibrated to catch one skipped layer of 24 - see
+  `docs/reports/gpu-work-metering-live-run.md`). It runs as a job polled with
+  `node.reexecute_status`.
+- **Validators** (`docs/superpowers/specs/2026-11-10-validators-design.md`,
+  phase A): workers admitted as validators (`Config.validator`, set by the
+  admission grant) announce `metering/validator-v1`, refuse what would make
+  them hold or serve a model and are left out of deployments. When the
+  network has live validators and no single `metering.verifier`, the ledger
+  plugin sends each sample to `validators_per_sample` of them with
+  `node.reexecute` in `readings` mode: the chunk positions only, never the
+  worker's proofs; each answers its reading of each chunk
+  (`toploc::Reading`: its recomputation's top-k indices and bf16 values). The
+  ledger holds the readings to its admin's own reference (a share of the
+  samples, or when they split) or to their strict majority, strikes the ones
+  that disagree, and checks the worker's proofs against the agreed reading
+  (`toploc::check_reading`, the same verdict as `check_chunk`). Two proofs
+  cannot be compared with each other, since a proof does not store its
+  indices; that is why validators answer readings. Pay, strikes and the wait
+  for absent validators are the plugin's (`pom-plugin-metering`
+  `src/validators.rs`).
+- **Capability.** `metering/receipt-v1` is announced in `/health` while metering
+  is on.
+- **Split plugin engines (Strata)** are metered by `inference/plugin_metering.rs`
+  from what the node already carries, with no engine change. The earlier stage
+  (`plugin_stage_link::link_frame`) pairs each stage-protocol request (`P` a
+  prompt piece, `W`/`V` a verify window, `C` a commit, `R` a resume, `Z` a new
+  session) with its engine's answer: it counts positions, hashes the answer
+  rows as the later machine decodes them, proves the prompt rows and, on the
+  first stage, hashes the token ids and keeps the sequence. The later stage
+  (`forward`) hashes the rows it receives. The serving stage counts from its
+  `done` line. After the stream, the gateway posts the bundle nonce to every
+  stage (`POST /api/internal/plugins/:code/engine/metering/:deploy`) and
+  assembles the bundle. The stage server holds one session, so the link's
+  frames between two closes are one turn's; overlapping turns on one split
+  deployment can break the links of both (they are then unmetered).
+- **Re-executing a Strata stage**: the verifier asks the plugin for audit
+  engines (`engine.audit.start|status|stop`) that load the stages up to the
+  audited one beside the main engine, chains them through loopback relays that
+  reproduce each boundary's codec, and reads the audited stage's rows as prompt
+  pieces and as committed windows, judging each chunk against both. The
+  serving stage keeps no proofs (void). Each engine is judged by its own
+  limits (`toploc::Params::for_engine`); Strata's ignore the exponent count
+  and bound the mantissa error (calibrated on Flash-Next with the ledger's
+  `rpc.calibrate`). Off by default (`metering.verify_plugin_engines`).
+- A Strata window row is the prompt row followed by values that depend on
+  the windowing; only the prompt part is proved (widths from the link's
+  hello), every window is held until its commit, and only its kept rows are
+  proved.
 
 ## 11. Defects noted
 

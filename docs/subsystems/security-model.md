@@ -240,6 +240,42 @@ own.
   (`principal`, `admin`, `member`, `visitor`) and `head: false` for visitors.
   Each plugin must check `caller.role` itself.
 
+## GPU work metering
+
+- **Three token kinds, three headers.** Work receipts (signed by the hop),
+  bundles (countersigned by the gateway) and cycle statements (signed by the
+  ledger admin's node) are compact Ed25519 tokens like membership tokens, each
+  with its own `typ` (`<slug>-work-receipt/v1`, `-work-bundle/v1`,
+  `-cycle-statement/v1`), so none can pass for another. Each names its signer's
+  key and the signer's node id must be that key's hash.
+- **A receipt never names the gateway** (only an opaque nonce); only the bundle,
+  delivered to the ledger alone, does. A node reads only its own statements.
+- **The node signs a statement only for its own plugin**
+  (`node.sign_statement` requires the local marker the host API adds and the
+  peer route strips). The other `node.*` metering operations answer admins only.
+- **Visitors.** A visitor gateway's bundle pays the hops (it is the consumer)
+  but never earns the gateway fee.
+- **Validators** re-run sampled work from the request's tokens (phase A), so
+  they read the prompts and answers of the requests they check; the admission
+  form says so. They never receive the worker's proofs, only the positions to
+  read, and a validator that answers without computing cannot match the
+  others or the admin's reference. A validator serves no model: it refuses
+  the routes that would make it hold or serve one, as a visitor does.
+
+## Charging visitors
+
+A charging network (`docs/subsystems/payments.md`) runs
+`inference_access = member_gateway_only`: a visitor never reaches a worker's
+inference port (`visitor_must_use_gateway`) and learns only the entry nodes
+the policy allows, so it cannot skip the entry node that charges it. The
+account is named by a home statement signed by the visitor's home principal
+and checked against the key the transport proved (`crate::home_statement`); no
+address or name enters it. Only the principal writes the authoritative book;
+other entry nodes spend leases it grants, so with the principal away charging
+fails closed. A member's home statement lasts a day and its home principal renews it only
+for a member it has not banned, so a banned machine stops drawing on its home
+network's credit within a day.
+
 ## People signed in through a plugin
 
 A node can serve people, not only its operator. The node knows no identity

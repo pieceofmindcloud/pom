@@ -143,10 +143,19 @@ mod engine_group_tests {
         ];
         assert_eq!(engine_of_peer(&peers[0]).as_deref(), Some("strata"));
         assert_eq!(engine_of_peer(&peers[1]), None);
-        assert_eq!(pipeline_engines(&peers, None), vec![None, Some("strata".to_string())]);
+        assert_eq!(
+            pipeline_engines(&peers, None),
+            vec![None, Some("strata".to_string())]
+        );
         // a chosen head keeps the pipeline on its own engine
-        assert_eq!(pipeline_engines(&peers, Some("gpu1")), vec![Some("strata".to_string())]);
-        let llama: Vec<String> = peers_of_engine(&peers, None).into_iter().map(|p| p.node_id).collect();
+        assert_eq!(
+            pipeline_engines(&peers, Some("gpu1")),
+            vec![Some("strata".to_string())]
+        );
+        let llama: Vec<String> = peers_of_engine(&peers, None)
+            .into_iter()
+            .map(|p| p.node_id)
+            .collect();
         assert_eq!(llama, ["gpu2"]);
     }
 
@@ -157,7 +166,10 @@ mod engine_group_tests {
         let prefill = role_capability(InferenceRole::Prefill);
         let shared = role_capability(InferenceRole::Shared);
         assert_eq!(prefill, "engine/plugin-role-v1:prefill");
-        assert_eq!(role_of_capabilities(&[plugin, prefill]), InferenceRole::Prefill);
+        assert_eq!(
+            role_of_capabilities(&[plugin, prefill]),
+            InferenceRole::Prefill
+        );
         assert_eq!(role_of_capabilities(&[shared]), InferenceRole::Shared);
         assert_eq!(role_of_capabilities(&[]), InferenceRole::Both);
     }
@@ -171,7 +183,10 @@ pub(crate) fn engine_of_peer(peer: &crate::network::PeerInfo) -> Option<String> 
 }
 
 /// The peers of one engine (see [`engine_of_peer`]).
-pub(crate) fn peers_of_engine(peers: &[crate::network::PeerInfo], engine: Option<&str>) -> Vec<crate::network::PeerInfo> {
+pub(crate) fn peers_of_engine(
+    peers: &[crate::network::PeerInfo],
+    engine: Option<&str>,
+) -> Vec<crate::network::PeerInfo> {
     peers
         .iter()
         .filter(|peer| engine_of_peer(peer).as_deref() == engine)
@@ -181,7 +196,10 @@ pub(crate) fn peers_of_engine(peers: &[crate::network::PeerInfo], engine: Option
 
 /// The engines a pipeline may be built on, in the order the planner tries them: the head's engine when a head is
 /// already chosen (its pipeline stays on that engine), else every engine that serves a model, llama.cpp first.
-pub(crate) fn pipeline_engines(peers: &[crate::network::PeerInfo], head: Option<&str>) -> Vec<Option<String>> {
+pub(crate) fn pipeline_engines(
+    peers: &[crate::network::PeerInfo],
+    head: Option<&str>,
+) -> Vec<Option<String>> {
     if let Some(head) = head {
         return peers
             .iter()
@@ -234,7 +252,7 @@ fn kv_of(cfg: &crate::runtime::NodeConfig) -> &'static str {
 /// GPU with its vendor and its position among that vendor's cards - what the
 /// vendor's runtime numbers (`HIP_VISIBLE_DEVICES` for an AMD one), since the
 /// node counts AMD cards after the NVIDIA ones.
-async fn node_gpus() -> (Vec<u32>, Vec<Value>) {
+pub(crate) async fn node_gpus() -> (Vec<u32>, Vec<Value>) {
     gpus_of(crate::sysmon::sample().await.gpus)
 }
 
@@ -278,6 +296,27 @@ pub(crate) fn load_params(
         "n_ctx": cfg.n_ctx,
         "max_sessions": cfg.max_sessions,
         "kv": kv_of(cfg),
+        // the installation's own K/V types and the deployment's batch and sampling defaults, beside `kv`: an engine
+        // that declares `cache_types`, `batch` or `sampling` reads them, the others ignore them
+        "cache_type_k": cfg.cache_type_k.as_str(),
+        "cache_type_v": cfg.cache_type_v.as_str(),
+        "n_batch": cfg.n_batch,
+        "n_ubatch": cfg.n_ubatch,
+        "sampling": {
+            "temperature": cfg.temperature,
+            "top_p": cfg.top_p,
+            "top_k": cfg.top_k,
+            "min_p": cfg.min_p,
+            "repeat_penalty": cfg.repeat_penalty,
+            "repeat_last_n": cfg.repeat_last_n,
+            "presence_penalty": cfg.presence_penalty,
+            "frequency_penalty": cfg.frequency_penalty,
+            "dry_multiplier": cfg.dry_multiplier,
+            "dry_base": cfg.dry_base,
+            "dry_allowed_length": cfg.dry_allowed_length,
+            "dry_penalty_last_n": cfg.dry_penalty_last_n,
+            "seed": cfg.seed,
+        },
         "gpus": gpus,
         "gpu_devices": gpu_devices,
         "settings": cfg.engine_settings,
@@ -297,15 +336,27 @@ pub(crate) fn load_params(
         params["range"] = json!({ "start_layer": cfg.start_layer, "end_layer": cfg.end_layer });
     }
     // The drafter the deployment chose, on the stage that runs it (`draft_architectures`).
-    if let Some(draft) = cfg.mtp_draft_path.as_deref().filter(|path| !path.trim().is_empty()) {
+    if let Some(draft) = cfg
+        .mtp_draft_path
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+    {
         params["mtp_draft_path"] = json!(draft);
     }
     // The vision projector the deployment chose: the engine reads images with it.
-    if let Some(mmproj) = cfg.mmproj_path.as_deref().filter(|path| !path.trim().is_empty()) {
+    if let Some(mmproj) = cfg
+        .mmproj_path
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+    {
         params["mmproj_path"] = json!(mmproj);
     }
     // the sessions live with the KV snapshots, so the clear of the KV cache empties them too
-    if let Some(dir) = cfg.slot_save_path.as_deref().filter(|dir| !dir.trim().is_empty()) {
+    if let Some(dir) = cfg
+        .slot_save_path
+        .as_deref()
+        .filter(|dir| !dir.trim().is_empty())
+    {
         params["session_dir"] = json!(std::path::Path::new(dir)
             .join(super::plugin_session::SESSIONS_SUBDIR)
             .display()
@@ -522,11 +573,14 @@ pub(crate) async fn run(
     let failure_seen = Arc::clone(&failure);
     // a later stage whose earlier stage's link secret changed can never link: this generation ends and restarts
     let stale_rx = relay.as_mut().and_then(|relay| relay.stale.take());
-    let served = crate::serve::serve_with_quic(listener, router, tls, quic, quic_port, async move {
-        let ended = wait_for_end(generation, stop_rx, Some(failed_rx), stale_rx).await;
-        *failure_seen.lock().unwrap_or_else(|error| error.into_inner()) = ended;
-    })
-    .await;
+    let served =
+        crate::serve::serve_with_quic(listener, router, tls, quic, quic_port, async move {
+            let ended = wait_for_end(generation, stop_rx, Some(failed_rx), stale_rx).await;
+            *failure_seen
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = ended;
+        })
+        .await;
     poller.abort();
     if query(&code, "engine.unload", json!({})).await.is_none() {
         warn!(plugin = %code, "the plugin did not confirm the unload");
@@ -613,15 +667,23 @@ pub(crate) fn image_data_url(bytes: &[u8]) -> String {
         "image/jpeg"
     };
     use base64::Engine as _;
-    format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
+    format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
 }
 
 /// Whether the client chose its thinking itself: the POM's `thinking_enabled`, OpenAI's `reasoning_effort`, `reasoning`
 /// or `chat_template_kwargs.enable_thinking`, Anthropic's `thinking`.
 fn thinking_asked(details: &Value) -> bool {
-    ["thinking_enabled", "reasoning_effort", "reasoning", "thinking"]
-        .iter()
-        .any(|key| !details[*key].is_null())
+    [
+        "thinking_enabled",
+        "reasoning_effort",
+        "reasoning",
+        "thinking",
+    ]
+    .iter()
+    .any(|key| !details[*key].is_null())
         || !details["chat_template_kwargs"]["enable_thinking"].is_null()
 }
 
@@ -636,7 +698,9 @@ fn thinking_asked(details: &Value) -> bool {
 /// form the gateway reads, as before. A request whose prompt carries the RAG context the gateway added keeps the
 /// flattened prompt, which holds that context.
 fn chat_api(details: &Value) -> Option<&'static str> {
-    let has_tools = details["tools"].as_array().is_some_and(|tools| !tools.is_empty());
+    let has_tools = details["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty());
     if !has_tools || !details["messages"].is_array() || !details["rag"].is_null() {
         return None;
     }
@@ -654,11 +718,14 @@ fn chat_api(details: &Value) -> Option<&'static str> {
             })
         })
     });
-    Some(if anthropic_tool || anthropic_block || details.get("system").is_some_and(|s| !s.is_null()) {
-        "anthropic"
-    } else {
-        "openai"
-    })
+    Some(
+        if anthropic_tool || anthropic_block || details.get("system").is_some_and(|s| !s.is_null())
+        {
+            "anthropic"
+        } else {
+            "openai"
+        },
+    )
 }
 
 pub(crate) fn generation_body(request: &EngineRequest) -> Value {
@@ -765,7 +832,14 @@ async fn open_stream(
     node_id: &str,
     code: &str,
     body: &Value,
-) -> Result<(reqwest::Response, Option<super::plugin_session::SessionFetch>, Option<u64>), String> {
+) -> Result<
+    (
+        reqwest::Response,
+        Option<super::plugin_session::SessionFetch>,
+        Option<u64>,
+    ),
+    String,
+> {
     // the session this machine fetched for a turn it heads, and how long looking for it took (a remote head reports
     // both in the done line)
     let mut fetched = None;
@@ -846,7 +920,13 @@ fn relay_with_links(
             loop {
                 if let Some(end) = relay.pending.iter().position(|byte| *byte == b'\n') {
                     let line: Vec<u8> = relay.pending.drain(..=end).collect();
-                    let out = rewrite_line(&relay.code, &line, &mut relay.first_token, relay.fetched.as_ref(), relay.lookup_ms);
+                    let out = rewrite_line(
+                        &relay.code,
+                        &line,
+                        &mut relay.first_token,
+                        relay.fetched.as_ref(),
+                        relay.lookup_ms,
+                    );
                     return Some((Ok(Bytes::from(out)), relay));
                 }
                 if relay.ended {
@@ -868,7 +948,13 @@ fn relay_with_links(
 
 /// One NDJSON line of the engine's answer, with the stage links (and the session this machine fetched for the turn,
 /// `session_fetch`, and how long looking for it took, `session_lookup_ms`) added to its `done` event.
-fn rewrite_line(code: &str, line: &[u8], first_token: &mut bool, fetched: Option<&Value>, lookup_ms: u64) -> Vec<u8> {
+fn rewrite_line(
+    code: &str,
+    line: &[u8],
+    first_token: &mut bool,
+    fetched: Option<&Value>,
+    lookup_ms: u64,
+) -> Vec<u8> {
     let text = line.strip_suffix(b"\n").unwrap_or(line);
     let Ok(mut value) = serde_json::from_slice::<Value>(text) else {
         return line.to_vec();
@@ -916,8 +1002,14 @@ fn generated_text_event(event: &Value) -> Option<GenEvent> {
         .map(|text| GenEvent::Reasoning(text.to_owned()))
 }
 
+/// How long a turn the head said is waiting for a batch slot (`{"queued": ...}`) may wait there, with no token yet,
+/// before the gateway moves it to a clearly less busy machine of the same model.
+const QUEUE_MOVE_AFTER: Duration = Duration::from_secs(3);
+/// How often a queued turn looks again for a machine to move to, when none was free.
+const QUEUE_MOVE_RECHECK: Duration = Duration::from_secs(2);
+
 /// Runs one generation on the plugin engine of `node_id` and reports it as
-/// the pipeline does.
+/// the pipeline does. A turn the head queues may move once to a less busy machine (`generate_on`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn generate(
     state: &GatewayState,
@@ -929,6 +1021,93 @@ pub(crate) async fn generate(
     tx: &mpsc::Sender<GenEvent>,
     cancellation: &crate::prefill::Cancellation,
     request_started: Instant,
+) {
+    generate_on(
+        state,
+        plan,
+        code,
+        model,
+        trace_id,
+        request,
+        tx,
+        cancellation,
+        request_started,
+        true,
+    )
+    .await
+}
+
+/// The machine a turn waiting in its head's queue moves to: one that serves the whole model with the same plugin and
+/// is clearly less busy than the head, so the turn runs there now instead of after the head's queue. The least busy
+/// wins, then the fastest at decoding. `None` keeps the turn where it is.
+async fn queue_move_target(
+    state: &GatewayState,
+    code: &str,
+    model: &str,
+    head: &str,
+) -> Option<crate::network::PeerInfo> {
+    let peers = state.all_peers().await;
+    let perf = state.admission_health.perf_snapshot();
+    let mut load_of = std::collections::HashMap::new();
+    for peer in &peers {
+        let live = state.loads.load(&peer.node_id).await;
+        let reported = perf
+            .get(&peer.node_id)
+            .map(|p| p.active_generations)
+            .unwrap_or(0);
+        load_of.insert(peer.node_id.clone(), live.max(reported));
+    }
+    // the head's load counts this turn
+    let head_load = load_of.get(head).copied().unwrap_or(0);
+    let candidates: Vec<crate::network::PeerInfo> = peers
+        .into_iter()
+        .filter(|peer| {
+            peer.node_id != head
+                && peer.model == model
+                && peer.total_layers > 0
+                && peer.start_layer == 0
+                && peer.end_layer + 1 == peer.total_layers
+                && engine_of_peer(peer).as_deref() == Some(code)
+        })
+        .collect();
+    let scored: Vec<(u32, f64)> = candidates
+        .iter()
+        .map(|peer| {
+            let load = load_of.get(&peer.node_id).copied().unwrap_or(0);
+            let speed = perf
+                .get(&peer.node_id)
+                .and_then(|p| p.decode_ms_per_step)
+                .unwrap_or(f64::INFINITY);
+            (load, speed)
+        })
+        .collect();
+    pick_queue_move(head_load, &scored).map(|index| candidates[index].clone())
+}
+
+/// Of the machines a queued turn could move to (`(load, decode ms per step)` each), the index of the one it moves to:
+/// moved, the turn adds one there, which must still be less than the head's load (this turn included), so two
+/// machines never trade a turn back and forth. The least busy wins, then the fastest at decoding.
+fn pick_queue_move(head_load: u32, candidates: &[(u32, f64)]) -> Option<usize> {
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, (load, _))| load + 1 < head_load)
+        .min_by(|(_, a), (_, b)| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)))
+        .map(|(index, _)| index)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn generate_on(
+    state: &GatewayState,
+    plan: &crate::pipeline::PipelinePlan,
+    code: &str,
+    model: &str,
+    trace_id: Option<String>,
+    request: EngineRequest,
+    tx: &mpsc::Sender<GenEvent>,
+    cancellation: &crate::prefill::Cancellation,
+    request_started: Instant,
+    may_move: bool,
 ) {
     // The last stage holds the head: it serves the request.
     let Some(step) = plan.steps.last() else {
@@ -946,16 +1125,8 @@ pub(crate) async fn generate(
     // session it saved. Any problem leaves the head to read the prompt itself.
     if plan.steps.len() == 1 && request.images.is_empty() && request.probe_labels.is_empty() {
         if let Some(key) = &session_key {
-            if let Some(source) = prefill_on_peer(
-                state,
-                code,
-                model,
-                node_id,
-                key,
-                &body,
-                cancellation,
-            )
-            .await
+            if let Some(source) =
+                prefill_on_peer(state, code, model, node_id, key, &body, cancellation).await
             {
                 // its pieces are in the head's slot already; else the head fetches the session it saved
                 if source.fetch.is_some() {
@@ -974,12 +1145,15 @@ pub(crate) async fn generate(
     // frames of this one are the prompt's until the first token.
     let _ = super::plugin_stage_link::take_link_stats(code);
     let _ = super::plugin_stage_link::take_channel_stats(code);
-    let _ = super::plugin_stage_link::take_own_wait(code, super::plugin_stage_link::LinkPhase::Prefill);
-    let _ = super::plugin_stage_link::take_own_wait(code, super::plugin_stage_link::LinkPhase::Decode);
+    let _ =
+        super::plugin_stage_link::take_own_wait(code, super::plugin_stage_link::LinkPhase::Prefill);
+    let _ =
+        super::plugin_stage_link::take_own_wait(code, super::plugin_stage_link::LinkPhase::Decode);
     super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Prefill);
     let channel = super::plugin_stage_link::channel_of(node_id, &state.network.node_id);
     let leg_started = Instant::now();
-    let (response, fetched_here, lookup_here) = match open_stream(state, node_id, code, &body).await {
+    let (response, fetched_here, lookup_here) = match open_stream(state, node_id, code, &body).await
+    {
         Ok(opened) => opened,
         Err(error) => {
             let _ = tx.send(GenEvent::Failed(error)).await;
@@ -999,7 +1173,10 @@ pub(crate) async fn generate(
     );
     // A generation this machine serves is in flight here; the head's stream is counted on the head.
     let mut stream = if node_id == state.network.node_id {
-        Box::pin(super::engine_telemetry::track(code, response.bytes_stream()))
+        Box::pin(super::engine_telemetry::track(
+            code,
+            response.bytes_stream(),
+        ))
             as std::pin::Pin<Box<dyn futures::Stream<Item = Result<Bytes, reqwest::Error>> + Send>>
     } else {
         Box::pin(response.bytes_stream())
@@ -1009,11 +1186,49 @@ pub(crate) async fn generate(
     let mut first_token_at: Option<Instant> = None;
     let mut streamed_any = false;
     let mut pieces = 0u32;
+    // The head said the turn waits for a batch slot: when to look for a less busy machine to move it to. Only a turn
+    // nothing was sent for yet moves, once, and not one whose prompt a prefill machine already read for this head.
+    let movable = may_move && plan.steps.len() == 1 && prefill_leg.is_none();
+    let mut move_check_at: Option<Instant> = None;
     loop {
         if cancellation.is_cancelled() || tx.is_closed() {
             // Dropping the stream closes the connection; the plugin's server
             // notices and stops the engine.
             return;
+        }
+        if let Some(at) = move_check_at.filter(|at| Instant::now() >= *at) {
+            move_check_at = None;
+            if !streamed_any && first_token_at.is_none() {
+                if let Some(step) = queue_move_target(state, code, model, node_id)
+                    .await
+                    .and_then(|peer| crate::pipeline::step_for(&peer, 0))
+                {
+                    tracing::info!(
+                        target = %step.node_id,
+                        head = %node_id,
+                        waited_ms = at.elapsed().as_millis() as u64 + QUEUE_MOVE_AFTER.as_millis() as u64,
+                        "plugin engine: the turn waits for a batch slot on its head; moved to a less busy machine"
+                    );
+                    // Dropping the stream closes the connection: the head's bridge drops the turn it had not started.
+                    drop(stream);
+                    drop(_in_flight);
+                    let moved = crate::pipeline::plan_from_steps(vec![step]);
+                    return Box::pin(generate_on(
+                        state,
+                        &moved,
+                        code,
+                        model,
+                        trace_id,
+                        request,
+                        tx,
+                        cancellation,
+                        request_started,
+                        false,
+                    ))
+                    .await;
+                }
+                move_check_at = Some(Instant::now() + QUEUE_MOVE_RECHECK);
+            }
         }
         let next = tokio::time::timeout(Duration::from_millis(500), stream.next()).await;
         let chunk = match next {
@@ -1036,9 +1251,17 @@ pub(crate) async fn generate(
             let Ok(event) = serde_json::from_slice::<Value>(&line[..line.len() - 1]) else {
                 continue;
             };
+            if movable && first_token_at.is_none() && event.get("queued").is_some() {
+                tracing::info!(head = %node_id, queued = %event["queued"], "plugin engine: the head has no free batch slot for the turn");
+                move_check_at.get_or_insert_with(|| Instant::now() + QUEUE_MOVE_AFTER);
+                continue;
+            }
             if let Some(output) = generated_text_event(&event) {
                 if first_token_at.is_none() {
-                    super::plugin_stage_link::set_phase(code, super::plugin_stage_link::LinkPhase::Decode);
+                    super::plugin_stage_link::set_phase(
+                        code,
+                        super::plugin_stage_link::LinkPhase::Decode,
+                    );
                 }
                 first_token_at.get_or_insert_with(Instant::now);
                 streamed_any = true;
@@ -1048,6 +1271,12 @@ pub(crate) async fn generate(
                 }
             } else if let Some(done) = event.get("done") {
                 let total_ms = request_started.elapsed().as_millis() as u64;
+                // GPU work metering: the turn ran on this machine (a remote head meters its own done line).
+                if node_id == state.network.node_id {
+                    if let Some(cfg) = state.runtime.config().await {
+                        crate::plugin_metering::on_done(&cfg.deploy_id, done);
+                    }
+                }
                 // The plugin's basic data; everything else about the generation is measured here.
                 // The turn ran on this machine: its conversation goes on to the peers from a background task
                 // that waits for a deferred save (a remote head does this itself).
@@ -1079,8 +1308,12 @@ pub(crate) async fn generate(
                 let fetched = fetched_here
                     .clone()
                     .or_else(|| prefill_leg.as_ref().and_then(|leg| leg.fetch.clone()))
-                    .or_else(|| super::plugin_session::SessionFetch::from_json(&done["session_fetch"]));
-                let fetch_ms = fetched.as_ref().map_or(0, |fetch| fetch.transfer_ms + fetch.save_wait_ms);
+                    .or_else(|| {
+                        super::plugin_session::SessionFetch::from_json(&done["session_fetch"])
+                    });
+                let fetch_ms = fetched
+                    .as_ref()
+                    .map_or(0, |fetch| fetch.transfer_ms + fetch.save_wait_ms);
                 let (prefill_ms, prompt_read) = match &prefill_leg {
                     Some(leg) => (
                         engine_prefill_ms.unwrap_or(0) + leg.elapsed_ms + fetch_ms,
@@ -1088,7 +1321,10 @@ pub(crate) async fn generate(
                             .saturating_sub(cached_tokens)
                             .saturating_add(leg.tokens.min(u64::from(u32::MAX)) as u32),
                     ),
-                    None => (engine_prefill_ms.unwrap_or(ttft_ms), prompt_tokens.saturating_sub(cached_tokens)),
+                    None => (
+                        engine_prefill_ms.unwrap_or(ttft_ms),
+                        prompt_tokens.saturating_sub(cached_tokens),
+                    ),
                 };
                 let mut timings = crate::gateway::timing_metrics(
                     total_ms,
@@ -1108,7 +1344,9 @@ pub(crate) async fn generate(
                 // the prefill machine of a split is the first hop of the trace, before the head that decodes
                 let shown_plan = match prefill_leg.as_ref().and_then(|leg| leg.step.clone()) {
                     Some(step) => crate::pipeline::plan_from_steps(
-                        std::iter::once(step).chain(plan.steps.iter().cloned()).collect(),
+                        std::iter::once(step)
+                            .chain(plan.steps.iter().cloned())
+                            .collect(),
                     ),
                     None => plan.clone(),
                 };
@@ -1143,7 +1381,9 @@ pub(crate) async fn generate(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |now| now.as_millis() as u64)
                     .saturating_sub(request_started.elapsed().as_millis() as u64);
-                let mut offset_ms = leg_started.saturating_duration_since(request_started).as_millis() as u64;
+                let mut offset_ms = leg_started
+                    .saturating_duration_since(request_started)
+                    .as_millis() as u64;
                 let lookup_ms = lookup_here.or_else(|| done["session_lookup_ms"].as_u64());
                 let bridge = &done["pom_timings"];
                 let admission_ms = bridge["first_token_ms"]
@@ -1151,20 +1391,29 @@ pub(crate) async fn generate(
                     .map(|first| (first - report.prefill_ms.unwrap_or(0.0)).max(0.0));
                 // A session fetched from a peer is the lookup's last part: the source's save waited for, then the
                 // files copied. Each gets its own span, so a few hundred MB between two machines shows where it went.
-                let (save_wait_ms, transfer_ms) =
-                    fetched.as_ref().map_or((0, 0), |fetch| (fetch.save_wait_ms, fetch.transfer_ms));
+                let (save_wait_ms, transfer_ms) = fetched
+                    .as_ref()
+                    .map_or((0, 0), |fetch| (fetch.save_wait_ms, fetch.transfer_ms));
                 for (name, ms) in [
                     (
                         "session_lookup",
                         lookup_ms.map(|ms| ms.saturating_sub(save_wait_ms + transfer_ms) as f64),
                     ),
-                    ("session_save_wait", (save_wait_ms > 0).then_some(save_wait_ms as f64)),
-                    ("session_transfer", fetched.as_ref().map(|_| transfer_ms as f64)),
+                    (
+                        "session_save_wait",
+                        (save_wait_ms > 0).then_some(save_wait_ms as f64),
+                    ),
+                    (
+                        "session_transfer",
+                        fetched.as_ref().map(|_| transfer_ms as f64),
+                    ),
                     ("bridge_prepare", bridge["prepare_ms"].as_f64()),
                     ("session_restore", bridge["restore_ms"].as_f64()),
                     ("engine_admission", admission_ms),
                 ] {
-                    let Some(ms) = ms.map(|ms| ms.round() as u64) else { continue };
+                    let Some(ms) = ms.map(|ms| ms.round() as u64) else {
+                        continue;
+                    };
                     trace.spans.push(crate::prefill::TraceSpan::new(
                         name,
                         node_id.get(..8).unwrap_or(node_id),
@@ -1177,14 +1426,21 @@ pub(crate) async fn generate(
                     offset_ms += ms;
                 }
                 super::engine_telemetry::merge_reported_links(code, done);
-                super::engine_telemetry::apply_stage_links(&mut trace, code, engine_prefill_ms.unwrap_or(prefill_ms));
+                super::engine_telemetry::apply_stage_links(
+                    &mut trace,
+                    code,
+                    engine_prefill_ms.unwrap_or(prefill_ms),
+                );
                 if let Some(leg) = &prefill_leg {
-                    if let Some(hop) = trace.hops.iter_mut().find(|hop| hop.node_id == leg.node_id) {
+                    if let Some(hop) = trace.hops.iter_mut().find(|hop| hop.node_id == leg.node_id)
+                    {
                         // it read the prompt and decoded nothing; what it sent is the session the head fetched
                         hop.prefill.processing_ms = leg.engine_ms;
                         hop.prefill.round_trip_ms = leg.elapsed_ms;
                         hop.prefill.network_ms = leg.elapsed_ms.saturating_sub(leg.engine_ms);
-                        if let Some(fetch) = fetched.as_ref().filter(|fetch| fetch.source == leg.node_id) {
+                        if let Some(fetch) =
+                            fetched.as_ref().filter(|fetch| fetch.source == leg.node_id)
+                        {
                             hop.prefill.network_ms += fetch.transfer_ms;
                             hop.prefill.round_trip_ms += fetch.transfer_ms + fetch.save_wait_ms;
                             hop.prefill.bytes_sent += fetch.bytes;
@@ -1250,6 +1506,8 @@ pub(crate) async fn generate(
                     "generation completed by the plugin inference service"
                 );
                 let summary = GenSummary {
+                    payment: None,
+                    metering_bundle: None,
                     source: format!("pipeline:{}", shown_plan.hop_chain()),
                     tokens_generated: generated,
                     reasoning_tokens,
@@ -1297,7 +1555,10 @@ async fn prefill_peer(
     let mut load_of = std::collections::HashMap::new();
     for peer in &peers {
         let live = state.loads.load(&peer.node_id).await;
-        let reported = perf.get(&peer.node_id).map(|p| p.active_generations).unwrap_or(0);
+        let reported = perf
+            .get(&peer.node_id)
+            .map(|p| p.active_generations)
+            .unwrap_or(0);
         load_of.insert(peer.node_id.clone(), live.max(reported));
     }
     let head_role = peers
@@ -1314,7 +1575,9 @@ async fn prefill_peer(
     }
     let mut best: Option<(f64, crate::network::PeerInfo)> = None;
     for peer in peers {
-        let whole = peer.total_layers > 0 && peer.start_layer == 0 && peer.end_layer + 1 == peer.total_layers;
+        let whole = peer.total_layers > 0
+            && peer.start_layer == 0
+            && peer.end_layer + 1 == peer.total_layers;
         let role = role_of_capabilities(&peer.inference_frame_capabilities);
         // an idle prefill machine with the same plugin and the whole model
         if peer.node_id == head
@@ -1331,7 +1594,10 @@ async fn prefill_peer(
             .get(&peer.node_id)
             .and_then(|p| p.prefill_ms_per_token)
             .unwrap_or(f64::INFINITY);
-        if best.as_ref().is_none_or(|(best_speed, _)| speed < *best_speed) {
+        if best
+            .as_ref()
+            .is_none_or(|(best_speed, _)| speed < *best_speed)
+        {
             best = Some((speed, peer));
         }
     }
@@ -1379,8 +1645,11 @@ async fn prefill_on_peer(
     // a session saved with other engine settings than the head's, or on a layer split the head's engine cannot restore
     // (a whole model's session on a head split across GPUs), is refused there: the head reads the prompt
     if let Ok(head_offer) = &head_offer {
-        if let Ok(prefill_offer) = super::plugin_session::offer_of(state, code, key, &peer.node_id).await {
-            if !super::plugin_session::layers_compatible(&head_offer.layers, &prefill_offer.layers) {
+        if let Ok(prefill_offer) =
+            super::plugin_session::offer_of(state, code, key, &peer.node_id).await
+        {
+            if !super::plugin_session::layers_compatible(&head_offer.layers, &prefill_offer.layers)
+            {
                 warn!(
                     plugin = %code, session = %key, prefill = %peer.node_id, head = %head,
                     prefill_layers = %prefill_offer.layers, head_layers = %head_offer.layers,
@@ -1388,7 +1657,10 @@ async fn prefill_on_peer(
                 );
                 return None;
             }
-            if !super::plugin_session::configs_compatible(head_offer.config.as_deref(), prefill_offer.config.as_deref()) {
+            if !super::plugin_session::configs_compatible(
+                head_offer.config.as_deref(),
+                prefill_offer.config.as_deref(),
+            ) {
                 warn!(
                     plugin = %code, session = %key, prefill = %peer.node_id, head = %head,
                     prefill_config = prefill_offer.config.as_deref().unwrap_or("?"),
@@ -1408,14 +1680,21 @@ async fn prefill_on_peer(
     prefill["pieces"] = json!(true);
     let (piece_tx, mut piece_rx) = mpsc::unbounded_channel::<(String, String)>();
     let pieces = {
-        let (state, code, head, source, key) =
-            (state.clone(), code.to_owned(), head.to_owned(), peer.node_id.clone(), key.to_owned());
+        let (state, code, head, source, key) = (
+            state.clone(),
+            code.to_owned(),
+            head.to_owned(),
+            peer.node_id.clone(),
+            key.to_owned(),
+        );
         tokio::spawn(async move {
             let (mut bytes, mut applied) = (0u64, 0u64);
             while let Some((piece, kind)) = piece_rx.recv().await {
-                bytes += super::plugin_session::apply_piece_on(&state, &code, &head, &source, &key, &piece, &kind)
-                    .await
-                    .map_err(|error| format!("{piece}: {error}"))?;
+                bytes += super::plugin_session::apply_piece_on(
+                    &state, &code, &head, &source, &key, &piece, &kind,
+                )
+                .await
+                .map_err(|error| format!("{piece}: {error}"))?;
                 applied += 1;
             }
             Ok::<(u64, u64), String>((bytes, applied))
@@ -1508,7 +1787,10 @@ async fn prefill_on_peer(
                     elapsed_ms,
                     fetch: Some(super::plugin_session::SessionFetch {
                         source: peer.node_id.clone(),
-                        tokens: done["prompt_tokens"].as_u64().unwrap_or(0).saturating_sub(1),
+                        tokens: done["prompt_tokens"]
+                            .as_u64()
+                            .unwrap_or(0)
+                            .saturating_sub(1),
                         bytes,
                         transfer_ms: tail_ms,
                         save_wait_ms: 0,
@@ -1656,7 +1938,7 @@ pub(crate) async fn deploy_block(
                 ))
             }
             // ranges of the whole model, one stage per machine, each cut from that machine's own whole file
-            Some(entry) if ranges && !runs_ranges(entry, architecture) => {
+            Some(entry) if ranges && !serves_whole_ranges(entry, architecture) => {
                 return Some(format!(
                     "the inference service {service} of machine {target} cannot serve a range of {} from the whole \
                      model",
@@ -1686,10 +1968,25 @@ pub(crate) async fn deploy_block(
 pub(crate) fn runs_ranges(entry: &Value, architecture: Option<&str>) -> bool {
     entry["stages"] == true
         && architecture.is_some_and(|architecture| {
-            entry["stage_ranges"]
-                .as_array()
-                .is_some_and(|list| list.iter().any(|candidate| candidate.as_str() == Some(architecture)))
+            entry["stage_ranges"].as_array().is_some_and(|list| {
+                list.iter()
+                    .any(|candidate| candidate.as_str() == Some(architecture))
+            })
         })
+}
+
+/// Whether a machine's inference service can serve a range of the whole model of `architecture`, one stage per
+/// machine: it cuts the range itself ([`runs_ranges`]), or it names no `stage_ranges` and runs that architecture as
+/// slices ([`runs_slices`]), and the node cuts the range from the machine's whole file at apply time (a virtual slice
+/// when the node opts in, a real one otherwise). A service that names `stage_ranges` serves ranges of those only.
+pub(crate) fn serves_whole_ranges(entry: &Value, architecture: Option<&str>) -> bool {
+    if runs_ranges(entry, architecture) {
+        return true;
+    }
+    let names_ranges = entry["stage_ranges"]
+        .as_array()
+        .is_some_and(|list| !list.is_empty());
+    !names_ranges && architecture.is_some() && runs_slices(entry, architecture)
 }
 
 pub(crate) fn runs_slices(entry: &Value, architecture: Option<&str>) -> bool {
@@ -1697,9 +1994,9 @@ pub(crate) fn runs_slices(entry: &Value, architecture: Option<&str>) -> bool {
         return false;
     }
     match (entry["stage_architectures"].as_array(), architecture) {
-        (Some(list), Some(architecture)) if !list.is_empty() => {
-            list.iter().any(|candidate| candidate.as_str() == Some(architecture))
-        }
+        (Some(list), Some(architecture)) if !list.is_empty() => list
+            .iter()
+            .any(|candidate| candidate.as_str() == Some(architecture)),
         _ => true,
     }
 }
@@ -1721,7 +2018,10 @@ pub(crate) async fn check_peer_call(
     code: &str,
 ) -> Result<(), Response> {
     let Some(principal) = auth.principal() else {
-        return Err(refuse(StatusCode::FORBIDDEN, "a signed peer call is required"));
+        return Err(refuse(
+            StatusCode::FORBIDDEN,
+            "a signed peer call is required",
+        ));
     };
     if !valid_code(code) {
         return Err(refuse(StatusCode::BAD_REQUEST, "invalid plugin"));
@@ -1733,7 +2033,10 @@ pub(crate) async fn check_peer_call(
         .iter()
         .any(|peer| peer.node_id == principal.node_id)
     {
-        return Err(refuse(StatusCode::FORBIDDEN, "the caller is not a live peer"));
+        return Err(refuse(
+            StatusCode::FORBIDDEN,
+            "the caller is not a live peer",
+        ));
     }
     let served = state
         .runtime
@@ -1768,8 +2071,12 @@ pub(crate) async fn engine_generate_route(
     // This machine's stage links of the generation start from nothing; its prompt phase begins now.
     let _ = super::plugin_stage_link::take_link_stats(&code);
     let _ = super::plugin_stage_link::take_channel_stats(&code);
-    let _ = super::plugin_stage_link::take_own_wait(&code, super::plugin_stage_link::LinkPhase::Prefill);
-    let _ = super::plugin_stage_link::take_own_wait(&code, super::plugin_stage_link::LinkPhase::Decode);
+    let _ = super::plugin_stage_link::take_own_wait(
+        &code,
+        super::plugin_stage_link::LinkPhase::Prefill,
+    );
+    let _ =
+        super::plugin_stage_link::take_own_wait(&code, super::plugin_stage_link::LinkPhase::Decode);
     super::plugin_stage_link::set_phase(&code, super::plugin_stage_link::LinkPhase::Prefill);
     // a remote head's turn: the session it lacks is fetched from a peer here, before the turn reads its prompt
     let turn = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
@@ -1785,10 +2092,14 @@ pub(crate) async fn engine_generate_route(
         code.clone(),
         fetched,
         lookup_ms,
-        Box::pin(super::engine_telemetry::track(&code, response.bytes_stream())),
+        Box::pin(super::engine_telemetry::track(
+            &code,
+            response.bytes_stream(),
+        )),
     );
     // This machine ran the turn: when its bridge reports the conversation saved, the turn goes on to the peers.
     let (watch_state, watch_code) = (state.clone(), code.clone());
+    let metering_deploy = state.runtime.config().await.map(|cfg| cfg.deploy_id);
     let mut pending: Vec<u8> = Vec::new();
     let stream = stream.inspect(move |item| {
         let Ok(bytes) = item else {
@@ -1797,8 +2108,15 @@ pub(crate) async fn engine_generate_route(
         pending.extend_from_slice(bytes);
         while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = pending.drain(..=end).collect();
-            if let Some(key) = serde_json::from_slice::<Value>(&line)
-                .ok()
+            let value = serde_json::from_slice::<Value>(&line).ok();
+            // GPU work metering: this machine served the turn; its counts are in the done line.
+            if let (Some(value), Some(deploy)) = (&value, &metering_deploy) {
+                if value.get("done").is_some() {
+                    crate::plugin_metering::on_done(deploy, &value["done"]);
+                }
+            }
+            if let Some(key) = value
+                .as_ref()
                 .and_then(|value| super::plugin_session::saved_session(&value["done"]))
             {
                 if super::plugin_session::PUSH_SYNC {
@@ -1870,7 +2188,10 @@ mod tests {
         assert!(runs_slices(&strata, None));
         // no list: every architecture the service runs also runs in slices
         assert!(runs_slices(&json!({"stages": true}), Some("qwen35moe")));
-        assert!(!runs_slices(&json!({"stages": false, "stage_architectures": ["qwen4exp"]}), Some("qwen4exp")));
+        assert!(!runs_slices(
+            &json!({"stages": false, "stage_architectures": ["qwen4exp"]}),
+            Some("qwen4exp")
+        ));
     }
 
     #[tokio::test]
@@ -1879,9 +2200,17 @@ mod tests {
         let state = crate::gateway::testkit::state_with("me", vec![]).await;
         // every machine of the split answers: prefill machines alone are a deployment (the machines unknown here are
         // the only refusal left)
-        for roles in [vec![InferenceRole::Prefill], vec![InferenceRole::Prefill, InferenceRole::Prefill]] {
-            let targets: Vec<String> = ["a", "b"][..roles.len()].iter().map(|id| id.to_string()).collect();
-            let reason = deploy_block(&state, "strata", true, false, &targets, &roles, None).await.expect("unknown machines");
+        for roles in [
+            vec![InferenceRole::Prefill],
+            vec![InferenceRole::Prefill, InferenceRole::Prefill],
+        ] {
+            let targets: Vec<String> = ["a", "b"][..roles.len()]
+                .iter()
+                .map(|id| id.to_string())
+                .collect();
+            let reason = deploy_block(&state, "strata", true, false, &targets, &roles, None)
+                .await
+                .expect("unknown machines");
             assert!(reason.contains("did not answer which services"), "{reason}");
         }
         // two machines with the whole model and no role are a deployment too (the deploy gives them `Shared`)
@@ -1922,16 +2251,27 @@ mod tests {
         .await;
         let picked = |head: &'static str| {
             let state = state.clone();
-            async move { prefill_peer(&state, "strata", "m", head).await.map(|p| p.node_id) }
+            async move {
+                prefill_peer(&state, "strata", "m", head)
+                    .await
+                    .map(|p| p.node_id)
+            }
         };
         {
             // this turn is in flight on its head (`generate` holds it)
             let _turn = state.loads.acquire("head").await;
             // a free decode head hands its prompt to an idle prefill machine, never to another decode machine
-            assert!(matches!(picked("head").await.as_deref(), Some("fast" | "pre2")));
+            assert!(matches!(
+                picked("head").await.as_deref(),
+                Some("fast" | "pre2")
+            ));
             let _fast = state.loads.acquire("fast").await;
             let _pre2 = state.loads.acquire("pre2").await;
-            assert_eq!(picked("head").await, None, "no idle prefill machine: the free head reads it");
+            assert_eq!(
+                picked("head").await,
+                None,
+                "no idle prefill machine: the free head reads it"
+            );
             drop((_fast, _pre2));
             // a busy head reads its own prompt: it would refuse the pieces while a slot decodes
             let _another = state.loads.acquire("head").await;
@@ -1952,10 +2292,7 @@ mod tests {
         for bad in ["", "Strata", "1x", "a/b", "a-b", &"x".repeat(65)] {
             assert!(!valid_code(bad), "{bad}");
         }
-        let caps = vec![
-            "transport/iroh-tunnel-v1".to_owned(),
-            capability("strata"),
-        ];
+        let caps = vec!["transport/iroh-tunnel-v1".to_owned(), capability("strata")];
         assert_eq!(plugin_of_capabilities(&caps), Some("strata"));
         assert_eq!(plugin_of_capabilities(&["relay/v1-chain".to_owned()]), None);
         assert_eq!(
@@ -1989,7 +2326,8 @@ mod tests {
         ]);
         let done = serde_json::json!({"timings": {"draft_n": 310, "draft_n_accepted": 259, "predicted_ms": 11102.0}});
         let report = super::super::engine_telemetry::EngineReport::from_done(&done, 427);
-        let mut trace = super::super::engine_telemetry::build_trace("t".into(), "m", &plan, "strata", &report);
+        let mut trace =
+            super::super::engine_telemetry::build_trace("t".into(), "m", &plan, "strata", &report);
         trace.output_tokens = 427;
         trace.set_generated_tokens(427);
         trace.complete = true;
@@ -2032,8 +2370,26 @@ mod tests {
         ]);
         let code = "strata-own-time-test";
         // b (answering the head) served 250 ms, of which its own call to a took 100 ms; a served 40 ms on its own
-        record_leg(code, "b", LinkPhase::Prefill, std::time::Duration::from_millis(300), 0, 0, 250, "quic");
-        record_leg(code, "a", LinkPhase::Prefill, std::time::Duration::from_millis(100), 0, 0, 40, "quic");
+        record_leg(
+            code,
+            "b",
+            LinkPhase::Prefill,
+            std::time::Duration::from_millis(300),
+            0,
+            0,
+            250,
+            "quic",
+        );
+        record_leg(
+            code,
+            "a",
+            LinkPhase::Prefill,
+            std::time::Duration::from_millis(100),
+            0,
+            0,
+            40,
+            "quic",
+        );
         let mut trace = super::super::engine_telemetry::build_trace(
             "t".into(),
             "m",
@@ -2043,8 +2399,14 @@ mod tests {
         );
         super::super::engine_telemetry::apply_stage_links(&mut trace, code, 500);
         assert_eq!(trace.hops[0].prefill.processing_ms, 40);
-        assert_eq!(trace.hops[1].prefill.processing_ms, 150, "250 served, less the 100 ms to a");
-        assert_eq!(trace.hops[2].prefill.processing_ms, 200, "the head's 500 ms prompt, less the 300 ms to b");
+        assert_eq!(
+            trace.hops[1].prefill.processing_ms, 150,
+            "250 served, less the 100 ms to a"
+        );
+        assert_eq!(
+            trace.hops[2].prefill.processing_ms, 200,
+            "the head's 500 ms prompt, less the 300 ms to b"
+        );
     }
 
     /// Frames sent ahead (the micro-pipelining): their round trips overlap and outgrow the request. The hop's round
@@ -2054,7 +2416,10 @@ mod tests {
     fn overlapping_frames_count_the_link_s_wall_time_not_their_sum() {
         use super::super::plugin_stage_link::{record_leg_queued, record_wall, LinkPhase};
         let caps = vec![capability("strata")];
-        let plan = crate::pipeline::plan_from_steps(vec![step("a", 0, 19, &caps), step("b", 20, 39, &caps)]);
+        let plan = crate::pipeline::plan_from_steps(vec![
+            step("a", 0, 19, &caps),
+            step("b", 20, 39, &caps),
+        ]);
         let code = "strata-overlap-test";
         // 4 prompt pieces to a, sent together: a serves each in 200 ms, one after another, so they wait 0, 200, 400
         // and 600 ms behind the ones before; the crossings take 50, 100, 100 and 100 ms. The link was busy 900 ms.
@@ -2062,9 +2427,24 @@ mod tests {
             let queued = 200 * k;
             let crossing = 50 * (k + 1).min(2);
             let elapsed = std::time::Duration::from_millis(200 + queued + crossing);
-            record_leg_queued(code, "a", LinkPhase::Prefill, elapsed, 10, 1_000, 200, queued, "quic");
+            record_leg_queued(
+                code,
+                "a",
+                LinkPhase::Prefill,
+                elapsed,
+                10,
+                1_000,
+                200,
+                queued,
+                "quic",
+            );
         }
-        record_wall(code, "a", LinkPhase::Prefill, std::time::Duration::from_millis(900));
+        record_wall(
+            code,
+            "a",
+            LinkPhase::Prefill,
+            std::time::Duration::from_millis(900),
+        );
         let mut trace = super::super::engine_telemetry::build_trace(
             "t".into(),
             "m",
@@ -2074,11 +2454,23 @@ mod tests {
         );
         super::super::engine_telemetry::apply_stage_links(&mut trace, code, 1_000);
         let earlier = &trace.hops[0].prefill;
-        assert_eq!(earlier.round_trip_ms, 900, "the link's wall time, not the 2,150 ms of summed round trips");
-        assert_eq!(earlier.node_queue_ms, 1_200.0, "0 + 200 + 400 + 600 behind the earlier pieces");
-        assert_eq!(earlier.network_ms, 350, "the crossings alone: 50 + 100 + 100 + 100");
+        assert_eq!(
+            earlier.round_trip_ms, 900,
+            "the link's wall time, not the 2,150 ms of summed round trips"
+        );
+        assert_eq!(
+            earlier.node_queue_ms, 1_200.0,
+            "0 + 200 + 400 + 600 behind the earlier pieces"
+        );
+        assert_eq!(
+            earlier.network_ms, 350,
+            "the crossings alone: 50 + 100 + 100 + 100"
+        );
         assert_eq!(earlier.processing_ms, 800, "a's own work on the 4 pieces");
-        assert_eq!(trace.hops[1].prefill.processing_ms, 100, "the head's 1,000 ms prompt, less the 900 ms it waited on a");
+        assert_eq!(
+            trace.hops[1].prefill.processing_ms, 100,
+            "the head's 1,000 ms prompt, less the 900 ms it waited on a"
+        );
     }
 
     #[test]
@@ -2149,10 +2541,15 @@ mod tests {
         let cfg =
             crate::runtime::NodeConfig::from_params(&crate::webui::RuntimeParams::default(), true);
         assert!(load_params(&cfg, &[0], &[], None).get("link").is_none());
-        assert!(load_params(&cfg, &[0], &[], None).get("mtp_draft_path").is_none());
+        assert!(load_params(&cfg, &[0], &[], None)
+            .get("mtp_draft_path")
+            .is_none());
         let mut drafted = cfg.clone();
         drafted.mtp_draft_path = Some("/m/dspark.gguf".into());
-        assert_eq!(load_params(&drafted, &[0], &[], None)["mtp_draft_path"], "/m/dspark.gguf");
+        assert_eq!(
+            load_params(&drafted, &[0], &[], None)["mtp_draft_path"],
+            "/m/dspark.gguf"
+        );
         let link = json!({"token": "t", "prev_port": 4100});
         assert_eq!(
             load_params(&cfg, &[0], &[], Some(&link))["link"]["prev_port"],
@@ -2164,7 +2561,10 @@ mod tests {
     /// the whole model on one machine sends no range.
     #[test]
     fn a_stage_from_the_whole_model_sends_its_range() {
-        let dir = std::env::temp_dir().join(format!("pom-plugin-range-{}", uuid::Uuid::new_v4().simple()));
+        let dir = std::env::temp_dir().join(format!(
+            "pom-plugin-range-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, crate::splitter::test_gguf_bytes(4)).unwrap();
@@ -2189,13 +2589,38 @@ mod tests {
     }
 
     #[test]
+    fn a_service_that_runs_slices_serves_ranges_the_node_cuts() {
+        let avalon = json!({"stages": true, "stage_architectures": ["qwen4exp"]});
+        assert!(serves_whole_ranges(&avalon, Some("qwen4exp")));
+        assert!(
+            !runs_ranges(&avalon, Some("qwen4exp")),
+            "the node cuts the slice"
+        );
+        assert!(!serves_whole_ranges(&avalon, Some("deepseek4")));
+        assert!(!serves_whole_ranges(&avalon, None));
+        let strata = json!({"stages": true, "stage_ranges": ["qwen4exp"]});
+        assert!(serves_whole_ranges(&strata, Some("qwen4exp")));
+        assert!(!serves_whole_ranges(&strata, Some("qwen35moe")));
+        assert!(!serves_whole_ranges(
+            &json!({"stages": false}),
+            Some("qwen4exp")
+        ));
+    }
+
+    #[test]
     fn a_service_cuts_ranges_only_of_the_architectures_it_names() {
         let strata = json!({"stages": true, "stage_ranges": ["qwen4exp"]});
         assert!(runs_ranges(&strata, Some("qwen4exp")));
         assert!(!runs_ranges(&strata, Some("deepseek4")));
-        assert!(!runs_ranges(&strata, None), "an unread architecture does not qualify");
+        assert!(
+            !runs_ranges(&strata, None),
+            "an unread architecture does not qualify"
+        );
         assert!(!runs_ranges(&json!({"stages": true}), Some("qwen4exp")));
-        assert!(!runs_ranges(&json!({"stages": false, "stage_ranges": ["qwen4exp"]}), Some("qwen4exp")));
+        assert!(!runs_ranges(
+            &json!({"stages": false, "stage_ranges": ["qwen4exp"]}),
+            Some("qwen4exp")
+        ));
     }
 
     #[test]
@@ -2219,7 +2644,12 @@ mod tests {
         // the stage link carries the node's own wire formats, so a slice offers the lossy ones too
         assert_eq!(
             ready["capabilities"],
-            json!(["engine/plugin-v1:strata", "inference/frame-v1-dtype-f8", "inference/frame-v1-dtype-i4g64", "inference/frame-v1-dtype-i4g128"])
+            json!([
+                "engine/plugin-v1:strata",
+                "inference/frame-v1-dtype-f8",
+                "inference/frame-v1-dtype-i4g64",
+                "inference/frame-v1-dtype-i4g128"
+            ])
         );
         // a whole-model prefill machine says its role; the plugin hears it in engine.load
         let prefill = crate::runtime::NodeConfig {
@@ -2229,10 +2659,19 @@ mod tests {
         };
         assert_eq!(
             health_body(&prefill, "strata", &json!({"state": "ready"}))["capabilities"],
-            json!(["engine/plugin-v1:strata", "inference/frame-v1-dtype-f8", "inference/frame-v1-dtype-i4g64", "inference/frame-v1-dtype-i4g128", "engine/plugin-role-v1:prefill"])
+            json!([
+                "engine/plugin-v1:strata",
+                "inference/frame-v1-dtype-f8",
+                "inference/frame-v1-dtype-i4g64",
+                "inference/frame-v1-dtype-i4g128",
+                "engine/plugin-role-v1:prefill"
+            ])
         );
         assert_eq!(load_params(&prefill, &[0], &[], None)["role"], "prefill");
-        assert_eq!(load_params(&prefill, &[0], &[], None)["prefill_min_tokens"], 2048);
+        assert_eq!(
+            load_params(&prefill, &[0], &[], None)["prefill_min_tokens"],
+            2048
+        );
         assert!(load_params(&cfg, &[0], &[], None).get("role").is_none());
     }
 
@@ -2262,7 +2701,10 @@ mod tests {
         let body = body_of(openai.clone());
         assert_eq!(body["chat"]["api"], "openai");
         assert_eq!(body["chat"]["request"], openai);
-        assert_eq!(body["prompt"], "User: oi", "the flattened prompt stays, for an older plugin");
+        assert_eq!(
+            body["prompt"], "User: oi",
+            "the flattened prompt stays, for an older plugin"
+        );
 
         let anthropic = json!({
             "system": "be brief",
@@ -2271,11 +2713,20 @@ mod tests {
         });
         assert_eq!(body_of(anthropic)["chat"]["api"], "anthropic");
 
-        assert!(body_of(json!({"messages": [{"role": "user", "content": "oi"}]})).get("chat").is_none());
-        assert!(body_of(json!({"messages": [], "tools": []})).get("chat").is_none());
+        assert!(
+            body_of(json!({"messages": [{"role": "user", "content": "oi"}]}))
+                .get("chat")
+                .is_none()
+        );
+        assert!(body_of(json!({"messages": [], "tools": []}))
+            .get("chat")
+            .is_none());
         let mut with_rag = openai;
         with_rag["rag"] = json!({"chunks": 2});
-        assert!(body_of(with_rag).get("chat").is_none(), "the prompt holds the RAG context");
+        assert!(
+            body_of(with_rag).get("chat").is_none(),
+            "the prompt holds the RAG context"
+        );
     }
 
     #[test]
@@ -2318,8 +2769,10 @@ mod tests {
 
 #[cfg(test)]
 mod relay_tests {
+    use super::super::plugin_stage_link::{
+        merge_reported_link, LinkPhase, LinkStats, ReportedLink,
+    };
     use super::*;
-    use super::super::plugin_stage_link::{merge_reported_link, LinkPhase, LinkStats, ReportedLink};
 
     #[test]
     fn the_done_line_carries_the_session_the_head_fetched() {
@@ -2339,9 +2792,17 @@ mod relay_tests {
             0,
         );
         let value: Value = serde_json::from_slice(&done).unwrap();
-        let carried = super::super::plugin_session::SessionFetch::from_json(&value["done"]["session_fetch"]);
+        let carried =
+            super::super::plugin_session::SessionFetch::from_json(&value["done"]["session_fetch"]);
         assert_eq!(carried, Some(fetch));
-        let trace = crate::prefill::SessionTransferTrace::new("prefill-node", "head", 7632, 237_139_332, 1900, 40);
+        let trace = crate::prefill::SessionTransferTrace::new(
+            "prefill-node",
+            "head",
+            7632,
+            237_139_332,
+            1900,
+            40,
+        );
         assert!((trace.megabytes - 237.139332).abs() < 1e-9);
         assert!((trace.megabytes_per_sec.unwrap() - 124.81).abs() < 0.01);
     }
@@ -2366,15 +2827,57 @@ mod relay_tests {
             },
         );
         let mut first = false;
-        let token = rewrite_line("strata-relay-test", b"{\"t\":\"hi\"}\n", &mut first, None, 0);
+        let token = rewrite_line(
+            "strata-relay-test",
+            b"{\"t\":\"hi\"}\n",
+            &mut first,
+            None,
+            0,
+        );
         assert!(first, "a text line is the first token");
-        assert_eq!(token, b"{\"t\":\"hi\"}\n", "text lines pass through unchanged");
-        let done = rewrite_line("strata-relay-test", b"{\"done\":{\"finish\":\"stop\"}}\n", &mut first, None, 0);
+        assert_eq!(
+            token, b"{\"t\":\"hi\"}\n",
+            "text lines pass through unchanged"
+        );
+        let done = rewrite_line(
+            "strata-relay-test",
+            b"{\"done\":{\"finish\":\"stop\"}}\n",
+            &mut first,
+            None,
+            0,
+        );
         let value: Value = serde_json::from_slice(&done[..done.len() - 1]).unwrap();
         assert_eq!(value["done"]["links"][0]["node"], "node-9");
         assert_eq!(value["done"]["links"][0]["phase"], "prefill");
         assert_eq!(value["done"]["links"][0]["round_trip_ms"], 30);
         assert_eq!(value["done"]["links"][0]["bytes_sent"], 900);
         assert!(done.ends_with(b"\n"));
+    }
+}
+
+#[cfg(test)]
+mod queue_move_tests {
+    use super::pick_queue_move;
+
+    #[test]
+    fn a_queued_turn_moves_only_to_a_clearly_less_busy_machine() {
+        // the head holds 7 turns, this one included: a machine with 6 would end with 7, no better
+        assert_eq!(pick_queue_move(7, &[(6, 20.0)]), None);
+        assert_eq!(pick_queue_move(7, &[(5, 20.0)]), Some(0));
+        // nothing to gain on an idle head or between two equally busy machines
+        assert_eq!(pick_queue_move(1, &[(0, 20.0)]), None);
+        assert_eq!(pick_queue_move(3, &[(3, 20.0), (2, 20.0)]), None);
+    }
+
+    #[test]
+    fn the_least_busy_then_the_fastest_machine_wins() {
+        assert_eq!(
+            pick_queue_move(8, &[(4, 20.0), (2, 40.0), (2, 25.0)]),
+            Some(2)
+        );
+        assert_eq!(
+            pick_queue_move(8, &[(2, f64::INFINITY), (2, 30.0)]),
+            Some(1)
+        );
     }
 }

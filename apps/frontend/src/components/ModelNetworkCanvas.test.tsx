@@ -10,6 +10,27 @@ import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../t
 import { CARD_HEIGHT, deploymentLayoutKey, writePositions } from "../lib/networkLayout";
 import { SERVICE_TETHER_HEIGHT } from "./PluginServices";
 
+const zoomOf = (element: HTMLElement) => parseFloat(/scale\(([^)]+)\)/.exec(element.style.transform)![1]);
+
+
+// jsdom has no PointerEvent nor pointer capture: a MouseEvent that keeps the
+// pointer fields, and no-op captures
+if (typeof window !== "undefined" && !("PointerEvent" in window)) {
+  class PointerEventShim extends MouseEvent {
+    pointerId: number;
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+    }
+  }
+  (window as unknown as { PointerEvent: typeof PointerEventShim }).PointerEvent = PointerEventShim;
+}
+if (typeof Element !== "undefined" && !Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+  Element.prototype.hasPointerCapture = () => false;
+}
+
 describe("edgeStyle", () => {
   it("paints the main route green, solid and with an arrow", () => {
     const s = edgeStyle("principal");
@@ -870,5 +891,46 @@ describe("ModelNetworkCanvas: machine window", () => {
     expect(dialog.textContent).toContain("Implantação");
     // The window title stays for screen readers; the visible header is the card's.
     expect(dialog.querySelector("h2")?.className).toBe("sr-only");
+  });
+});
+
+describe("ModelNetworkCanvas: pan and zoom, as on the Deploy map", () => {
+  afterEach(cleanup);
+
+  it("pans freely by dragging the background, not a card", () => {
+    mount();
+    const scroll = screen.getByTestId("dashboard-map-scroll");
+    const layer = () => scroll.querySelector<HTMLElement>("[data-map-background]")!;
+    const background = scroll.querySelector<HTMLElement>("[data-map-background]")!;
+    fireEvent.pointerDown(background, { button: 0, clientX: 300, clientY: 300, pointerId: 1 });
+    fireEvent.pointerMove(scroll, { clientX: 260, clientY: 270, pointerId: 1 });
+    fireEvent.pointerUp(scroll, { clientX: 260, clientY: 270, pointerId: 1 });
+    // past any edge: no scrollbar is needed to move the map anywhere
+    expect(layer().style.transform).toBe("translate(-40px, -30px) scale(1)");
+    expect(scroll.style.backgroundPosition).toBe("-40px -30px");
+
+    const card = scroll.querySelector("article")!;
+    fireEvent.pointerDown(card, { button: 0, clientX: 300, clientY: 300, pointerId: 2 });
+    fireEvent.pointerMove(scroll, { clientX: 200, clientY: 200, pointerId: 2 });
+    expect(layer().style.transform).toBe("translate(-40px, -30px) scale(1)");
+  });
+
+  it("zooms with the wheel and the trackpad pinch", async () => {
+    mount();
+    const scroll = screen.getByTestId("dashboard-map-scroll");
+    const layer = () => scroll.querySelector<HTMLElement>("[data-map-background]")!;
+    expect(layer().style.transform).toBe("translate(0px, 0px) scale(1)");
+    fireEvent.wheel(scroll, { deltaY: 200, clientX: 10, clientY: 10 });
+    await waitFor(() => expect(zoomOf(layer())).toBeLessThan(1));
+    const out = zoomOf(layer());
+    fireEvent.wheel(scroll, { deltaY: -40, ctrlKey: true, clientX: 10, clientY: 10 });
+    await waitFor(() => expect(zoomOf(layer())).toBeGreaterThan(out));
+  });
+
+  it("keeps the toolbar out of the area that scrolls", () => {
+    mount();
+    const scroll = screen.getByTestId("dashboard-map-scroll");
+    expect(scroll.contains(screen.getByRole("group"))).toBe(false);
+    expect(scroll.contains(scroll.querySelector("article"))).toBe(true);
   });
 });

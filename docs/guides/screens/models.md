@@ -30,8 +30,8 @@ The **Image** tab lists image files in the same folders with what each one is: d
 The folders scanned are set in Settings > Storage. **Scan again** reads them once more after you copy a file by hand.
 :::
 
-:::note Slicing is local
-Each machine extracts its own range from its own copy of the GGUF. No weights travel over the network because of slicing.
+:::note Nothing is copied to deploy
+A deploy serves each machine's range straight from its own copy of the whole GGUF: no slice is written and no weights travel over the network. While an older admin's transfer is running, a **Transfers** tab shows here too.
 :::
 
 :::deep docs/subsystems/slicing.md

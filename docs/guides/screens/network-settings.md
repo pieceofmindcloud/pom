@@ -31,6 +31,8 @@ When the internet reaches this machine, it relays for the members of its own net
 The panel tells, for two machines that cannot see each other, at which of the three steps it fails: the NAT report, the relays or the hole punch.
 ### Admitted machines
 The approved admissions, each with **Revoke** behind a confirmation.
+### GPU work metering
+The principal turns metering on or off here, at any time: the payout cycle, the grace before a cycle closes, samples and challenges per machine, the penalty, the verifier, and whether Strata stages are re-executed. Every machine follows within seconds. The ledger itself is the metering plugin on one admin; the panel warns when this machine does not run it.
 :::
 
 :::note Saving propagates

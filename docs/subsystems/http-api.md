@@ -824,6 +824,16 @@ substitution. When more than one model is loaded in the cluster,
 `<model>@<deploy_id>` variant to choose between deployments of the same model
 - and a well-configured client chooses among them by sending the exact name.
 
+**Deployments are named by their `deployment_name`.** Each node announces its
+deployment's name beside the `deploy_id` (`Announce.deployment_name`, optional,
+empty from an earlier version), and `GET /v1/models` lists a named, ready
+deployment by that name; with more than one head (layer 0) it also lists
+`<deployment_name>@<node_id>` per head, which pins that head as `inference_head`
+does (`openai::named_deployments`, `resolve_model_and_head`; chat, completions and
+messages). A deployment from earlier-version peers keeps its model label and
+`<model>@<deploy_id>`. The model label of a named deployment is no longer listed
+but is still accepted, so a client pinned to it keeps working.
+
 `GET /v1/models` and `GET /v1/models/{id}` only announce models published by
 live peers, including the local model when there is an active assignment. The
 CLI's `default_model` and the persisted deployment registry do not enter this
@@ -1054,7 +1064,8 @@ base of image to image, for a workflow whose `inputs` list `image`; body at most
 [{hash, ext, kind, width?, height?}], "images": [{hash, ext, width, height}]}`
 (`images` repeats the pictures for older screens; an older plugin's line gives
 `images` only) or `{"error"}`; every output is stored on this node in
-`<workspace>/.comfyui/images/<sha256>.<ext>` (kind and extension from the bytes:
+`<workspace>/.imagestudio/images/<sha256>.<ext>` (`.comfyui/images`, where they
+were kept before the image plugin became Image Studio, is still read) (kind and extension from the bytes:
 png, jpg, webp, gif images, mp4, webm video, wav, mp3, flac, ogg audio; at most
 16 files and 32 MiB each, nothing written when one is refused) before the last
 line, and `GET .../:hash` serves any of them with its type. A workflow listed by another machine runs there through
@@ -1124,6 +1135,42 @@ had budgets, the reply carries `pending: true` (the screen keeps loading and
 asks again in 3 s, the menu keeps Usage) and a `check` verdict of "no budget"
 is not cached, since the silent source may hold the budgets. The Usage menu
 entry is left out while `available` is false.
+
+### GPU work metering
+
+`NetworkSettings.metering` (principal only, fanned out with the network
+settings; a missing block is metering off) turns the metering on and sets the
+payout cycle, retention, samples, challenges, penalty, draft weight, verifier
+and gateway fee (`metering_core::settings::MeteringSettings`).
+The principal edits it at run time on the Network screen
+(`apps/frontend/src/components/MeteringPanel.tsx`), which posts the whole
+document to `POST /api/ui/network/settings` with only `metering` changed;
+every node reads it again within 5 s (`backend/metering.rs`,
+`spawn_refresher`), so turning it on or off needs no restart.
+
+- `/v1/session/rewind` and `/v1/session/release` accept an optional
+  `metering_bundle` (the gateway's nonce). With it, a metered hop adds
+  `receipt` (a compact token with the brand's `-work-receipt/v1` header) and,
+  on the head, `metering_tokens` to its answer. Without it the answer is
+  unchanged.
+- The ledger's node operations are plugin peer calls with code `metering` and
+  an op starting with `node.`, answered by the node itself whether or not it
+  runs the plugin (`plugin_services::plugin_peer_call`,
+  `plugin_host_api::peer_call`), and only to an admin: `node.tokens` (a
+  bundle's token sequence, from the gateway), `node.proofs` (a receipt's chunk
+  proofs with their Merkle paths, from the hop), `node.roles` (each node's role
+  from this node's view), `node.reexecute` / `node.reexecute_status` (the
+  verifier; with `mode: "readings"` the request names chunk positions and no
+  proof, and the answer is this node's reading of each chunk - only a
+  validator or an admin answers it), `node.validators` (the live validators)
+  and `node.holds` (whether this machine holds a model whole). `node.sign_statement` and `node.settings` answer only this node's
+  own plugin (`local`, which a remote call can never set).
+- The gateway delivers bundles to `peer.metering.submit` of its own plugin,
+  else of each live admin running it.
+- `POST /api/internal/plugins/:code/engine/metering/:deploy` `{metering_bundle}`
+  (signed node call): a stage of a split plugin engine answers its turn's
+  `receipt` (and, on the first stage, `metering_tokens`). The gateway calls it
+  on every stage after a plugin engine's stream.
 
 ### `/admin/*`
 
@@ -1251,7 +1298,7 @@ file and applies it live), `thermal`. `leave` accepts an optional
 `LeaveRequest { node_id }` and **forwards** to the peer when the id is someone
 else's (the panel only talks to its own node).
 
-`GET /api/ui/plugin-catalog` (with `q`, `page`, `per_page`) and
+`GET /api/ui/plugin-catalog` (with `q`, `page`, `per_page` and `exclude`, up to 20 comma-separated plugin codes the store leaves out of the page and its total) and
 `GET /api/ui/plugin-catalog/:code` are the public store, read by the node for
 the browser: open to every profile, they send the license server no credential,
 pass on only those three parameters (bounded, else 400), and return its JSON
@@ -1457,6 +1504,13 @@ see `security-model.md`). The start body also takes `extra_files`, other files
 of the same repository (split parts, a projector, an MTP draft) started as
 their own rows; the answer adds `extra_download_ids`, `skipped` (already
 installed or downloading) and `failed` (`{ filename, code }`).
+**Destination folder.** The model detail and `GET .../storage` answer
+`storage.destinations`, every configured models folder with the free space of
+its own disk (`{ path, available_bytes }`; `available_bytes` is the first
+folder's). The start body takes an optional `destination`, which must be one of
+those paths exactly: any other is 409 `destination_unavailable`, and absent
+means the first folder. The free-space check uses the chosen folder's disk;
+`retry` keeps the folder of the failed attempt.
 **`POST /api/ui/models/rescan`** (`ServingMember`, body optional
 `{ node_id }`) walks the models folders again at once, for a file placed by
 hand, and answers `{ node_id, rescanning: true }` before the walk ends; with
@@ -1842,6 +1896,13 @@ encrypted with X25519 and ChaCha20-Poly1305 containing the document and the
 `GET/POST /api/ui/network/auto-discovery`; that route requires `PrincipalOnly`,
 never returns the key and drops the in-memory material when it receives
 `enabled: false`.
+
+### Charging visitors
+
+The member gateway (`POST /v1/gateway/delegate`), the visitor's balance and
+credit requests, the Payments screen routes and the internal payment routes
+are listed in `docs/subsystems/payments.md`, "Routes". `x_pom.payment` is
+added to the answers of a charged visitor request.
 
 ## 3. Authentication (`auth.rs`)
 

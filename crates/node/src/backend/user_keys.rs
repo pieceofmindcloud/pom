@@ -37,7 +37,11 @@ fn listed(key: &crate::config::ApiKey) -> serde_json::Value {
     })
 }
 
-pub(crate) async fn handle(state: &GatewayState, user: &UserIdentity, request: Request) -> Response {
+pub(crate) async fn handle(
+    state: &GatewayState,
+    user: &UserIdentity,
+    request: Request,
+) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let own = |state: &GatewayState| -> Vec<crate::config::ApiKey> {

@@ -84,6 +84,8 @@ mod crash;
 mod db;
 #[path = "backend/decisions.rs"]
 mod decisions;
+#[path = "backend/delegation.rs"]
+mod delegation;
 #[path = "backend/deploy/mod.rs"]
 mod deploy;
 #[path = "models/deployment.rs"]
@@ -113,6 +115,7 @@ mod gateway;
 mod geo;
 mod gpu_arbiter;
 mod gpu_identity;
+mod home_statement;
 #[path = "models/huggingface.rs"]
 mod huggingface;
 #[path = "network/identity.rs"]
@@ -148,6 +151,10 @@ mod macos_status;
 mod membership;
 #[path = "backend/messages.rs"]
 mod messages;
+#[path = "backend/metering.rs"]
+mod metering;
+#[path = "backend/metering_verify.rs"]
+mod metering_verify;
 #[path = "models/model.rs"]
 mod model;
 #[path = "models/provider.rs"]
@@ -171,6 +178,8 @@ mod ollama;
 mod openai;
 #[path = "network/p2p.rs"]
 mod p2p;
+#[path = "payments/mod.rs"]
+mod payments;
 #[path = "network/peer_client.rs"]
 pub mod peer_client;
 #[path = "routing/pipeline.rs"]
@@ -186,6 +195,8 @@ mod plugin_github;
 #[path = "plugin_host.rs"]
 mod plugin_host;
 mod plugin_host_api;
+#[path = "inference/plugin_metering.rs"]
+mod plugin_metering;
 mod plugin_proxy;
 mod plugin_services;
 #[path = "inference/plugin_session.rs"]
@@ -1163,6 +1174,7 @@ fn force_setup_mode() -> anyhow::Result<()> {
 fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     use crate::config::Config;
     Config {
+        validator: false,
         retired_tls_required: (),
         saved_at: None,
         profile: crate::profile::NodeProfile::Admin,
@@ -1761,8 +1773,10 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::plugin_stage_link::install(gw_state.clone());
     crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
+    crate::metering::spawn_refresher(gw_state.clone());
     crate::plugins::spawn_host_context(gw_state.clone());
     crate::plugins::spawn_serving_watcher(gw_state.clone());
+    crate::plugins::spawn_bundled_plugins(gw_state.clone());
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
     crate::webui::spawn_public_stats_publisher(gw_state.clone());
     crate::webui::spawn_gpu_metrics_sampler(gw_state.clone());
@@ -1771,6 +1785,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::webui::spawn_admission_poller(gw_state.clone());
     crate::webui::spawn_member_list_keeper(gw_state.clone());
     crate::webui::spawn_token_keeper(gw_state.clone());
+    crate::home_statement::spawn_keeper(gw_state.clone());
     crate::webui::spawn_roster_keeper(gw_state.clone());
     crate::webui::spawn_revocation_keeper(gw_state.clone());
     crate::webui::spawn_key_reclaimer(gw_state.clone());

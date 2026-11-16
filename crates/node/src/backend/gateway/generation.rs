@@ -618,14 +618,16 @@ async fn auto_head(
         false
     };
     if let Some((model, key)) = conversation {
-        if let Some(holder) = crate::plugin_session::holder_of(model, key).filter(|head| heads.contains(head)) {
+        if let Some(holder) =
+            crate::plugin_session::holder_of(model, key).filter(|head| heads.contains(head))
+        {
             if keeps(&holder, &format!("the conversation {key}")) {
                 return Some(holder);
             }
         }
         // a new conversation that begins with most of a prompt a head read recently: that head reuses what it read
-        if let Some(holder) =
-            crate::plugin_session::holder_of_prompt_start(model, prompt).filter(|head| heads.contains(head))
+        if let Some(holder) = crate::plugin_session::holder_of_prompt_start(model, prompt)
+            .filter(|head| heads.contains(head))
         {
             if keeps(&holder, "the start of this prompt") {
                 return Some(holder);
@@ -646,15 +648,25 @@ async fn auto_head(
                     && cache_prompt.starts_with(&snapshot.prompt)
             })
             .max_by_key(|snapshot| snapshot.prompt.len())
-            .and_then(|snapshot| snapshot.key.hops.first().and_then(|hop| hop.split('@').next().map(str::to_owned)));
+            .and_then(|snapshot| {
+                snapshot
+                    .key
+                    .hops
+                    .first()
+                    .and_then(|hop| hop.split('@').next().map(str::to_owned))
+            });
         if let Some(head) = held.filter(|head| heads.contains(head)) {
             info!("first stage: the session is already on {head}");
             return Some(head);
         }
     }
     let turn = crate::pipeline::next_head_turn(model);
-    let chosen = crate::fastest::rotate_head(&heads, turn, |head| queue.get(head).copied().unwrap_or(0))?;
-    info!("first stage by rotation over {} heads: {chosen}", heads.len());
+    let chosen =
+        crate::fastest::rotate_head(&heads, turn, |head| queue.get(head).copied().unwrap_or(0))?;
+    info!(
+        "first stage by rotation over {} heads: {chosen}",
+        heads.len()
+    );
     Some(chosen)
 }
 
@@ -764,7 +776,12 @@ pub(super) async fn generate_stream_inner(
     let step_budget = crate::relay::StepBudget::default();
     crate::relay::with_step_budget(
         step_budget.clone(),
-        Box::pin(generate_measured_stream(input, tx, cancellation, step_budget)),
+        Box::pin(generate_measured_stream(
+            input,
+            tx,
+            cancellation,
+            step_budget,
+        )),
     )
     .await
 }
@@ -1038,35 +1055,63 @@ async fn generate_measured_stream(
             let _ = tx.send(GenEvent::Failed(error.to_string())).await;
             return;
         }
-        crate::plugin_engine::generate(
-            &state,
-            &plan,
-            &code,
-            model,
-            trace_id.clone(),
-            crate::plugin_engine::EngineRequest {
-                prompt,
-                chat_template,
-                thinking_enabled,
-                max_tokens: budget.total,
-                stops,
-                session: crate::plugin_session::session_of(&request_details),
-                request_details,
-                probe_labels: probe
-                    .as_ref()
-                    .map(|probe| probe.labels.clone())
-                    .unwrap_or_default(),
-                probe_prefix_bytes: probe.as_ref().and_then(|probe| probe.retain_prefix_bytes),
-                images: images
-                    .iter()
-                    .map(|bytes| crate::plugin_engine::image_data_url(bytes))
-                    .collect(),
-            },
-            &tx,
-            &cancellation,
-            request_started,
-        )
-        .await;
+        // The engine's final summary waits for the stages' receipts, so it
+        // can name the turn's metering bundle (a charge settles against it).
+        let (engine_tx, mut engine_rx) = mpsc::channel::<GenEvent>(64);
+        let forward = {
+            let tx = tx.clone();
+            async move {
+                let mut held = None;
+                while let Some(event) = engine_rx.recv().await {
+                    if matches!(event, GenEvent::Done(_)) {
+                        held = Some(event);
+                    } else if tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+                held
+            }
+        };
+        let engine = async {
+            crate::plugin_engine::generate(
+                &state,
+                &plan,
+                &code,
+                model,
+                trace_id.clone(),
+                crate::plugin_engine::EngineRequest {
+                    prompt,
+                    chat_template,
+                    thinking_enabled,
+                    max_tokens: budget.total,
+                    stops,
+                    session: crate::plugin_session::session_of(&request_details),
+                    request_details,
+                    probe_labels: probe
+                        .as_ref()
+                        .map(|probe| probe.labels.clone())
+                        .unwrap_or_default(),
+                    probe_prefix_bytes: probe.as_ref().and_then(|probe| probe.retain_prefix_bytes),
+                    images: images
+                        .iter()
+                        .map(|bytes| crate::plugin_engine::image_data_url(bytes))
+                        .collect(),
+                },
+                &engine_tx,
+                &cancellation,
+                request_started,
+            )
+            .await;
+            drop(engine_tx);
+        };
+        let ((), held) = tokio::join!(engine, forward);
+        let bundle = collect_plugin_receipts(&state, &plan, &code).await;
+        if let Some(mut event) = held {
+            if let GenEvent::Done(summary) = &mut event {
+                summary.metering_bundle = bundle;
+            }
+            let _ = tx.send(event).await;
+        }
         return;
     }
 
@@ -2244,8 +2289,19 @@ async fn generate_measured_stream(
     // that the session stayed parked at the end of the prompt, discarded along with the released
     // session in any other case.
     let mut lease = Some(prefix_lease);
+    // GPU work metering: the turn's receipts ride the rewind or the release
+    // below (`crate::metering`).
+    let meter = MeterCollect::start(&state, &plan);
     if let Some(retained_tokens) = retained_prefix_tokens {
-        if rewind_sessions(&plan, &session_id, retained_tokens, &state.peer_http).await {
+        if rewind_sessions(
+            &plan,
+            &session_id,
+            retained_tokens,
+            &state.peer_http,
+            meter.as_ref(),
+        )
+        .await
+        {
             if let Some(lease) = lease.take() {
                 lease.commit(cache_prompt.clone(), retained_tokens);
             }
@@ -2318,7 +2374,12 @@ async fn generate_measured_stream(
     }
     if let Some(lease) = lease.take() {
         lease.discard();
-        release_sessions(&plan, &session_id, &state.peer_http).await;
+        release_sessions_metered(&plan, &session_id, &state.peer_http, meter.as_ref()).await;
+    }
+    let bundle = meter.and_then(|meter| meter.finish(&state, &plan));
+    let mut terminal = terminal;
+    if let Some(GenEvent::Done(summary)) = terminal.as_mut() {
+        summary.metering_bundle = bundle;
     }
 
     if let Some(event) = terminal {
@@ -2376,7 +2437,11 @@ async fn build_shared_prefix(
         "shared system part ({} bytes) read on its own in {} ms: {}",
         root_prompt.len(),
         started.elapsed().as_millis(),
-        if done { "ok" } else { "failed, the request reads it cold" }
+        if done {
+            "ok"
+        } else {
+            "failed, the request reads it cold"
+        }
     );
     done
 }
@@ -2623,13 +2688,17 @@ pub(super) async fn rewind_sessions(
     session_id: &str,
     retained_tokens: u32,
     clients: &crate::peer_client::PeerClients,
+    meter: Option<&MeterCollect>,
 ) -> bool {
     let mut all_ok = true;
-    for step in &plan.steps {
-        let body = serde_json::json!({
+    for (index, step) in plan.steps.iter().enumerate() {
+        let mut body = serde_json::json!({
             "session_id": session_id,
             "n_tokens": retained_tokens,
         });
+        if let Some(meter) = meter {
+            body["metering_bundle"] = serde_json::json!(meter.bnd());
+        }
         match post_session_lifecycle(
             clients,
             step,
@@ -2639,7 +2708,11 @@ pub(super) async fn rewind_sessions(
             SESSION_LIFECYCLE_TIMEOUT,
         )
         .await
-        {
+        .inspect(|body| {
+            if let Some(meter) = meter {
+                meter.record(index, body);
+            }
+        }) {
             Ok(body)
                 if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
                     && body.get("n_past").and_then(|v| v.as_u64())
@@ -2687,9 +2760,23 @@ pub(super) async fn release_sessions(
     session_id: &str,
     clients: &crate::peer_client::PeerClients,
 ) {
-    for step in &plan.steps {
-        let body = serde_json::json!({ "session_id": session_id });
-        if let Err(error) = post_session_lifecycle(
+    release_sessions_metered(plan, session_id, clients, None).await
+}
+
+/// `release_sessions`, handing each hop the bundle nonce of a metered turn
+/// and collecting the receipts it answers (`crate::metering`).
+pub(super) async fn release_sessions_metered(
+    plan: &PipelinePlan,
+    session_id: &str,
+    clients: &crate::peer_client::PeerClients,
+    meter: Option<&MeterCollect>,
+) {
+    for (index, step) in plan.steps.iter().enumerate() {
+        let mut body = serde_json::json!({ "session_id": session_id });
+        if let Some(meter) = meter {
+            body["metering_bundle"] = serde_json::json!(meter.bnd());
+        }
+        match post_session_lifecycle(
             clients,
             step,
             "/v1/session/release",
@@ -2699,8 +2786,142 @@ pub(super) async fn release_sessions(
         )
         .await
         {
-            warn!("session release on {} failed: {error}", step.node_id);
+            Ok(answer) => {
+                if let Some(meter) = meter {
+                    meter.record(index, &answer);
+                }
+            }
+            Err(error) => warn!("session release on {} failed: {error}", step.node_id),
         }
+    }
+}
+
+/// GPU work metering of a turn a split plugin engine served
+/// (`crate::plugin_metering`): every stage signs its receipt for the bundle
+/// nonce, and the gateway assembles the bundle as for a pipeline.
+async fn collect_plugin_receipts(
+    state: &GatewayState,
+    plan: &PipelinePlan,
+    code: &str,
+) -> Option<(String, u64)> {
+    let meter = MeterCollect::start(state, plan)?;
+    let body = serde_json::json!({ "metering_bundle": meter.bnd() });
+    let peers = state.network.alive_peers().await;
+    for (index, step) in plan.steps.iter().enumerate() {
+        let answer = if step.node_id == state.network.node_id {
+            match state.runtime.config().await {
+                Some(cfg) => crate::plugin_metering::close(&cfg, code, meter.bnd()).map(
+                    |(receipt, tokens)| {
+                        use base64::Engine;
+                        let bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+                        serde_json::json!({
+                            "receipt": receipt,
+                            "metering_tokens": if tokens.is_empty() { None } else {
+                                Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+                            },
+                        })
+                    },
+                ),
+                None => None,
+            }
+        } else {
+            match peers.iter().find(|p| p.node_id == step.node_id) {
+                Some(peer) => match state
+                    .control_post_json_routed(
+                        peer,
+                        &format!(
+                            "/api/internal/plugins/{code}/engine/metering/{}",
+                            peer.deploy_id
+                        ),
+                        &body,
+                        SESSION_LIFECYCLE_TIMEOUT,
+                    )
+                    .await
+                {
+                    Ok(response) if response.status().is_success() => response.json().await.ok(),
+                    _ => None,
+                },
+                None => None,
+            }
+        };
+        if let Some(answer) = answer {
+            meter.record(index, &answer);
+        }
+    }
+    meter.finish(state, plan)
+}
+
+/// The receipts of one metered turn, filled by the lifecycle calls
+/// (`rewind_sessions`, `release_sessions_metered`) and turned into a bundle
+/// by `finish` (`crate::metering::finish_bundle`).
+pub(super) struct MeterCollect {
+    ticket: crate::metering::BundleTicket,
+    answers: std::sync::Mutex<Vec<Option<String>>>,
+    tokens: std::sync::Mutex<Option<Vec<i32>>>,
+}
+
+impl MeterCollect {
+    /// A collector when this node meters the turn: metering on, and the
+    /// consumer known from the request's task (`crate::metering::CONSUMER`).
+    pub(super) fn start(state: &GatewayState, plan: &PipelinePlan) -> Option<Self> {
+        let consumer = crate::metering::current_consumer();
+        let gw_visitor = state.local_profile_is_visitor();
+        let ticket = crate::metering::mint_ticket(consumer, gw_visitor)?;
+        Some(Self {
+            ticket,
+            answers: std::sync::Mutex::new(vec![None; plan.steps.len()]),
+            tokens: std::sync::Mutex::new(None),
+        })
+    }
+
+    fn bnd(&self) -> &str {
+        &self.ticket.bnd
+    }
+
+    fn record(&self, index: usize, answer: &serde_json::Value) {
+        if let Some(receipt) = answer.get("receipt").and_then(|v| v.as_str()) {
+            if let Ok(mut answers) = self.answers.lock() {
+                if let Some(slot) = answers.get_mut(index) {
+                    *slot = Some(receipt.to_string());
+                }
+            }
+        }
+        if let Some(tokens) = answer.get("metering_tokens").and_then(|v| v.as_str()) {
+            use base64::Engine;
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(tokens) {
+                let seq = bytes
+                    .chunks_exact(4)
+                    .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                if let Ok(mut slot) = self.tokens.lock() {
+                    slot.get_or_insert(seq);
+                }
+            }
+        }
+    }
+
+    /// Assembles, countersigns and queues the bundle. The prompt the head
+    /// checked against is the head's own sequence: the gateway holds text,
+    /// not token ids.
+    pub(super) fn finish(self, state: &GatewayState, plan: &PipelinePlan) -> Option<(String, u64)> {
+        let steps: Vec<metering_core::receipt::StepRef> = plan
+            .steps
+            .iter()
+            .map(|step| metering_core::receipt::StepRef {
+                node: step.node_id.clone(),
+                range: [step.start_layer, step.end_layer + 1],
+            })
+            .collect();
+        let answers = self.answers.into_inner().unwrap_or_default();
+        let tokens = self.tokens.into_inner().ok().flatten().unwrap_or_default();
+        crate::metering::finish_bundle(
+            &state.database,
+            &self.ticket,
+            &steps,
+            &answers,
+            &tokens,
+            &[],
+        )
     }
 }
 
@@ -3170,8 +3391,8 @@ async fn route_audit_event_to_local_store<F>(
 #[cfg(test)]
 mod audit_replication_tests {
     use super::*;
-    use crate::reqlog::{AuditCompletion, AuditEvent, AuditRequest, Caller};
     use crate::p2p::EndpointId;
+    use crate::reqlog::{AuditCompletion, AuditEvent, AuditRequest, Caller};
     use std::collections::{HashMap, HashSet};
 
     // Representative reproduction from the admins' point of view:
@@ -3186,7 +3407,13 @@ mod audit_replication_tests {
     #[tokio::test]
     async fn plugin_accepted_inference_log_reaches_every_admin_peer() {
         let network = Arc::new(
-            crate::network::Network::testkit("admin-source".into(), "source-key".into(), vec![], None, None)
+            crate::network::Network::testkit(
+                "admin-source".into(),
+                "source-key".into(),
+                vec![],
+                None,
+                None,
+            )
             .await
             .expect("isolated network"),
         );
@@ -3308,12 +3535,13 @@ pub fn spawn_logged_generation_with_stops(
         .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
     let received_at = chrono::Utc::now().to_rfc3339();
     let started = Instant::now();
+    let begin_caller = caller.clone();
     let begin = crate::reqlog::AuditRequest {
         id: request_id.clone(),
         received_at,
         route: route.to_string(),
         model: logged_model.clone(),
-        caller,
+        caller: caller.clone(),
         entry_node_id: entry_node_id.clone(),
         prompt: logged_prompt,
         request_details,
@@ -3333,7 +3561,17 @@ pub fn spawn_logged_generation_with_stops(
     });
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
-    tokio::spawn(generate_stream_with_stops(input, inner_tx));
+    let visitor_self = input
+        .state
+        .local_profile_is_visitor()
+        .then(|| input.state.network.node_id.clone());
+    let consumer = crate::metering::consumer_of(&begin_caller, visitor_self.as_deref());
+    // A visitor's charged request (`crate::delegation`): settled at the end.
+    let charge = crate::delegation::current_charge();
+    let charge_state = input.state.clone();
+    tokio::spawn(
+        crate::metering::CONSUMER.scope(consumer, generate_stream_with_stops(input, inner_tx)),
+    );
 
     tokio::spawn(async move {
         let mut generated: u32 = 0;
@@ -3344,7 +3582,14 @@ pub fn spawn_logged_generation_with_stops(
         let mut outcome: Option<Result<GenSummary, String>> = None;
         let mut failure_trace: Option<crate::prefill::RequestTrace> = None;
 
-        while let Some(event) = inner_rx.recv().await {
+        let mut settled = false;
+        while let Some(mut event) = inner_rx.recv().await {
+            // A charged request settles before its summary reaches the
+            // client, so the answer can say what it cost (`x_pom.payment`).
+            if let (Some(charge), GenEvent::Done(summary)) = (&charge, &mut event) {
+                summary.payment = Some(crate::delegation::settle(&charge_state, charge, summary));
+                settled = true;
+            }
             let terminal = match &event {
                 GenEvent::Token(text) => {
                     generated += 1;
@@ -3382,6 +3627,14 @@ pub fn spawn_logged_generation_with_stops(
 
         if reasoning_open {
             result.push_str("</think>");
+        }
+
+        // Settle what ran; without a summary (a failure, the client gone)
+        // nothing is billed and the hold is given back.
+        if let Some(charge) = &charge {
+            if !settled {
+                crate::payments::runtime::release(&charge.account, charge.hold_micro);
+            }
         }
 
         let summary_trace = outcome.as_ref().and_then(|outcome| {

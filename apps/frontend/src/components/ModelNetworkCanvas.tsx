@@ -6,10 +6,11 @@ import { PeerDetailDialog } from "./PeerDetailCard";
 import { GpuTemperature } from "./GpuTemperature";
 import { AlertTooltip, Button, Dot } from "./ui";
 import { canSeePeerDetails } from "../lib/access";
-import { canvasModelIds, graphFromCluster, selectedCanvasModel, type GraphRange } from "../lib/networkGraph";
+import { canvasModelIds, canvasModelLabel, graphFromCluster, selectedCanvasModel, type GraphRange } from "../lib/networkGraph";
 import { pipelinePeers } from "../lib/networkPeers";
 import { useProfile } from "../lib/profile";
 import { useI18n } from "../i18n/provider";
+import { usePanZoom } from "../lib/usePanZoom";
 import {
   autoLayout,
   CARD_HEIGHT,
@@ -327,6 +328,10 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
   </article>;
 }
 
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 1.6;
+const clampZoom = (zoom: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+
 export function ModelNetworkCanvas({
   cluster,
   rttMeasurements = [],
@@ -363,7 +368,7 @@ export function ModelNetworkCanvas({
   const [ownModel, setOwnModel] = useState<string | undefined>();
   const model = onModelChange ? controlledModel : ownModel;
   const setModel = onModelChange ?? setOwnModel;
-  const [zoom, setZoom] = useState(1);
+  const { surface: canvas, setZoom, resetView, toMap, panning, panHandlers, surfaceStyle, contentStyle } = usePanZoom(MIN_ZOOM, MAX_ZOOM, "map-view.dashboard");
   const [positions, setPositions] = useState<Record<string, CanvasPosition>>({});
   const [dragging, setDragging] = useState<string | null>(null);
   const [cardModes, setCardModes] = useState<CardModes>(readCardModes);
@@ -386,8 +391,8 @@ export function ModelNetworkCanvas({
   const { profile } = useProfile();
   const detailed = canSeePeerDetails(profile);
   const showClusterCoverage = profile === "admin";
-  const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
+
   const modelIds = useMemo(() => canvasModelIds(cluster), [cluster]);
   const selected = selectedCanvasModel(cluster, model, modelIds);
   const ranges = selected ? (graph.byModel[selected] ?? []) : [];
@@ -514,11 +519,11 @@ export function ModelNetworkCanvas({
       writePositions(layoutKey, dragged);
       return dragged;
     });
-    setZoom(1);
+    resetView();
   };
 
-  const reset = () => { clearPositions(layoutKey); setPositions({}); setZoom(1); };
-  const fit = () => setZoom(1);
+  const reset = () => { clearPositions(layoutKey); setPositions({}); resetView(); };
+  const fit = () => resetView();
 
   /*
    * Machines and gateway drag the same way: the id is the key in the position
@@ -526,25 +531,19 @@ export function ModelNetworkCanvas({
    * button of the card belongs to the button - capturing the pointer here would steal the click.
    */
   function beginDrag(id: string, current: CanvasPosition, event: React.PointerEvent<HTMLElement>) {
-    const surface = canvas.current;
-    if (!surface || isControlTarget(event.target)) return;
-    const bounds = surface.getBoundingClientRect();
-    dragOffset.current = {
-      x: (event.clientX - bounds.left) / zoom - current.left,
-      y: (event.clientY - bounds.top) / zoom - current.top,
-    };
+    if (!canvas.current || isControlTarget(event.target)) return;
+    const point = toMap(event.clientX, event.clientY);
+    dragOffset.current = { x: point.x - current.left, y: point.y - current.top };
     setDragging(id);
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function drag(id: string, size: CardSize, event: React.PointerEvent<HTMLElement>) {
     if (dragging !== id || !canvas.current) return;
-    const bounds = canvas.current.getBoundingClientRect();
-    const maxLeft = Math.max(16, bounds.width / zoom - size.width - 16);
-    const maxTop = Math.max(58, bounds.height / zoom - size.height - 16);
-    const left = Math.max(16, Math.min(maxLeft, (event.clientX - bounds.left) / zoom - dragOffset.current.x));
-    const top = Math.max(58, Math.min(maxTop, (event.clientY - bounds.top) / zoom - dragOffset.current.y));
-    updatePosition(id, { left, top });
+    // The map is unbounded: a card goes wherever it is dropped, like the map itself.
+    void size;
+    const point = toMap(event.clientX, event.clientY);
+    updatePosition(id, { left: point.x - dragOffset.current.x, top: point.y - dragOffset.current.y });
   }
 
   function endDrag(event: React.PointerEvent<HTMLElement>) {
@@ -552,9 +551,11 @@ export function ModelNetworkCanvas({
     setDragging(null);
   }
 
-  return <section ref={canvas} className="relative h-full min-h-0 w-full overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]" style={{ backgroundSize: "18px 18px" }}>
+  // The toolbars and the legend sit on the section, outside the area that
+  // scrolls, so they stay put while the map is panned or zoomed.
+  return <section className="relative h-full min-h-0 w-full overflow-hidden">
     <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 rounded-xl border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
-      <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label={t("canvas.modelGroupAria")}>{modelIds.length ? modelIds.map((name) => <button key={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{name}</button>) : <span className="px-2 text-xs text-muted">{t("canvas.noModel")}</span>}{extraModels.map((extra) => <button key={extra.id} type="button" onClick={() => setModel(extra.id)} aria-pressed={false} className="flex h-8 shrink-0 items-center gap-1 rounded-md px-3 font-mono text-xs text-muted hover:bg-raised hover:text-fg"><ImageIcon className="h-3 w-3" aria-label={t("imageMap.badge")} />{extra.label}</button>)}</div>
+      <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label={t("canvas.modelGroupAria")}>{modelIds.length ? modelIds.map((name) => <button key={name} title={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{canvasModelLabel(cluster, name)}</button>) : <span className="px-2 text-xs text-muted">{t("canvas.noModel")}</span>}{extraModels.map((extra) => <button key={extra.id} type="button" onClick={() => setModel(extra.id)} aria-pressed={false} className="flex h-8 shrink-0 items-center gap-1 rounded-md px-3 font-mono text-xs text-muted hover:bg-raised hover:text-fg"><ImageIcon className="h-3 w-3" aria-label={t("imageMap.badge")} />{extra.label}</button>)}</div>
       {/*
         Full coverage with an unreadable machine is not complete (see Dashboard).
         The badge loses the green and gains the `?` glued to the number, which is what
@@ -573,8 +574,8 @@ export function ModelNetworkCanvas({
       >
         {allCompact ? <Maximize2 className="h-4 w-4" /> : <Minimize2 className="h-4 w-4" />}
       </Button>}
-      <Button size="sm" aria-label={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(.65, value - .1))}><Minus className="h-4 w-4" /></Button>
-      <Button size="sm" aria-label={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + .1))}><Plus className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.zoomOut")} onClick={() => setZoom((value) => clampZoom(value - .1))}><Minus className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.zoomIn")} onClick={() => setZoom((value) => clampZoom(value + .1))}><Plus className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.fit")} onClick={fit}>Fit</Button>
       <Button size="sm" aria-label={t("canvas.autoLayout")} title={t("canvas.autoLayout")} onClick={organize}><LayoutGrid className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.resetLayout")} title={t("canvas.resetLayout")} onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
@@ -591,7 +592,21 @@ export function ModelNetworkCanvas({
         icon={propertiesOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
       />
     </div>}
-    {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">{t("canvas.noCapacity")}</div> : <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
+    <div
+      ref={canvas}
+      data-testid="dashboard-map-scroll"
+      className={clsx(
+        "absolute inset-0 overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]",
+        panning ? "cursor-grabbing select-none" : "cursor-grab",
+      )}
+      style={surfaceStyle}
+      // only the background pans: a card, the gateway or a button keeps its own gesture
+      {...panHandlers((event) => {
+        const target = event.target as HTMLElement;
+        return target === event.currentTarget || target.dataset.mapBackground !== undefined;
+      })}
+    >
+    {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">{t("canvas.noCapacity")}</div> : <div data-map-background="" className="absolute inset-0 origin-top-left" style={contentStyle}>
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
         <defs><marker id="route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker><marker id="route-arrow-relay" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-relay" /></marker></defs>
         {forwardEdges.map((edge) => {
@@ -646,6 +661,7 @@ export function ModelNetworkCanvas({
       })}
       {gatewayPosition && <PipelineGatewayNode position={gatewayPosition} cost={pipelineCost} routes={pipelineRoutes} nameOf={nameOf} dragging={dragging === GATEWAY_LAYOUT_ID} onPointerDown={(event) => beginDrag(GATEWAY_LAYOUT_ID, gatewayPosition, event)} onPointerMove={(event) => drag(GATEWAY_LAYOUT_ID, GATEWAY_SIZE, event)} onPointerUp={endDrag} />}
     </div>}
+    </div>
     {/* The same view the Details tab shows, in the same component. */}
     <PeerDetailDialog
       peer={detailed ? detailPeer : null}

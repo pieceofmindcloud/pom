@@ -84,14 +84,9 @@ export const NAV: NavSection[] = [
   // A single entry: the deploy screen links to the history of what is
   // already deployed (/deployments) from a button beside Deploy.
   { labelKey: "nav.deployments", icon: Rocket, to: "/deploy" },
-  {
-    labelKey: "nav.logs",
-    icon: ListTree,
-    children: [
-      { labelKey: "nav.requestLogs", to: "/logs", icon: ListTree },
-      { labelKey: "nav.deploymentLogs", to: "/deployments/logs", icon: Terminal },
-    ],
-  },
+  // One entry: the request logs, with the deployment logs as a tab beside them
+  // (`components/LogsTabs.tsx`).
+  { labelKey: "nav.logs", icon: ListTree, to: "/logs" },
   { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/statistics" },
   // A signed-in person's own keys; only their session opens it (`lib/access.ts`).
   { labelKey: "nav.myKeys", icon: KeyRound, to: "/config/my-keys" },
@@ -117,6 +112,8 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.administrators", to: "/config/administration", icon: ShieldCheck },
       { labelKey: "nav.sharing", to: "/config/sharing", icon: ShieldCheck },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
+      { labelKey: "nav.payments", to: "/config/payments", icon: KeyRound },
+      { labelKey: "nav.credit", to: "/config/credit", icon: KeyRound },
     ],
   },
   {
@@ -280,13 +277,22 @@ export interface NavOptions {
    * drops the entry. Left out, it stays.
    */
   networkChat?: boolean;
+  /**
+   * Whether the node runs in development mode (`POM_DEV_MODE`, `pom_dev_mode`).
+   * Screens of features still in development (`DEV_ONLY_ROUTES`) show only then.
+   */
+  devMode?: boolean;
 }
+
+/** Screens of features still in development: in the menu and routable only in development mode. */
+export const DEV_ONLY_ROUTES: readonly string[] = ["/config/payments", "/config/credit"];
 
 export function navForProfile(profile: Profile, _enterpriseActive = true, options: NavOptions = {}): NavSection[] {
   const filterLeaf = (leaf: NavLeaf): NavLeaf | null => {
     const children = (leaf.children ?? [])
       .map(filterLeaf)
       .filter((child): child is NavLeaf => child !== null);
+    if (!options.devMode && DEV_ONLY_ROUTES.includes(leaf.to) && children.length === 0) return null;
     if (!canAccessRoute(leaf.to, profile) && children.length === 0) return null;
     return { ...leaf, ...(children.length > 0 ? { children } : {}) };
   };
@@ -297,6 +303,7 @@ export function navForProfile(profile: Profile, _enterpriseActive = true, option
       for (const child of section.children ?? []) {
         if (!child.promoteProfiles?.includes(profile)) continue;
         if (!canAccessRoute(child.to, profile)) continue;
+        if (!options.devMode && DEV_ONLY_ROUTES.includes(child.to)) continue;
         visible.push({
           labelKey: child.labelKey,
           icon: child.icon ?? section.icon,

@@ -16,7 +16,7 @@ in `../routing-contract`, empty for the runtime).
   `POM_BUILD_FEATURES` in the devupdate. The CUDA build keeps CUDA Graphs off by
   default; enabling it with `POM_CUDA_GRAPHS=1` requires rebuilding the binary
   and additional free VRAM.
-- Heavy dependencies: `iroh` 1.3 (`unstable-net-report` for the NAT report),
+- Heavy dependencies: `iroh` 1.4 (`unstable-net-report` for the NAT report),
   `iroh-gossip` 0.101, `iroh-mdns-address-lookup` 0.6, `iroh-relay` 1.3 (`server`,
   the embedded relay), `pkarr` 8.1 (8.x is what shares `ed25519-dalek` 3 with iroh),
   `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
@@ -265,6 +265,20 @@ troubled deployment.
 
 ## src/ subfolders
 
+- `home_statement.rs` - home statements: a compact token
+  (`<slug>-home-network/v1`) signed by a node's home principal naming the node,
+  which a network that charges visitors uses as the visitor's account
+  (`net:<principal key>`). Self-signed by a principal (a day); issued to an
+  admin or admitted, unbanned worker (a day) at home by
+  `POST /api/internal/home-statement` and while visiting through the lobby
+  (`LobbyRequest::HomeStatement`); `spawn_keeper` keeps it in `pom.db`. See
+  `docs/subsystems/payments.md`.
+- `payments/` - prepaid credit for visitor charging: the x402 core
+  (`book.rs` balances and holds, `ledger.rs` the `x402_*` tables, `pricing.rs`,
+  `x402.rs` the gate and the 402 envelope, `account.rs` account ids) and
+  `runtime.rs` (the process-wide book, settlement, leases with their expiry and
+  return, the Payments and Credit routes, credit requests, income by cycle).
+  See `docs/subsystems/payments.md`.
 - `relay_pass.rs` - relay passes: the admin-signed token a visitor's relay
   admits by, naming the network, the relay URL and an expiry, never its
   holder; its header differs from the membership token's (`membership.rs`
@@ -356,7 +370,15 @@ endpoint protocol (ALPN) separate from the inference tunnel. The `GatewayState` 
 with the `/api/ui/network-chat` routes; the cluster policy is applied by the
 `network_chat_policy` ratchet.
 
-`src/plugins.rs` manages licensed plugins and independent local installs:
+`src/plugins.rs` manages licensed plugins and independent local installs.
+`BUNDLED_PLUGINS` (today the Hugging Face plugin) are kept installed and current
+by `spawn_bundled_plugins` (started in `main.rs`): 20 s after start, then every 6 h
+(15 min after a failure), `ensure_bundled_plugin` registers the public repository,
+refreshes it and installs its newest non-prerelease release for this platform,
+silently. It skips a code held by a license, a local build or another repository,
+and one the operator uninstalled (`plugin_bundled_declined:<code>`, written by
+`deactivate`).
+
 `PluginManager` creates a `PluginRuntime` for codes granted by a license or when a
 local GitHub release is installed. Licensed runtimes persist in
 `plugin_license:<code>` and keep their license/heartbeat cycle. Every persisted

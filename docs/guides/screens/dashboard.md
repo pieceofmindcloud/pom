@@ -11,7 +11,7 @@ order: 10
 The Dashboard is the first screen of an administrator: it shows whether the model in service is complete, which machines carry it, how fast each one answers and how a question travels from the gateway through the machines and back.
 :::
 
-![The Dashboard of a network with three machines serving one model, in the Flow view, with the deployment properties on the right.](../images/en/dashboard.webp)
+![The Dashboard of a network with one machine serving a model and the gateway closing the cycle, in the Flow view, with the deployment properties on the right.](../images/en/dashboard.webp)
 
 ## The bar at the top
 
@@ -48,7 +48,7 @@ An image model picked in the model chip (marked with an image icon) shows as its
 
 :::steps
 ### Pick the model on screen
-The model chip at the top of the map chooses which deployment is drawn. Add, Undeploy and the properties panel follow that model.
+Drag the dotted background to move the map anywhere, past any edge, and drop it where it reads best; a card also goes wherever you drop it; the mouse wheel or a trackpad pinch zooms around the pointer, as on the Deploy map. The model chip at the top of the map chooses which deployment is drawn. Add, Undeploy and the properties panel follow that model.
 ### Add a machine
 **Add** puts one more machine into the deployment; the dialog lists what the chosen machine already has on disk. When the machine has a vision projector for the model, a switch lets it read images; it starts on when the deployment already does.
 ### Undeploy

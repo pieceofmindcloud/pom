@@ -17,9 +17,10 @@ use crate::gateway::{
     DEFAULT_MAX_TOKENS,
 };
 use crate::tool_call::{
-    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call, render_tools_block, OutputPart,
-    ScanEvent, TagScanner, ToolDef, ToolSignatures,
+    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call,
+    render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef, ToolSignatures,
 };
+use axum::extract::DefaultBodyLimit;
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -27,7 +28,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use axum::extract::DefaultBodyLimit;
 use base64::Engine as _;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
@@ -479,6 +479,33 @@ struct ModelObject {
     /// gateway has no loaded deployment from which to read the limit.
     context_length: Option<u32>,
     top_provider: ModelProviderLimits,
+    /// What a visitor pays for the model when the network charges visitors
+    /// (`docs/subsystems/payments.md`), OpenRouter's `prompt`/`completion`
+    /// per token in the network's credits. Absent: free.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pricing: Option<serde_json::Value>,
+}
+
+/// The `pricing` of `id` under `settings`, when the network charges for it.
+pub(crate) fn model_pricing(
+    settings: &crate::config::NetworkSettings,
+    id: &str,
+) -> Option<serde_json::Value> {
+    if !settings.payments.enabled {
+        return None;
+    }
+    let price = settings
+        .payments
+        .prices
+        .get(crate::deployment::split_selector(id).0)?;
+    let per_token = |micro_per_1k: i64| format!("{}", micro_per_1k as f64 / 1e9);
+    Some(json!({
+        "prompt": per_token(price.in_micro_per_1k),
+        "completion": per_token(price.out_micro_per_1k),
+        "unit": "credit",
+        "in_micro_per_1k": price.in_micro_per_1k,
+        "out_micro_per_1k": price.out_micro_per_1k,
+    }))
 }
 
 #[derive(Debug, Serialize)]
@@ -510,6 +537,7 @@ fn model_object(
             context_length,
             max_completion_tokens,
         },
+        pricing: None,
     }
 }
 
@@ -535,37 +563,84 @@ fn covers_whole_model(p: &crate::network::PeerInfo) -> bool {
 /// that is loading must not hide the one that serves).
 fn group_ready(group: &[&crate::network::PeerInfo]) -> bool {
     let ready = |p: &crate::network::PeerInfo| p.runtime_capacity.is_some() || p.idle;
-    group.iter().all(|p| ready(p))
-        || group.iter().any(|p| ready(p) && covers_whole_model(p))
+    group.iter().all(|p| ready(p)) || group.iter().any(|p| ready(p) && covers_whole_model(p))
 }
 
-pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
-    let alive_models: std::collections::BTreeSet<String> = peers
+/// A deployment as clients name it: the operator's `deployment_name`, the
+/// internal selector it stands for (`<model>@<deploy_id>`) and its heads (the
+/// machines that hold layer 0). With more than one head, `<name>@<node_id>`
+/// names one of them.
+pub(crate) struct NamedDeployment {
+    pub name: String,
+    pub selector: String,
+    pub heads: Vec<String>,
+}
+
+/// Every ready deployment that announces a name.
+pub(crate) fn named_deployments(peers: &[crate::network::PeerInfo]) -> Vec<NamedDeployment> {
+    let keys: std::collections::BTreeSet<(String, String, String)> = peers
         .iter()
-        .filter(|p| p.is_alive() && !p.model.is_empty())
-        .map(|p| p.model.clone())
+        .filter(|p| p.is_alive() && !p.model.is_empty() && !p.deploy_id.is_empty() && !p.deployment_name.is_empty())
+        .map(|p| (p.deployment_name.clone(), p.model.clone(), p.deploy_id.clone()))
         .collect();
-    let mut ids: Vec<String> = alive_models
-        .into_iter()
-        .filter(|model| {
-            let group: Vec<&crate::network::PeerInfo> =
-                peers.iter().filter(|p| p.is_alive() && p.model == *model).collect();
-            group_ready(&group)
-        })
-        .collect();
-    let deployments: std::collections::BTreeSet<(String, String)> = peers
-        .iter()
-        .filter(|p| p.is_alive() && !p.model.is_empty() && !p.deploy_id.is_empty())
-        .map(|p| (p.model.clone(), p.deploy_id.clone()))
-        .collect();
-    for (model, deploy_id) in deployments {
+    let mut named: Vec<NamedDeployment> = Vec::new();
+    for (name, model, deploy_id) in keys {
         let group: Vec<&crate::network::PeerInfo> = peers
             .iter()
             .filter(|p| p.is_alive() && p.model == model && p.deploy_id == deploy_id)
             .collect();
-        let ready = group_ready(&group);
-        if ready {
+        if !group_ready(&group) || named.iter().any(|n| n.name == name) {
+            continue;
+        }
+        let mut heads: Vec<String> = group
+            .iter()
+            .filter(|p| p.start_layer == 0)
+            .map(|p| p.node_id.clone())
+            .collect();
+        heads.sort();
+        heads.dedup();
+        named.push(NamedDeployment { name, selector: format!("{model}@{deploy_id}"), heads });
+    }
+    named
+}
+
+/// The names `/v1/models` offers. A deployment that announces a name is listed by
+/// it (and by `<name>@<node_id>` per head when it has more than one); one from an
+/// earlier version's peers keeps its model label and `<model>@<deploy_id>`. The
+/// model labels of named deployments are not listed but still accepted
+/// (`resolve_model`), so a client pinned to one keeps working.
+pub(crate) fn model_ids_from_peers(peers: &[crate::network::PeerInfo]) -> Vec<String> {
+    let named = named_deployments(peers);
+    let named_selectors: std::collections::BTreeSet<&str> =
+        named.iter().map(|n| n.selector.as_str()).collect();
+    let deployments: std::collections::BTreeSet<(String, String)> = peers
+        .iter()
+        .filter(|p| p.is_alive() && !p.model.is_empty())
+        .map(|p| (p.model.clone(), p.deploy_id.clone()))
+        .collect();
+    let mut ids: Vec<String> = Vec::new();
+    for (model, deploy_id) in &deployments {
+        if !deploy_id.is_empty() && named_selectors.contains(format!("{model}@{deploy_id}").as_str()) {
+            continue;
+        }
+        let group: Vec<&crate::network::PeerInfo> = peers
+            .iter()
+            .filter(|p| p.is_alive() && p.model == *model && (deploy_id.is_empty() || p.deploy_id == *deploy_id))
+            .collect();
+        if !group_ready(&group) {
+            continue;
+        }
+        ids.push(model.clone());
+        if !deploy_id.is_empty() {
             ids.push(format!("{model}@{deploy_id}"));
+        }
+    }
+    for deployment in &named {
+        ids.push(deployment.name.clone());
+        if deployment.heads.len() > 1 {
+            for head in &deployment.heads {
+                ids.push(format!("{}@{head}", deployment.name));
+            }
         }
     }
     ids.sort();
@@ -581,13 +656,19 @@ pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
 async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> impl IntoResponse {
     let created = chrono::Utc::now().timestamp();
     let peers = state.all_peers().await;
+    let settings = crate::payments::runtime::settings(&state).await;
     let mut data = Vec::new();
     for id in model_ids_from_peers(&peers) {
+        // A deployment name stands for `<model>@<deploy_id>`, which the lookups read.
+        let target = lookup_id(&peers, &id);
+        let pricing = model_pricing(&settings, &model_label_of(&target));
         let (context_length, max_completion_tokens) = state
-            .advertised_output_limits_from_peers(&peers, Some(&id))
+            .advertised_output_limits_from_peers(&peers, Some(&target))
             .await;
-        let vision = crate::webui::model_vision_supported(&state, &id).await;
-        data.push(model_object(id, created, context_length, max_completion_tokens, vision));
+        let vision = crate::webui::model_vision_supported(&state, &target).await;
+        let mut model = model_object(id, created, context_length, max_completion_tokens, vision);
+        model.pricing = pricing;
+        data.push(model);
     }
 
     let first_id = data.first().map(|model| model.id.clone());
@@ -604,6 +685,17 @@ async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> im
     )
 }
 
+/// The id the capacity, vision and price lookups read: a deployment name (or
+/// `<name>@<node_id>`) becomes its `<model>@<deploy_id>`; anything else is itself.
+pub(crate) fn lookup_id(peers: &[crate::network::PeerInfo], id: &str) -> String {
+    resolve_named(peers, id).map(|(selector, _)| selector).unwrap_or_else(|| id.to_owned())
+}
+
+/// The model label of an id, without a `@<deploy_id>` suffix (prices are per model).
+fn model_label_of(id: &str) -> String {
+    crate::deployment::split_selector(id).0.to_owned()
+}
+
 async fn get_model(
     _auth: ApiKeyAuth,
     State(state): State<GatewayState>,
@@ -611,21 +703,24 @@ async fn get_model(
 ) -> impl IntoResponse {
     let peers = state.all_peers().await;
     if model_ids_from_peers(&peers).contains(&id) {
+        let target = lookup_id(&peers, &id);
         let (context_length, max_completion_tokens) = state
-            .advertised_output_limits_from_peers(&peers, Some(&id))
+            .advertised_output_limits_from_peers(&peers, Some(&target))
             .await;
-        let vision = crate::webui::model_vision_supported(&state, &id).await;
-        (
-            cors_headers(),
-            Json(model_object(
-                id,
-                chrono::Utc::now().timestamp(),
-                context_length,
-                max_completion_tokens,
-                vision,
-            )),
-        )
-            .into_response()
+        let vision = crate::webui::model_vision_supported(&state, &target).await;
+        let pricing = model_pricing(
+            &crate::payments::runtime::settings(&state).await,
+            &model_label_of(&target),
+        );
+        let mut model = model_object(
+            id,
+            chrono::Utc::now().timestamp(),
+            context_length,
+            max_completion_tokens,
+            vision,
+        );
+        model.pricing = pricing;
+        (cors_headers(), Json(model)).into_response()
     } else {
         error_response(
             StatusCode::NOT_FOUND,
@@ -658,12 +753,12 @@ async fn chat_completions(
     }
     let request_details = body;
 
-    let model = match req.model.clone() {
-        Some(m) if !m.is_empty() => match resolve_model(&state, m).await {
-            Ok(model) => model,
+    let (model, named_head) = match req.model.clone() {
+        Some(m) if !m.is_empty() => match resolve_model_and_head(&state, m).await {
+            Ok(resolved) => resolved,
             Err(error) => return error_response(StatusCode::NOT_FOUND, error),
         },
-        _ => state.active_model().await,
+        _ => (state.active_model().await, None),
     };
     let requested_max_tokens = req.max_tokens();
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
@@ -674,9 +769,10 @@ async fn chat_completions(
         .collect();
     let signatures = ToolSignatures::of(&tools);
     // A demonstration page reads node ids as aliases and sends one back.
+    // `<deployment_name>@<node_id>` pins that head unless the request names one.
     let preferred_head = match req.inference_head.as_deref() {
         Some(head) => Some(crate::user_session::unalias_node(&state, head).await),
-        None => None,
+        None => named_head,
     };
     let (mut prompt, images) = match render_prompt_with_images(&req.messages, &tools) {
         Ok(rendered) => rendered,
@@ -856,12 +952,12 @@ async fn completions(
     State(state): State<GatewayState>,
     Json(req): Json<CompletionRequest>,
 ) -> Response {
-    let model = match req.model.clone() {
-        Some(m) if !m.is_empty() => match resolve_model(&state, m).await {
-            Ok(model) => model,
+    let (model, named_head) = match req.model.clone() {
+        Some(m) if !m.is_empty() => match resolve_model_and_head(&state, m).await {
+            Ok(resolved) => resolved,
             Err(error) => return error_response(StatusCode::NOT_FOUND, error),
         },
-        _ => state.active_model().await,
+        _ => (state.active_model().await, None),
     };
     let requested_max_tokens = req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS).max(1);
     let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
@@ -880,9 +976,14 @@ async fn completions(
         };
         return error_response(status, error);
     }
-    if let Some(denial) =
-        crate::quota::admit(&state, auth.caller(), &req.prompt, prompt_tokens, &request_details)
-            .await
+    if let Some(denial) = crate::quota::admit(
+        &state,
+        auth.caller(),
+        &req.prompt,
+        prompt_tokens,
+        &request_details,
+    )
+    .await
     {
         crate::gateway::record_rejected(
             &state,
@@ -920,7 +1021,7 @@ async fn completions(
             None,
             None,
             Default::default(),
-            None,
+            named_head.clone(),
             true,
             request_details.clone(),
             output_limit,
@@ -944,7 +1045,7 @@ async fn completions(
             None,
             None,
             Default::default(),
-            None,
+            named_head.clone(),
             true,
             request_details,
             output_limit,
@@ -964,7 +1065,54 @@ pub(crate) async fn resolve_model(
     state: &GatewayState,
     requested: String,
 ) -> Result<String, String> {
-    if model_ids(state).await.contains(&requested) {
+    resolve_model_and_head(state, requested).await.map(|(model, _)| model)
+}
+
+/// `resolve_model`, plus the head a `<deployment_name>@<node_id>` pins.
+pub(crate) async fn resolve_model_and_head(
+    state: &GatewayState,
+    requested: String,
+) -> Result<(String, Option<String>), String> {
+    let peers = state.all_peers().await;
+    if let Some(resolved) = resolve_named(&peers, &requested) {
+        return Ok(resolved);
+    }
+    resolve_label(state, requested).await.map(|model| (model, None))
+}
+
+/// A deployment name, or `<name>@<node_id>` of one of its heads, as the internal
+/// selector and the pinned head.
+pub(crate) fn resolve_named(
+    peers: &[crate::network::PeerInfo],
+    requested: &str,
+) -> Option<(String, Option<String>)> {
+    let named = named_deployments(peers);
+    if let Some(deployment) = named.iter().find(|n| n.name == requested) {
+        return Some((deployment.selector.clone(), None));
+    }
+    let (name, head) = requested.rsplit_once('@')?;
+    let deployment = named.iter().find(|n| n.name == name)?;
+    deployment
+        .heads
+        .iter()
+        .any(|h| h == head)
+        .then(|| (deployment.selector.clone(), Some(head.to_owned())))
+}
+
+async fn resolve_label(state: &GatewayState, requested: String) -> Result<String, String> {
+    let peers = state.all_peers().await;
+    let labels: std::collections::BTreeSet<String> = peers
+        .iter()
+        .filter(|p| p.is_alive() && !p.model.is_empty())
+        .flat_map(|p| {
+            let mut ids = vec![p.model.clone()];
+            if !p.deploy_id.is_empty() {
+                ids.push(format!("{}@{}", p.model, p.deploy_id));
+            }
+            ids
+        })
+        .collect();
+    if model_ids(state).await.contains(&requested) || labels.contains(&requested) {
         return Ok(requested);
     }
     // An `@<deploy_id>` that has not yet appeared in anyone's announcement still
@@ -1136,7 +1284,7 @@ async fn blocking_response(
                         // How many backend generations this response stitched together.
                         // `1` is a single one; greater than `1` says the output went past the
                         // deployment's `max_new_tokens` without it changing.
-                        "continuation_legs": summary.legs,
+                        "continuation_legs": summary.legs, "payment": summary.payment,
                     },
                 })),
             )
@@ -1269,7 +1417,16 @@ fn stream_response(
         tx,
     );
 
-    let stream = sse_stream(rx, id, created, model, mode, budget.total, output_limit, tools);
+    let stream = sse_stream(
+        rx,
+        id,
+        created,
+        model,
+        mode,
+        budget.total,
+        output_limit,
+        tools,
+    );
     (
         cors_headers(),
         Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()),
@@ -1728,7 +1885,7 @@ fn chunk_json_final(
             "stop_sequence": summary.stop_sequence,
             "trace": summary.trace,
             "output_limits": output_limit,
-            "continuation_legs": summary.legs,
+            "continuation_legs": summary.legs, "payment": summary.payment,
             "truncated_tool_call": truncated_tool_call,
         });
     }
@@ -1774,11 +1931,16 @@ mod tests {
         let off = json!({"chat_template_kwargs": {"enable_thinking": false}});
         assert!(!super::client_thinking(None, &off));
         assert!(super::client_thinking(Some(true), &off));
-        assert!(!super::client_thinking(None, &json!({"reasoning_effort": "none"})));
-        assert!(super::client_thinking(None, &json!({"reasoning_effort": "low"})));
+        assert!(!super::client_thinking(
+            None,
+            &json!({"reasoning_effort": "none"})
+        ));
+        assert!(super::client_thinking(
+            None,
+            &json!({"reasoning_effort": "low"})
+        ));
         assert!(super::client_thinking(None, &json!({})));
     }
-
 
     #[test]
     fn reasoning_uses_the_structured_chat_delta_instead_of_visible_content() {
@@ -1938,6 +2100,38 @@ mod tests {
 
         let state = crate::gateway::testkit::state_with("eu", vec![head, tail]).await;
         assert!(!model_ids(&state).await.contains(&"qwen3:8b".to_string()));
+    }
+
+    /// A named deployment is listed and taken by its name; with two heads, each
+    /// one also by `<name>@<node_id>`, which pins it. The file label still works.
+    #[tokio::test]
+    async fn a_deployment_is_listed_and_resolved_by_its_name_and_heads() {
+        let replica = |id: &str| {
+            let mut peer = crate::gateway::testkit::peer(id, id, 8080);
+            peer.model = "Qwen3.8-Flash-00001-of-00002.gguf".into();
+            peer.deploy_id = "d-aaaaaaaa".into();
+            peer.deployment_name = "qwen-flash".into();
+            peer.start_layer = 0;
+            peer.end_layer = 47;
+            peer.total_layers = 48;
+            peer
+        };
+        let state = crate::gateway::testkit::state_with("eu", vec![replica("n1"), replica("n2")]).await;
+        let ids = model_ids(&state).await;
+        assert_eq!(ids, vec!["qwen-flash", "qwen-flash@n1", "qwen-flash@n2"]);
+        assert_eq!(
+            resolve_model_and_head(&state, "qwen-flash".into()).await,
+            Ok(("Qwen3.8-Flash-00001-of-00002.gguf@d-aaaaaaaa".to_string(), None))
+        );
+        assert_eq!(
+            resolve_model_and_head(&state, "qwen-flash@n2".into()).await,
+            Ok(("Qwen3.8-Flash-00001-of-00002.gguf@d-aaaaaaaa".to_string(), Some("n2".to_string())))
+        );
+        assert_eq!(
+            resolve_model(&state, "Qwen3.8-Flash-00001-of-00002.gguf".into()).await,
+            Ok("Qwen3.8-Flash-00001-of-00002.gguf".to_string())
+        );
+        assert!(resolve_model(&state, "qwen-flash@n9".into()).await.is_err());
     }
 
     /// A whole-model peer that is loading answers for nothing: with no ready replica the model stays hidden.
@@ -2855,6 +3049,8 @@ mod tests {
     #[test]
     fn finish_reason_reflects_the_limit_and_tool_calls() {
         let summary = |n: u32| crate::gateway::GenSummary {
+            payment: None,
+            metering_bundle: None,
             source: "pipeline:a→b".into(),
             tokens_generated: n,
             reasoning_tokens: 0,
@@ -3109,6 +3305,8 @@ mod tests {
     #[tokio::test]
     async fn a_partial_stream_ends_in_an_error_after_the_salvaged_text() {
         let mut summary = crate::gateway::GenSummary {
+            payment: None,
+            metering_bundle: None,
             source: "pipeline:a (partial)".into(),
             tokens_generated: 1,
             reasoning_tokens: 0,
@@ -3152,6 +3350,8 @@ mod tests {
     #[test]
     fn final_stream_chunk_carries_generation_summary() {
         let summary = crate::gateway::GenSummary {
+            payment: None,
+            metering_bundle: None,
             source: "pipeline:a→b".into(),
             tokens_generated: 12,
             reasoning_tokens: 5,
@@ -3194,5 +3394,28 @@ mod tests {
         assert_eq!(payload["choices"][0]["finish_reason"], "stop");
         assert_eq!(payload["x_pom"]["finish_reason"], "length");
         assert_eq!(payload["x_pom"]["partial"], true);
+    }
+
+    #[test]
+    fn a_charged_model_lists_its_price_per_token() {
+        let mut settings = crate::config::NetworkSettings::default();
+        settings.payments.prices.insert(
+            "m".into(),
+            crate::config::ModelPrice {
+                in_micro_per_1k: 300_000,
+                out_micro_per_1k: 1_500_000,
+            },
+        );
+        assert!(
+            model_pricing(&settings, "m").is_none(),
+            "free while charging is off"
+        );
+        settings.payments.enabled = true;
+        let price = model_pricing(&settings, "m@d-0123abcd").unwrap();
+        assert_eq!(
+            (price["prompt"].as_str(), price["completion"].as_str()),
+            (Some("0.0003"), Some("0.0015"))
+        );
+        assert!(model_pricing(&settings, "other").is_none());
     }
 }

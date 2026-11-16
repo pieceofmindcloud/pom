@@ -380,7 +380,8 @@ pub fn accepted_connection_keys(config: &Config) -> Vec<String> {
         return Vec::new();
     }
     let mut keys = vec![config.connection_key.clone()];
-    if let Some(transition) = transition_for(&config.connection_key, chrono::Utc::now().timestamp()) {
+    if let Some(transition) = transition_for(&config.connection_key, chrono::Utc::now().timestamp())
+    {
         if !transition.old.is_empty() && transition.old != config.connection_key {
             keys.push(transition.old);
         }
@@ -484,7 +485,8 @@ async fn known_control_principal(
     state.network.alive_peers().await.into_iter().any(|peer| {
         peer.node_id == issuer.node_id
             && peer.pubkey == issuer.pubkey
-            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref() == Some(issuer.peer_id.as_str())
+            && crate::identity::trust_peer_id_from_hex(&peer.pubkey).as_deref()
+                == Some(issuer.peer_id.as_str())
     })
 }
 
@@ -561,6 +563,32 @@ static MEMBER_ORACLE: std::sync::OnceLock<std::sync::Arc<crate::network::Network
 
 pub(crate) fn set_member_oracle(network: std::sync::Arc<crate::network::Network>) {
     let _ = MEMBER_ORACLE.set(network);
+}
+
+/// Under `inference_access = member_gateway_only`, whether the caller of an
+/// inference call is a visitor, which must go through an entry node instead
+/// (`crate::delegation`).
+pub(crate) async fn visitor_must_delegate(
+    config: &AuthState,
+    extensions: &axum::http::Extensions,
+) -> bool {
+    if config.read().await.network.inference_access
+        != crate::config::InferenceAccess::MemberGatewayOnly
+    {
+        return false;
+    }
+    let (Some(network), Some(caller)) = (
+        MEMBER_ORACLE.get(),
+        extensions.get::<crate::serve::TransportPeer>(),
+    ) else {
+        return false;
+    };
+    network
+        .alive_peers()
+        .await
+        .iter()
+        .find(|p| p.node_id == caller.node_id)
+        .is_some_and(|p| network.peer_is_visitor(p))
 }
 
 /// Whether the request arrived in plain text on loopback: from this very
@@ -957,7 +985,8 @@ where
             .extensions
             .get::<crate::serve::TransportSecurity>()
             .is_some_and(|transport| transport.0);
-        if let Some(session_id) = session_id_from_cookie(&parts.headers, secure).map(str::to_owned) {
+        if let Some(session_id) = session_id_from_cookie(&parts.headers, secure).map(str::to_owned)
+        {
             let State(sessions): State<AdminSessionState> = State::from_request_parts(parts, state)
                 .await
                 .map_err(|_| AdminAuthRejection::InvalidToken)?;
@@ -1111,6 +1140,14 @@ where
         // or `x-api-key: <key>` (Anthropic Messages API style, what
         // `ANTHROPIC_API_KEY` sends). Consider both independently because a
         // client may send both headers and one can be stale or invalid.
+        // A visitor's request this entry node runs (`crate::delegation`): the
+        // marker is set in process only, never from the wire.
+        if let Some(delegated) = parts.extensions.get::<crate::delegation::Delegated>() {
+            return Ok(ApiKeyAuth {
+                caller: delegated.caller.clone(),
+                token: String::new(),
+            });
+        }
         let candidates = credential_candidates(&parts.headers);
         if candidates.is_empty() {
             return Err(AuthRejection::MissingHeader);
@@ -1226,7 +1263,12 @@ mod tests {
 
     #[test]
     fn the_session_cookie_reaches_every_surface_the_interface_calls() {
-        for path in ["/api/ui/jobs", "/api/transfer/jobs", "/api/transfer/offers", "/admin/api-keys"] {
+        for path in [
+            "/api/ui/jobs",
+            "/api/transfer/jobs",
+            "/api/transfer/offers",
+            "/admin/api-keys",
+        ] {
             assert!(
                 ADMIN_SESSION_COOKIE_PATHS
                     .iter()
@@ -1296,7 +1338,9 @@ mod tests {
         // reads only its own.
         headers.insert(
             axum::http::header::COOKIE,
-            format!("{slug}_admin_session_8080=old; {plain}=plain; {tls}=tls").parse().unwrap(),
+            format!("{slug}_admin_session_8080=old; {plain}=plain; {tls}=tls")
+                .parse()
+                .unwrap(),
         );
         assert_eq!(session_id_from_cookie(&headers, false), Some("plain"));
         assert_eq!(session_id_from_cookie(&headers, true), Some("tls"));
@@ -1551,6 +1595,7 @@ mod tests {
     #[test]
     fn inference_accepts_only_an_active_api_key() {
         let cfg = crate::config::Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             gpus: None,
@@ -1626,6 +1671,7 @@ mod tests {
     #[test]
     fn internal_inference_token_uses_shared_connection_key() {
         let mut cfg = crate::config::Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             gpus: None,
@@ -1784,8 +1830,10 @@ mod tests {
     #[test]
     fn a_rotated_connection_key_overlaps_the_old_one_instead_of_cutting_it() {
         let config = |key: &str| -> Config {
-            serde_json::from_value(serde_json::json!({ "profile": "worker", "connection_key": key }))
-                .unwrap()
+            serde_json::from_value(
+                serde_json::json!({ "profile": "worker", "connection_key": key }),
+            )
+            .unwrap()
         };
         let _lock = transition_test_lock();
         let rotated = config("transition-new-key");

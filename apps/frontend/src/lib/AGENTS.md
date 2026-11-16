@@ -47,7 +47,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   Direct Chat consumers get an isolated provider wrapper. The terminal
   `ChatStreamResult` retains trace, generation timings and source so Chat can
   associate the complete telemetry capture with the specific reply while the
-  persisted message patch settles.
+  persisted message patch settles. A 402 sets `errorKind: "payment_required"` on the reply, which the
+  Chat shows as out of credit with a link to `/config/credit`.
 - `chatWaiting.ts` - which line the Chat shows before the first token: the
   set (`wake`, `pieces`, `assemble`, `long`) from the `asleep` flag and the
   elapsed time, and the rotation inside it. Texts are `chat.wait.<set>.<n>`;
@@ -106,6 +107,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   this network received, admin only), `useAdmissionRequests` (what this node
   asked of other networks) and `admissionsApi` (`decide`, `join`, `forget`).
   The grant never reaches the browser, so there is no type for it.
+  `decide` takes an optional credit granted to a visitor's account on
+  approval (`grant_micro`); `AdmissionRecord.account` is the account its home
+  statement named.
 - `publicLatency.ts` - `usePublicLatencies(keys, enabled, refreshKey)`: round
   trip from this node to each listed network, from
   `/api/ui/network-chat/lobby/latency`. Nothing is asked until `enabled`,
@@ -256,7 +260,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   optional `{q, page, perPage}` (search and paging done by the server, `total`
   is null from a server without paging), `fetchPublicPlugin(code)` reads one
   entry (null on 404), and `supportedPlatforms` lists the systems with builds. It validates required fields
-  for each commercial release and discards plugins without a valid release.
+  for each commercial release and discards plugins without a valid release, unless the store marks them `coming_soon`: those stay listed (the license server counts them in `total`) with a "Coming soon" badge and no Buy button.
   GitHub sources stay local: the catalog's `github_url` (a free plugin the
   license server lists as installed from GitHub) is only a suggestion, accepted
   solely as `https://github.com/<owner>/<repo>`, and the Plugins card registers
@@ -438,6 +442,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   "Continue" stayed disabled with no warning.
 
 ### queries.ts
+- `usePanZoom.ts` - free pan and zoom of the Dashboard and Deploy maps: the view is a
+  translate plus a scale (`contentStyle`), the dotted background follows it
+  (`surfaceStyle`), the wheel zooms around the pointer through a native non-passive
+  listener, `toMap` turns a pointer into map coordinates for card drags, and
+  `resetView` returns to the origin at zoom 1. With a key (`map-view.dashboard`,
+  `map-view.deploy`) the last view is saved in `localStorage` 250 ms after it stops
+  changing and restored on reload; unreadable or blocked storage opens at the origin.
 - `useAdminSurface()` - one-shot shell probe (`retry:false`, no focus refetch):
   a valid server session means available, a localhost policy
   refusal means the local-only state, and other refusals keep the token gate.

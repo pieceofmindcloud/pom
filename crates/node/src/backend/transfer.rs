@@ -1481,15 +1481,12 @@ struct AcceptRequest {
 async fn receive_dir(state: &GatewayState, chosen: Option<&Path>) -> Result<PathBuf, String> {
     let dirs = state.model_dirs().await;
     match chosen {
-        Some(chosen) => dirs
-            .into_iter()
-            .find(|dir| dir == chosen)
-            .ok_or_else(|| {
-                format!(
-                    "{} is not one of this machine's model folders",
-                    chosen.display()
-                )
-            }),
+        Some(chosen) => dirs.into_iter().find(|dir| dir == chosen).ok_or_else(|| {
+            format!(
+                "{} is not one of this machine's model folders",
+                chosen.display()
+            )
+        }),
         None => dirs
             .into_iter()
             .next()
@@ -1804,9 +1801,7 @@ async fn catalog_send_path(state: &GatewayState, filename: &str) -> Result<PathB
         .map(|model| model.path)
         .chain(catalog.sidecars.into_iter().map(|sidecar| sidecar.path))
         .chain(catalog.image_files.into_iter().map(|file| file.path))
-        .filter(|path| {
-            Path::new(path).file_name().and_then(|name| name.to_str()) == Some(filename)
-        })
+        .filter(|path| Path::new(path).file_name().and_then(|name| name.to_str()) == Some(filename))
         .map(PathBuf::from)
         .collect();
     matches.sort();
@@ -4252,7 +4247,13 @@ mod verdict_tests {
             offers[0].id.clone()
         };
 
-        let resp = accept_offer(ConnectionAuth, State(ksia.clone()), AxumPath(offer_id), axum::body::Bytes::new()).await;
+        let resp = accept_offer(
+            ConnectionAuth,
+            State(ksia.clone()),
+            AxumPath(offer_id),
+            axum::body::Bytes::new(),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         // The download finishes, and the **send** too: it was this second close that
@@ -4518,7 +4519,10 @@ mod safetensors_tests {
 
         let real = safetensors_file(&dir, "vae.safetensors", r#"{"__metadata__":{}}"#);
         assert!(ensure_transferable(&real).is_ok());
-        assert_eq!(valid_transfer_filename("vae.safetensors").unwrap(), "vae.safetensors");
+        assert_eq!(
+            valid_transfer_filename("vae.safetensors").unwrap(),
+            "vae.safetensors"
+        );
 
         let fake = dir.join("fake.safetensors");
         std::fs::write(&fake, b"not a safetensors file at all").unwrap();

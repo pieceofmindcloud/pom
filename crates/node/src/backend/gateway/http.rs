@@ -36,6 +36,47 @@ pub(crate) async fn start_gateway_with_ready(
                 .post(accept_public_directory_record)
                 .layer(axum::extract::DefaultBodyLimit::max(64 * 1024)),
         )
+        .route(
+            crate::delegation::DELEGATE_PATH,
+            post(crate::delegation::delegate_route)
+                .layer(axum::extract::DefaultBodyLimit::max(32 << 20)),
+        )
+        .route(
+            "/v1/gateway/balance",
+            post(crate::payments::runtime::visitor_balance),
+        )
+        .route(
+            "/v1/gateway/credit-request",
+            post(crate::payments::runtime::visitor_credit_request),
+        )
+        .route(
+            "/api/internal/payments/credit-request",
+            post(crate::payments::runtime::credit_request_route),
+        )
+        .route(
+            "/api/internal/home-statement",
+            post(crate::home_statement::internal_issue),
+        )
+        .route(
+            "/api/internal/payments/price",
+            post(crate::payments::runtime::price_route),
+        )
+        .route(
+            "/api/internal/payments/return",
+            post(crate::payments::runtime::return_route),
+        )
+        .route(
+            "/api/internal/payments/lease",
+            post(crate::payments::runtime::lease_route),
+        )
+        .route(
+            "/api/internal/payments/settle",
+            post(crate::payments::runtime::settle_route),
+        )
+        .route(
+            "/api/internal/payments/balance",
+            post(crate::payments::runtime::balance_route),
+        )
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
         .route(crate::quic_policy::QUIC_POLICY_PATH, get(cluster_quic))
@@ -89,6 +130,12 @@ pub(crate) async fn start_gateway_with_ready(
         // cares most about the former. Peer-to-peer tensor frames never pass
         // through this router (see inference/infer_server.rs), so there is
         // no risk of compressing binary inference frames here.
+        // A visitor hands its inference requests to an entry node of the
+        // network when the network says so (`crate::delegation`).
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::delegation::visitor_layer,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_admin_for_surface,
@@ -103,6 +150,16 @@ pub(crate) async fn start_gateway_with_ready(
         .layer(compression())
         // Every response says which node it came from; see `peer_client::answered_by_other_node`.
         .layer(middleware::map_response(crate::peer_client::stamp_node_id));
+
+    // A visitor's delegated request runs through this same router.
+    crate::delegation::install_router(app.clone());
+    crate::payments::runtime::install(&warm);
+    crate::home_statement::install_issuer(&warm);
+    let validator = warm.auth.read().await.validator;
+    warm.network.set_validator(validator);
+    if validator {
+        info!("this machine is a validator: it re-runs sampled work and serves no model");
+    }
 
     // Both startup paths (with a model and gateway-only) come through here, so
     // this is the one place that warms every node's catalog exactly once.
@@ -1410,6 +1467,7 @@ pub(super) async fn handle_generate(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(GenerateResponse {
+                    payment: None,
                     response: format!("Invalid JSON: {}", e),
                     source: "error".to_string(),
                     tokens_generated: 0,
@@ -1448,6 +1506,7 @@ pub(super) async fn handle_generate(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(GenerateResponse {
+                    payment: None,
                     response: error,
                     source: "error".to_string(),
                     tokens_generated: 0,
@@ -1485,6 +1544,7 @@ pub(super) async fn handle_generate(
                 StatusCode::PAYLOAD_TOO_LARGE
             },
             Json(GenerateResponse {
+                payment: None,
                 response: error,
                 source: "error".to_string(),
                 tokens_generated: 0,
@@ -1521,6 +1581,7 @@ pub(super) async fn handle_generate(
             (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(GenerateResponse {
+                    payment: None,
                     response: denial.message.clone(),
                     source: "error".to_string(),
                     tokens_generated: 0,
@@ -1572,6 +1633,7 @@ pub(super) async fn handle_generate(
             (
                 StatusCode::OK,
                 Json(GenerateResponse {
+                    payment: summary.payment.clone(),
                     response: text,
                     source: summary.source,
                     tokens_generated: summary.tokens_generated,
@@ -1591,6 +1653,7 @@ pub(super) async fn handle_generate(
         Err(e) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(GenerateResponse {
+                payment: None,
                 response: format!("Inference failed. Error: {e}."),
                 source: "none".to_string(),
                 tokens_generated: 0,

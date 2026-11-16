@@ -8,7 +8,7 @@ order: 90
 ---
 
 :::lead
-Transferências mostra um arquivo que um admin ainda numa versão mais antiga oferece a esta máquina, e o progresso dele. Ela não está no menu: o sino leva até ela quando chega uma oferta. Arquivos não são mais enviados entre máquinas - cada máquina serve a partir da própria cópia do modelo - e os downloads de modelos foram para a aba Downloads de Procurar Modelos, a tela do plugin do Hugging Face.
+Transferências mostra um arquivo que um admin ainda numa versão mais antiga oferece a esta máquina, e o progresso dele. Ela não está no menu: o sino leva até ela quando chega uma oferta, e Modelos a mostra como aba enquanto uma transferência corre. Arquivos não são mais enviados entre máquinas - cada máquina serve a partir da própria cópia do modelo - e os downloads de modelos foram para a aba Downloads de Procurar Modelos, a tela do plugin do Hugging Face.
 :::
 
 :::steps

@@ -25,6 +25,14 @@ export function canvasModelIds(cluster: ClusterView): string[] {
 }
 
 /**
+ * How a model is named on screen: the deployment's name its machines announce
+ * (`deployment_name`, what a client asks `/v1` for), else the model label.
+ */
+export function canvasModelLabel(cluster: ClusterView, modelId: string): string {
+  return cluster.peers.find((peer) => peer.model === modelId && peer.deployment_name)?.deployment_name ?? modelId;
+}
+
+/**
  * The model the Flow shows: the one picked while it still exists, otherwise the
  * active model, otherwise the first. The Dashboard resolves it the same way so its
  * Add and Undeploy act on what the map shows.

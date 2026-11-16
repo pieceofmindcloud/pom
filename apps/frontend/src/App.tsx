@@ -10,9 +10,10 @@ import {
 } from "./lib/api";
 import { useProfile } from "./lib/profile";
 import { ChatSessionProvider } from "./lib/chatStore";
-import { useAdminSurface, usePluginUi } from "./lib/queries";
+import { useAdminSurface, useNode, usePluginUi } from "./lib/queries";
 import { pluginUiSnapshot, resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
 import { PluginScreen } from "./components/PluginScreen";
+import { LogsTabs } from "./components/LogsTabs";
 import { PluginLoading } from "./components/PluginLoading";
 import { PluginBridge } from "./components/PluginBridge";
 import { syncPluginCatalogs } from "./lib/pluginI18n";
@@ -294,6 +295,8 @@ export const routeLoaders = {
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
   networkParticipants: () => import("./routes/NetworkSettings").then(({ NetworkParticipants }) => NetworkParticipants),
   myMachine: () => import("./routes/MyMachine").then(({ MyMachine }) => MyMachine),
+  myCredit: () => import("./routes/MyCredit").then(({ MyCredit }) => MyCredit),
+  payments: () => import("./routes/Payments").then(({ Payments }) => Payments),
   myBudget: () => import("./routes/MyBudget").then(({ MyBudget }) => MyBudget),
   myKeys: () => import("./routes/MyKeys").then(({ MyKeys }) => MyKeys),
   adminAuthority: () => import("./routes/AdminAuthority").then(({ AdminAuthority }) => AdminAuthority),
@@ -328,6 +331,8 @@ const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
 const NetworkParticipants = lazyRoute(routeLoaders.networkParticipants);
 const MyMachine = lazyRoute(routeLoaders.myMachine);
+const MyCredit = lazyRoute(routeLoaders.myCredit);
+const Payments = lazyRoute(routeLoaders.payments);
 const MyBudget = lazyRoute(routeLoaders.myBudget);
 const AdminAuthority = lazyRoute(routeLoaders.adminAuthority);
 const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
@@ -376,6 +381,16 @@ function RouteFallback({ fullScreen = false }: { fullScreen?: boolean }) {
  * The chat holds a live stream and a scroll position, so it renders outside the
  * page transition: unmounting it to animate would drop tokens mid-answer.
  */
+/**
+ * A screen of a feature still in development (`DEV_ONLY_ROUTES` in `components/nav.ts`):
+ * outside development mode its address goes back to the Dashboard.
+ */
+function DevOnly({ children }: { children: React.ReactNode }) {
+  const { data: node, isLoading } = useNode();
+  if (isLoading) return null;
+  return node?.pom_dev_mode === true ? <>{children}</> : <Navigate to="/" replace />;
+}
+
 /** `/transfers/send` from before Send file joined the Transfers screen. */
 function TransfersSendRedirect() {
   const { search } = useLocation();
@@ -612,10 +627,19 @@ export default function App() {
                   <Navigate to="/statistics" replace />
                 ) : pluginRoute ? (
                   <div className={pluginRoute.route.full_bleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
-                    <PluginScreen
-                      key={`${pluginRoute.code}:${pluginRoute.route.path}`}
-                      resolved={pluginRoute}
-                    />
+                    {location.pathname === "/logs" ? (
+                      <LogsTabs>
+                        <PluginScreen
+                          key={`${pluginRoute.code}:${pluginRoute.route.path}`}
+                          resolved={pluginRoute}
+                        />
+                      </LogsTabs>
+                    ) : (
+                      <PluginScreen
+                        key={`${pluginRoute.code}:${pluginRoute.route.path}`}
+                        resolved={pluginRoute}
+                      />
+                    )}
                   </div>
                 ) : enterprisePath ? (
                   pluginUiPending ? (
@@ -640,7 +664,7 @@ export default function App() {
                         <Route path="/deploy" element={<Page><DeployModel /></Page>} />
                         <Route path="/deploy/image" element={<Navigate to="/deploy?mode=image" replace />} />
                         <Route path="/deployments" element={<Page><Deployments /></Page>} />
-                        <Route path="/deployments/logs" element={<Page><DeploymentLogs /></Page>} />
+                        <Route path="/deployments/logs" element={<Page>{isDemoUser() ? <Navigate to="/logs" replace /> : <LogsTabs><DeploymentLogs /></LogsTabs>}</Page>} />
                         {/* Keep the former deploy URL working for old bookmarks. */}
                         <Route path="/shards/deploy" element={<Navigate to="/deploy" replace />} />
                         <Route path="/transfers" element={<Page><Transfers /></Page>} />
@@ -651,6 +675,8 @@ export default function App() {
                         <Route path="/config/network" element={<Page>{isDemoUser() ? <DemoNetwork /> : <NetworkSettings />}</Page>} />
                         <Route path="/config/network/participants" element={<Page><NetworkParticipants /></Page>} />
                         <Route path="/config/my-machine" element={<Page><MyMachine /></Page>} />
+                        <Route path="/config/credit" element={<Page><DevOnly><MyCredit /></DevOnly></Page>} />
+                        <Route path="/config/payments" element={<Page><DevOnly><Payments /></DevOnly></Page>} />
                         <Route path="/config/usage" element={<Page><MyBudget /></Page>} />
                         <Route path="/config/my-keys" element={<Page><MyKeys /></Page>} />
                         <Route path="/config/budget" element={<Navigate to="/config/usage" replace />} />

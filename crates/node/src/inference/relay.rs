@@ -9,10 +9,10 @@
 //! encode/decode path instead of drifting apart.
 
 use crate::infer_tunnel::{TunnelOutbound, TunnelOutboundSender, TunnelRequest};
+use crate::p2p::EndpointId;
 use crate::wire::{self, FrameEncoding, TensorShape, WireDtype};
 use anyhow::{anyhow, Result};
 use axum::body::Bytes;
-use crate::p2p::EndpointId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -769,6 +769,15 @@ async fn flush_batch_group_inner(path: String, calls: Vec<BatchCall>) {
         Err(error) => Err(error),
         Ok(items) => {
             async {
+                for item in &items {
+                    crate::metering::note_forward(
+                        Some(item.session_id.as_str()),
+                        item.tensor
+                            .as_ref()
+                            .map(|(v, s)| (v.as_slice(), s.as_slice())),
+                        item.dtype,
+                    );
+                }
                 let (body, encode_timing) =
                     wire::encode_batch_items_profiled(&path, batch_id.clone(), &items)?;
                 let first = calls.first().expect("non-empty calls");
@@ -1147,11 +1156,26 @@ fn encode_frame_body_profiled(
     _encoding: FrameEncoding,
     use_batch_frame: bool,
 ) -> Result<(Vec<u8>, wire::WireEncodeTiming)> {
+    note_metered_forward(
+        meta,
+        tensor.as_ref().map(|(v, s)| (*v, s.as_slice())),
+        dtype,
+    );
     if use_batch_frame {
         wire::encode_batch_single_profiled(meta, tensor, dtype)
     } else {
         wire::encode_profiled(meta, tensor, dtype)
     }
+}
+
+/// GPU work metering: the tensor this frame carries to the next hop
+/// (`crate::metering::note_forward`).
+fn note_metered_forward(meta: &Value, tensor: Option<(&[f32], &[usize])>, dtype: WireDtype) {
+    crate::metering::note_forward(
+        meta.get("session_id").and_then(Value::as_str),
+        tensor,
+        dtype,
+    );
 }
 
 fn can_use_single_link(path: &str) -> bool {
@@ -1165,6 +1189,11 @@ fn encode_link_single_profiled(
     tensor: Option<(&[f32], TensorShape)>,
     dtype: WireDtype,
 ) -> Result<(Vec<u8>, wire::WireEncodeTiming)> {
+    note_metered_forward(
+        meta,
+        tensor.as_ref().map(|(v, s)| (*v, s.as_slice())),
+        dtype,
+    );
     let session_id = meta
         .get("session_id")
         .and_then(Value::as_str)
@@ -2523,16 +2552,8 @@ async fn send_bytes_via_tunnel(
     let response = match tokio::time::timeout(TUNNEL_BYTES_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: p2p tunnel failure: {error}")),
-        Ok(Err(_)) => {
-            return Err(anyhow!(
-                "{peer_label}: p2p tunnel closed without answering"
-            ))
-        }
-        Err(_) => {
-            return Err(anyhow!(
-                "{peer_label}: p2p tunnel did not answer in time"
-            ))
-        }
+        Ok(Err(_)) => return Err(anyhow!("{peer_label}: p2p tunnel closed without answering")),
+        Err(_) => return Err(anyhow!("{peer_label}: p2p tunnel did not answer in time")),
     };
 
     if !(200..300).contains(&response.status) {
@@ -3380,10 +3401,7 @@ mod tests {
     fn a_declared_step_budget_raises_the_decode_deadline_up_to_its_ceiling() {
         let fixed = frame_deadline(1, 0, 1);
         let slow = json!({"token_id": 7, STEP_BUDGET_KEY: 40_000});
-        assert_eq!(
-            frame_deadline_for(&slow, None),
-            Duration::from_secs(40)
-        );
+        assert_eq!(frame_deadline_for(&slow, None), Duration::from_secs(40));
         // Never below the fixed deadline, never past the ceiling.
         let fast = json!({"token_id": 7, STEP_BUDGET_KEY: 1});
         assert_eq!(frame_deadline_for(&fast, None), fixed);
@@ -3723,7 +3741,7 @@ mod tests {
                 let response = response.clone();
                 async move {
                     processed.fetch_add(1, Ordering::Relaxed);
-                    tokio::time::sleep(Duration::from_millis(350)).await;
+                    tokio::time::sleep(Duration::from_millis(3000)).await;
                     response
                 }
             }),
@@ -3735,10 +3753,11 @@ mod tests {
         });
 
         let step = step_with(&format!("http://{address}"), false, None);
-        // The caller's deadline (250 ms) is smaller than the peer's response
-        // (350 ms): the frame expires after the body reaches the peer.
+        // The caller's deadline (1 s) is smaller than the peer's response
+        // (3 s): the frame expires after the body reaches the peer. The margins
+        // are wide so a loaded test run still delivers the body in time.
         let result = with_frame_deadline(
-            Instant::now() + Duration::from_millis(250),
+            Instant::now() + Duration::from_millis(1000),
             send_frame_or_tunnel(
                 &crate::peer_client::PeerClients::new(Duration::from_secs(600)),
                 &step,

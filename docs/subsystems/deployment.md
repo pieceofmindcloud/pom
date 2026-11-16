@@ -41,7 +41,10 @@ about both cases before sending the request.
 
 The request also accepts `deployment_name` (an operational name separate from
 `group`), `strategy: "simple" | "complete"` and `preferred_node_ids`. An empty
-name uses the model name and names longer than 128 characters are refused.
+name uses the model name. The name is what clients ask `/v1` for, so it is an API
+identifier (`deploy::api_name`): ASCII letters, digits, `.`, `_` and `-`, any other
+run of characters becoming one `-`, a trailing `.gguf` dropped; the Deploy field
+applies the same rule as it is typed. Names longer than 128 characters are refused.
 `group` stays the technical identity used by the catalog, gossip and routing.
 The simple strategy uses the smallest sufficient set of peers; the complete one
 prefers the finest existing cuts and spreads the load across more machines. No
@@ -379,8 +382,12 @@ idle unloading) and the engine's own settings, as the service publishes them
 (`components/EngineSettings.tsx`); those go in `RuntimeParams.engine_settings`.
 The POM settings the service declares in `pom_settings` (in-flight prefill
 chunks, hidden-state precision) are shown in a separate "POM settings" card
-when its slices cross machines. The per-machine GPU layers and KV cache on the
-GPU are llama.cpp's and are not offered.
+when its slices cross machines. A service that also declares one of the groups
+`cache_types`, `batch` or `sampling` gets llama.cpp's "Default settings" card for
+them (the installation's K/V cache types, `n_batch`/`n_ubatch`, the sampling
+defaults and the seed, beside context, sessions and idle unloading), and its own
+card then holds only the engine's settings. The per-machine GPU layers and KV
+cache on the GPU are llama.cpp's and are not offered.
 
 `POST /api/ui/deploy` (and the preview, when the screen sends the service in
 `params`) refuses such a deployment unless it is a whole model on exactly one
@@ -440,8 +447,11 @@ serves, so components are a registry of their own.
   `image_files` with sizes, whether it publishes an `image` service and its
   status, its free VRAM/RAM from `/api/ui/node`) and answers, touching nothing,
   per stage the verdict of each chosen machine and of every machine
-  (`alternatives`): `does not run ComfyUI`, `ComfyUI is <status>` (`error`,
-  `waiting`), `does not hold <file>`, `holds another <file> (<size> bytes)`,
+  (`alternatives`): `does not run ComfyUI` (no `image` service: the image
+  plugin is not installed and running there), `ComfyUI is error`; a machine
+  whose ComfyUI is stopped or not installed yet (`waiting`) is accepted, and
+  the deploy's `component.serve` starts it there (installing it the first
+  time), `does not hold <file>`, `holds another <file> (<size> bytes)`,
   `<file> is a <category>, not a <component>` (a `checkpoint` fits all three),
   `does not hold the LoRA <file>`, `<file> is a <category>, not a LoRA` (a
   LoRA is never copied: every machine of the diffusion holds each one, found by

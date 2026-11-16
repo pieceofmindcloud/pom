@@ -78,7 +78,11 @@ impl SeatStatus {
                     "active_sessions": active_count(),
                 })
             }
-            SeatStatus::Queued { position, waiting, eta } => json!({
+            SeatStatus::Queued {
+                position,
+                waiting,
+                eta,
+            } => json!({
                 "state": "queued",
                 "position": position,
                 "waiting": waiting,
@@ -184,7 +188,12 @@ impl Seats {
             return (SeatStatus::Expired, expired);
         }
         if let Some(seat) = self.active.get(session) {
-            return (SeatStatus::Active { expires_at: seat.expires_at }, expired);
+            return (
+                SeatStatus::Active {
+                    expires_at: seat.expires_at,
+                },
+                expired,
+            );
         }
         // The same person signing in again (another browser) moves their
         // seat to the new session and keeps its clock: one person, one seat.
@@ -213,7 +222,12 @@ impl Seats {
         }
         self.promote(now);
         if let Some(seat) = self.active.get(session) {
-            return (SeatStatus::Active { expires_at: seat.expires_at }, expired);
+            return (
+                SeatStatus::Active {
+                    expires_at: seat.expires_at,
+                },
+                expired,
+            );
         }
         let position = self
             .queue
@@ -325,24 +339,42 @@ mod tests {
     fn seats_fill_then_the_rest_queue_with_an_estimate() {
         let now = Instant::now();
         let mut seats = Seats::new(2, 20 * MIN);
-        assert!(matches!(seats.status("a", "ua", now).0, SeatStatus::Active { .. }));
+        assert!(matches!(
+            seats.status("a", "ua", now).0,
+            SeatStatus::Active { .. }
+        ));
         let later = now + 5 * MIN;
-        assert!(matches!(seats.status("b", "ub", later).0, SeatStatus::Active { .. }));
+        assert!(matches!(
+            seats.status("b", "ub", later).0,
+            SeatStatus::Active { .. }
+        ));
         let (status, _) = seats.status("c", "uc", later);
         assert_eq!(
             status,
-            SeatStatus::Queued { position: 1, waiting: 1, eta: 15 * MIN }
+            SeatStatus::Queued {
+                position: 1,
+                waiting: 1,
+                eta: 15 * MIN
+            }
         );
         let (status, _) = seats.status("d", "ud", later);
         assert_eq!(
             status,
-            SeatStatus::Queued { position: 2, waiting: 2, eta: 20 * MIN }
+            SeatStatus::Queued {
+                position: 2,
+                waiting: 2,
+                eta: 20 * MIN
+            }
         );
         let (status, _) = seats.status("e", "ue", later);
         // A second round: the first seat to free, plus a whole session.
         assert_eq!(
             status,
-            SeatStatus::Queued { position: 3, waiting: 3, eta: 35 * MIN }
+            SeatStatus::Queued {
+                position: 3,
+                waiting: 3,
+                eta: 35 * MIN
+            }
         );
     }
 
@@ -351,9 +383,15 @@ mod tests {
         let now = Instant::now();
         let mut seats = Seats::new(1, 20 * MIN);
         seats.status("a", "ua", now);
-        assert!(matches!(seats.status("b", "ub", now).0, SeatStatus::Queued { .. }));
+        assert!(matches!(
+            seats.status("b", "ub", now).0,
+            SeatStatus::Queued { .. }
+        ));
         seats.release("a", now);
-        assert!(matches!(seats.status("b", "ub", now).0, SeatStatus::Active { .. }));
+        assert!(matches!(
+            seats.status("b", "ub", now).0,
+            SeatStatus::Active { .. }
+        ));
     }
 
     #[test]
@@ -367,7 +405,10 @@ mod tests {
         let (status, expired) = seats.status("a", "ua", later);
         assert_eq!(status, SeatStatus::Expired);
         assert_eq!(expired, vec![("a".to_owned(), "ua".to_owned())]);
-        assert!(matches!(seats.status("b", "ub", later).0, SeatStatus::Active { .. }));
+        assert!(matches!(
+            seats.status("b", "ub", later).0,
+            SeatStatus::Active { .. }
+        ));
     }
 
     #[test]

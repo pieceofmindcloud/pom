@@ -4,8 +4,8 @@
 //! the interface share the same boundary. The endpoint worker is added after these
 //! contracts are validated; nothing here depends on the inference tunnel.
 
-use anyhow::{Context, Result};
 use crate::p2p::Codec;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::prelude::*;
@@ -748,6 +748,28 @@ impl NetworkChat {
         Ok(status)
     }
 
+    /// Marks a worker's admission request as a validator's.
+    pub fn set_admission_validator(&self, node_id: &str, validator: bool) {
+        let mut records = self.admissions.lock().expect("admissions lock");
+        if let Some(record) = records.iter_mut().find(|r| r.node_id == node_id) {
+            if record.validator != validator {
+                record.validator = validator;
+                self.store_admissions(&records);
+            }
+        }
+    }
+
+    /// Records the account a candidate's home statement names.
+    pub fn set_admission_account(&self, node_id: &str, account: String) {
+        let mut records = self.admissions.lock().expect("admissions lock");
+        if let Some(record) = records.iter_mut().find(|r| r.node_id == node_id) {
+            if record.account.as_deref() != Some(account.as_str()) {
+                record.account = Some(account);
+                self.store_admissions(&records);
+            }
+        }
+    }
+
     /// Puts an admitted peer on the member list, when it is not there yet.
     /// The approved admission records are the list of nodes that may claim
     /// the network's key after a rotation; a member that joined before
@@ -775,6 +797,8 @@ impl NetworkChat {
         }
         let now = chrono::Utc::now().to_rfc3339();
         records.push(crate::network_lobby::AdmissionRecord {
+            account: None,
+            validator: false,
             node_id: node_id.to_string(),
             card: crate::network_lobby::LobbyCard {
                 hostname: hostname.to_string(),
@@ -1156,31 +1180,21 @@ impl Codec for NetworkChatCodec {
     type Request = ChatRequest;
     type Response = ChatResponse;
 
-    async fn read_request<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Request>
+    async fn read_request<T>(&mut self, io: &mut T) -> std::io::Result<Self::Request>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_msg(io).await
     }
 
-    async fn read_response<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Response>
+    async fn read_response<T>(&mut self, io: &mut T) -> std::io::Result<Self::Response>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_msg(io).await
     }
 
-    async fn write_request<T>(
-        &mut self,
-        io: &mut T,
-        request: Self::Request,
-    ) -> std::io::Result<()>
+    async fn write_request<T>(&mut self, io: &mut T, request: Self::Request) -> std::io::Result<()>
     where
         T: AsyncWrite + Unpin + Send,
     {
@@ -1198,7 +1212,6 @@ impl Codec for NetworkChatCodec {
         write_msg(io, &response).await
     }
 }
-
 
 #[cfg(test)]
 #[derive(Debug, Clone)]

@@ -297,12 +297,18 @@ fn parse_components(kind: &str, value: &Value) -> Vec<ServedComponent> {
 /// `RuntimeParams` name. The first two act on the hidden state the nodes carry
 /// between the stages of a model split across machines; `inference_role` is a
 /// whole-model machine's part in a prefill/decode split (`plugin_engine`), and
-/// `prefill_min_tokens` the split's threshold.
-const POM_SETTINGS: [&str; 4] = [
+/// `prefill_min_tokens` the split's threshold. `cache_types`, `batch` and
+/// `sampling` are groups of llama.cpp's default settings an engine takes: the
+/// deploy inspector draws them in the same Default settings card, and
+/// `engine.load` carries their values (`plugin_engine::load_params`).
+const POM_SETTINGS: [&str; 7] = [
     "prefill_max_inflight_chunks",
     "hidden_state_dtype",
     "inference_role",
     "prefill_min_tokens",
+    "cache_types",
+    "batch",
+    "sampling",
 ];
 
 fn parse_pom_settings(kind: &str, value: &Value) -> Vec<String> {
@@ -509,12 +515,22 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             settings: parse_settings(&entry["settings"]),
             draft_architectures: entry["draft_architectures"]
                 .as_array()
-                .map(|list| list.iter().filter_map(slug).take(MAX_ARCHITECTURES).collect())
+                .map(|list| {
+                    list.iter()
+                        .filter_map(slug)
+                        .take(MAX_ARCHITECTURES)
+                        .collect()
+                })
                 .unwrap_or_default(),
             stage_ranges: if stages {
                 entry["stage_ranges"]
                     .as_array()
-                    .map(|list| list.iter().filter_map(slug).take(MAX_ARCHITECTURES).collect())
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(slug)
+                            .take(MAX_ARCHITECTURES)
+                            .collect()
+                    })
                     .unwrap_or_default()
             } else {
                 Vec::new()
@@ -671,11 +687,33 @@ pub(crate) async fn plugin_peer_call(
     else {
         return refuse(StatusCode::FORBIDDEN, "the caller is not a live peer");
     };
+    // The metering ledger's node operations are answered by the node itself,
+    // whether or not it runs the plugin (`crate::metering::node_op`).
+    if crate::metering::is_node_op(&code, &op) {
+        let role = caller_role(&state, principal, &peer);
+        // A remote caller is never local, whatever its body says.
+        let mut params = params;
+        if let Some(object) = params.as_object_mut() {
+            object.remove("local");
+        }
+        return match crate::metering::node_op(&state, role, &op, &params).await {
+            Ok(reply) => axum::Json(reply).into_response(),
+            Err(error) => refuse(StatusCode::FORBIDDEN, &error),
+        };
+    }
     // Told apart from a failure below: the caller skips a node that does not
     // run the plugin, but a node that runs it and did not answer may hold the
     // data it asked for (the quota lookup, `backend/quota.rs`).
-    if !state.plugins.status(&code).await.is_some_and(|status| status.active) {
-        return refuse(StatusCode::NOT_FOUND, "the plugin does not run on this node");
+    if !state
+        .plugins
+        .status(&code)
+        .await
+        .is_some_and(|status| status.active)
+    {
+        return refuse(
+            StatusCode::NOT_FOUND,
+            "the plugin does not run on this node",
+        );
     }
     match state
         .plugins
@@ -714,7 +752,7 @@ mod tests {
              ]},
             {"id": "comfyui", "kind": "app", "name": "ComfyUI", "status": "ready"}
         ]});
-        let services = parse_services("comfyui", &answer);
+        let services = parse_services("imagestudio", &answer);
         assert_eq!(services[0].components.len(), 2);
         assert_eq!(services[0].components[0].component, "vae");
         assert_eq!(services[0].components[1].status, "loading");
@@ -898,27 +936,39 @@ mod tests {
             json!({"key": "odd", "label": "x", "type": "video"}),
             json!({"key": "pick", "label": "x", "type": "choice"}),
         ];
-        params.extend((0..30).map(|i| json!({"key": format!("k{i}"), "label": "K", "type": "boolean"})));
+        params.extend(
+            (0..30).map(|i| json!({"key": format!("k{i}"), "label": "K", "type": "boolean"})),
+        );
         let answer = json!({"services": [
             {"id": "comfyui-image", "kind": "image", "name": "ComfyUI", "status": "ready",
              "workflows": [{"id": "pub:typed", "name": "Typed", "description": "Paints a picture",
                             "inputs": ["prompt", "steps"], "params": params}]}
         ]});
-        let workflow = &parse_services("comfyui", &answer)[0].workflows[0];
+        let workflow = &parse_services("imagestudio", &answer)[0].workflows[0];
         assert_eq!(workflow.description.as_deref(), Some("Paints a picture"));
         assert_eq!(workflow.params.len(), MAX_PARAMS, "at most 24 parameters");
         let keys: Vec<_> = workflow.params.iter().map(|p| p.key.as_str()).collect();
-        assert_eq!(&keys[..4], ["prompt", "steps", "sampler", "k0"], "bad entries are dropped");
-        assert_eq!(workflow.params[0].description.as_deref(), Some("What to draw"));
+        assert_eq!(
+            &keys[..4],
+            ["prompt", "steps", "sampler", "k0"],
+            "bad entries are dropped"
+        );
+        assert_eq!(
+            workflow.params[0].description.as_deref(),
+            Some("What to draw")
+        );
         assert_eq!(workflow.params[1].kind, "integer");
-        assert_eq!((workflow.params[1].min, workflow.params[1].max), (Some(1.0), Some(50.0)));
+        assert_eq!(
+            (workflow.params[1].min, workflow.params[1].max),
+            (Some(1.0), Some(50.0))
+        );
         assert_eq!(workflow.params[2].options.as_ref().unwrap().len(), 2);
         assert_eq!(workflow.params[2].default, Some(json!("euler")));
         let older = json!({"services": [
             {"id": "comfyui-image", "kind": "image", "name": "ComfyUI", "status": "ready",
              "workflows": [{"id": "pub:old", "name": "Old", "inputs": ["prompt"]}]}
         ]});
-        let workflow = &parse_services("comfyui", &older)[0].workflows[0];
+        let workflow = &parse_services("imagestudio", &older)[0].workflows[0];
         assert!(workflow.params.is_empty() && workflow.description.is_none());
     }
 }

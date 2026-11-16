@@ -15,7 +15,8 @@ by the plugin code.
  "settings": [{"key", "type": "number|integer|boolean|select", "label": {"en","pt-BR"},
                "description": {"en","pt-BR"}, "min"?, "max"?, "options"?, "placement"?: "pom"}],
  "stages"?: true, "vision"?: true,
- "pom_settings"?: ["prefill_max_inflight_chunks", "hidden_state_dtype", "inference_role", "prefill_min_tokens"]}
+ "pom_settings"?: ["prefill_max_inflight_chunks", "hidden_state_dtype", "inference_role", "prefill_min_tokens",
+                  "cache_types", "batch", "sampling"]}
 ```
 
 The deploy screen offers the service only for a model whose architecture is
@@ -27,7 +28,7 @@ POM settings that apply to this engine's deployments.
 
 | Operation | Request | Answer |
 |---|---|---|
-| `engine.load` | `params`: `model_path` (abs), `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus` (NVIDIA indices), `gpu_devices` (`{index, vendor, ordinal, name, vram_total_mb}`), `settings`, optional `link`, `mmproj_path`, `session_dir`, `role`, `prefill_min_tokens`, `range` (`{start_layer, end_layer}`: a stage cut from the whole model, see below) | `{"status": "accepted"}` at once; the load runs on the plugin's thread. A refusal is an `Err` with the reason. |
+| `engine.load` | `params`: `model_path` (abs), `model_label`, `n_ctx`, `max_sessions`, `kv` (plugin names: `int8`, `q4_0`), `cache_type_k`/`cache_type_v` (llama.cpp names), `n_batch`, `n_ubatch`, `sampling` (temperature ... seed: the deployment's defaults), `gpus` (NVIDIA indices), `gpu_devices` (`{index, vendor, ordinal, name, vram_total_mb}`), `settings`, optional `link`, `mmproj_path`, `session_dir`, `role`, `prefill_min_tokens`, `range` (`{start_layer, end_layer}`: a stage cut from the whole model, see below) | `{"status": "accepted"}` at once; the load runs on the plugin's thread. A refusal is an `Err` with the reason. |
 | `engine.status` | - | `{state: idle|loading|ready|stopping|error, detail, n_ctx, ...}`. Read every 2 s. `ready` makes `/health` say `model_loaded`; `error`, or `idle` after serving, ends the generation and the supervisor restarts it within its budget. |
 | `engine.upstream` | - | `{"status": "ready", "port", "token"}` only while ready; `starting`; or `{"status": "error", "error"}` (an earlier stage answers error). |
 | `engine.link` | - | Stages only: `{"status": "ready", "port", "token"}` of an earlier stage's loopback link; the node hands it only to the next stage's machine. |
@@ -119,6 +120,29 @@ fetches and restores the session, and reads only the rest. Requires sessions.
   last layer). It loads only those layers, the embedding on the first stage
   and the head on the last; nothing is written to disk. Reference: Strata
   `--stage-layers`, `pom-plugin-strata` `apply_range`.
+
+## Which file a stage receives (`jobs_apply.rs::run_apply`)
+
+The node picks, in this order, what `model_path` points at for a stage:
+
+1. **The whole model with `range`** - the service lists the model's
+   architecture in `stage_ranges` and the source is a whole GGUF
+   (`plugin_cuts_range`). Nothing is written; the engine cuts the layers.
+2. **A virtual slice** - the node runs with `<SLUG>_VIRTUAL_SLICES=1`
+   (`plan::virtual_slices_enabled`): it writes a header-only GGUF under
+   `<project root>/virtual-slices/` (`splitter::write_virtual_slice`) with the
+   `pom.*` slice keys and `general.external_data.files`, `.tensor_files`,
+   `.tensor_offsets`, so every tensor is read from the whole model's file(s)
+   at an absolute offset. The node does **not** ask whether the plugin's
+   engine reads that header: a `stages` engine without the external data
+   loader fails to load it. An engine that cannot read it must list its
+   architectures in `stage_ranges`, or the node must run without the switch.
+3. **A real slice** written to disk (or found by `part_sha256`).
+
+For an engine derived from llama.cpp, path 2 costs one engine branch: the
+external tensor data loader of the POM's llama.cpp fork
+(`fork-analysis.md`). Path 1 is the one for engines with their own loader
+(Strata). Both announce `model/range-load-v1`, so no disk is charged.
 
 ## Health and placement the node derives
 

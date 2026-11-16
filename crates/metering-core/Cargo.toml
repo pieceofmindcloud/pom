@@ -1,0 +1,19 @@
+[package]
+name = "metering-core"
+version.workspace = true
+edition.workspace = true
+description = "GPU work metering: cycles, link chains, signed work receipts and bundles, Merkle proofs, TOPLOC, pay and payout. Shared by the node and the metering plugin."
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+brand = { path = "../brand" }
+
+[dev-dependencies]
+rand = "0.8"

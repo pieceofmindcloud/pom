@@ -26,7 +26,7 @@ How many machines the network has and how much graphics memory they add up to. A
 The models in service there, three at most in the row and the full list in the side panel.
 :::
 
-Clicking a row opens a panel on the right with the description, the rules and the roles the network accepts, and the actions: **Ask to join**, **Lobby** to talk to its administrators before asking, **Leave network** for a network you are in, and **More details** with every technical field.
+Clicking a row opens a panel on the right with the description, the rules and the roles the network accepts, and the actions: **Ask to join**, **Lobby** to talk to its administrators before asking, **Leave network** for a network you are in, and **More details** with every technical field. Asking to join as a worker, you can tick **Join as a validator**: the machine then re-runs sampled work to check the network's machines, is paid a small share, needs the model on its disk (a GPU is optional) and never serves inference. It reads the prompts and answers of the requests it checks.
 
 ## Toolbar
 

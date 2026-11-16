@@ -919,38 +919,91 @@ mod tests {
     #[test]
     fn node_overrides_apply_only_the_fields_they_set() {
         let base = params_with_ctx(8192);
-        let merged = NodeOverrides { n_ctx: Some(4096), offload_kqv: Some(false), ..Default::default() }.apply(&base);
+        let merged = NodeOverrides {
+            n_ctx: Some(4096),
+            offload_kqv: Some(false),
+            ..Default::default()
+        }
+        .apply(&base);
         assert_eq!(merged.n_ctx, 4096);
         assert!(!merged.offload_kqv);
-        assert_eq!(merged.max_sessions, base.max_sessions, "a field left out inherits the version's value");
+        assert_eq!(
+            merged.max_sessions, base.max_sessions,
+            "a field left out inherits the version's value"
+        );
         assert!(NodeOverrides::default().is_empty());
-        assert!(NodeOverrides { n_ctx: Some(0), ..Default::default() }.validate().is_err());
-        assert!(NodeOverrides { max_sessions: Some(0), ..Default::default() }.validate().is_err());
+        assert!(NodeOverrides {
+            n_ctx: Some(0),
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(NodeOverrides {
+            max_sessions: Some(0),
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]
     fn a_machine_override_edits_the_active_version_without_forking_it() {
-        let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1), no("n2", 32, 47, 1, 1)]);
-        d.set_node_overrides("n1", NodeOverrides { n_ctx: Some(2048), ..Default::default() }).unwrap();
-        assert_eq!(d.versions.len(), 1, "a change of overrides is not a new version");
+        let mut d = deployment(
+            "d-aaaaaaaa",
+            "m",
+            vec![no("n1", 0, 31, 0, 1), no("n2", 32, 47, 1, 1)],
+        );
+        d.set_node_overrides(
+            "n1",
+            NodeOverrides {
+                n_ctx: Some(2048),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            d.versions.len(),
+            1,
+            "a change of overrides is not a new version"
+        );
         assert_eq!(d.node_overrides("n1").n_ctx, Some(2048));
         assert!(d.node_overrides("n2").is_empty());
         // clearing removes them
-        d.set_node_overrides("n1", NodeOverrides::default()).unwrap();
+        d.set_node_overrides("n1", NodeOverrides::default())
+            .unwrap();
         assert!(d.node_overrides("n1").is_empty());
         // a machine that is not in the deployment is refused
-        assert!(d.set_node_overrides("ghost", NodeOverrides { n_ctx: Some(1), ..Default::default() }).is_err());
+        assert!(d
+            .set_node_overrides(
+                "ghost",
+                NodeOverrides {
+                    n_ctx: Some(1),
+                    ..Default::default()
+                }
+            )
+            .is_err());
     }
 
     #[test]
     fn a_new_version_keeps_the_overrides_of_the_machines_it_still_has() {
         let mut d = deployment("d-aaaaaaaa", "m", vec![no("n1", 0, 31, 0, 1)]);
-        d.set_node_overrides("n1", NodeOverrides { max_sessions: Some(4), ..Default::default() }).unwrap();
+        d.set_node_overrides(
+            "n1",
+            NodeOverrides {
+                max_sessions: Some(4),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let params = d.active().unwrap().params.clone();
         let nodes = vec![no("n1", 0, 31, 0, 1), no("n2", 0, 31, 0, 1)];
         let v = d.append_version(params, nodes, "operador");
         assert_eq!(v, 2);
-        assert_eq!(d.node_overrides("n1").max_sessions, Some(4), "the machine kept its override");
+        assert_eq!(
+            d.node_overrides("n1").max_sessions,
+            Some(4),
+            "the machine kept its override"
+        );
         assert!(d.node_overrides("n2").is_empty());
     }
 
@@ -1125,17 +1178,24 @@ mod node_overrides_tests {
 
     #[test]
     fn a_machine_whole_configuration_replaces_the_versions_for_that_machine_only() {
-        let version: crate::webui::RuntimeParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        let version: crate::webui::RuntimeParams =
+            serde_json::from_value(serde_json::json!({})).unwrap();
         let mut machine = version.clone();
         machine.n_ctx = 4096;
         machine.offload_kqv = false;
-        let overrides = NodeOverrides { params: Some(machine.clone()), ..Default::default() };
+        let overrides = NodeOverrides {
+            params: Some(machine.clone()),
+            ..Default::default()
+        };
         assert!(!overrides.is_empty());
         assert_eq!(overrides.apply(&version), machine);
         // the scalar fields still win over the machine's whole configuration
-        let scalar = NodeOverrides { params: Some(machine.clone()), n_ctx: Some(2048), ..Default::default() };
+        let scalar = NodeOverrides {
+            params: Some(machine.clone()),
+            n_ctx: Some(2048),
+            ..Default::default()
+        };
         assert_eq!(scalar.apply(&version).n_ctx, 2048);
         assert!(NodeOverrides::default().is_empty());
     }
 }
-

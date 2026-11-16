@@ -2102,10 +2102,7 @@ impl PluginRuntime {
         }
         // A query that times out (the plugin is busy) must not hide an installed plugin's menu: the last valid
         // manifest, kept in memory and in the database, stands in until the next answer.
-        let Some(value) = self
-            .query_audit("ui.manifest", serde_json::json!({}))
-            .await
-        else {
+        let Some(value) = self.query_audit("ui.manifest", serde_json::json!({})).await else {
             let raw = self.ui_manifest_raw.lock().await.clone()?;
             return crate::plugin_ui::PluginUiManifest::parse(&self.code, raw).ok();
         };
@@ -3881,6 +3878,8 @@ impl PluginManager {
         let runtime = self.runtime_for(code).ok_or_else(|| {
             LicenseClientError::new(LicenseErrorCode::ServerError, "unknown plugin")
         })?;
+        // Uninstalling a bundled plugin is the operator's choice: it is not put back.
+        self.note_bundled_uninstall(code).await;
         runtime.deactivate().await
     }
 
@@ -4104,6 +4103,188 @@ pub(crate) async fn list_plugin_events(
     .into_response()
 }
 
+/// Plugins every node keeps installed and up to date by itself, in the background:
+/// a new installation has no plugin, and searching and downloading models is the
+/// Hugging Face plugin's screen. `(plugin_code, public GitHub repository)`.
+pub(crate) const BUNDLED_PLUGINS: &[(&str, &str)] = &[(
+    "huggingface",
+    "https://github.com/pieceofmindcloud/pom-plugin-hugging-face",
+)];
+
+/// Local setting written when the operator uninstalls a bundled plugin: it is
+/// then never installed again by itself.
+const BUNDLED_DECLINED_PREFIX: &str = "plugin_bundled_declined:";
+
+/// What one pass of `ensure_bundled_plugin` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BundledOutcome {
+    /// The operator uninstalled it, or another source (license, local build,
+    /// another repository) holds that plugin code.
+    Skipped,
+    /// The newest release compatible with this node is installed already.
+    Current,
+    /// That release was installed now (first install or update).
+    Installed(String),
+}
+
+/// The newest release of a repository this node can install, by publication date.
+fn newest_compatible_release(
+    repository: &crate::plugin_github::GithubRepository,
+) -> Option<&crate::plugin_github::GithubRepositoryRelease> {
+    let mut releases: Vec<(usize, &crate::plugin_github::GithubRepositoryRelease)> = repository
+        .releases
+        .iter()
+        .filter(|release| release.available_for_node && !release.prerelease)
+        .enumerate()
+        .collect();
+    releases.sort_by(|(ia, a), (ib, b)| {
+        match (a.published_at.as_deref(), b.published_at.as_deref()) {
+            (Some(x), Some(y)) if x != y => y.cmp(x),
+            _ => ia.cmp(ib),
+        }
+    });
+    releases.first().map(|(_, release)| *release)
+}
+
+impl PluginManager {
+    fn bundled_declined(&self, code: &str) -> bool {
+        self.database
+            .as_ref()
+            .and_then(|db| db.local_setting_json(&format!("{BUNDLED_DECLINED_PREFIX}{code}")).ok())
+            .flatten()
+            .is_some()
+    }
+
+    /// Remembers that the operator uninstalled a bundled plugin installed from its
+    /// repository, so the background pass leaves it alone from then on.
+    async fn note_bundled_uninstall(&self, code: &str) {
+        let Some((_, url)) = BUNDLED_PLUGINS.iter().find(|(bundled, _)| *bundled == code) else {
+            return;
+        };
+        let Some(runtime) = self.runtime_for(code) else {
+            return;
+        };
+        let from_bundle = runtime
+            .public_install
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|installed| installed.repository_url.clone())
+            .is_some_and(|installed| same_repository(&installed, url));
+        if from_bundle {
+            if let Some(database) = &self.database {
+                if let Err(error) = database
+                    .save_local_setting(&format!("{BUNDLED_DECLINED_PREFIX}{code}"), &true)
+                {
+                    tracing::warn!(plugin_code = %code, %error, "could not remember the uninstall of a bundled plugin");
+                }
+            }
+        }
+    }
+
+    /// Installs a bundled plugin from its public GitHub repository, or updates it to
+    /// the newest release compatible with this node. Silent by design: nothing is
+    /// shown to the operator, and a failure only waits for the next pass.
+    pub(crate) async fn ensure_bundled_plugin(
+        &self,
+        code: &str,
+        repository_url: &str,
+    ) -> Result<BundledOutcome, LicenseClientError> {
+        if self.bundled_declined(code) {
+            return Ok(BundledOutcome::Skipped);
+        }
+        let installed_release = if let Some(runtime) = self.runtime_for(code) {
+            if runtime.persisted.lock().await.is_some()
+                || runtime.development_install.lock().await.is_some()
+            {
+                return Ok(BundledOutcome::Skipped);
+            }
+            match runtime.public_install.lock().await.as_ref() {
+                Some(installed) => {
+                    let ours = installed
+                        .repository_url
+                        .as_deref()
+                        .is_some_and(|url| same_repository(url, repository_url));
+                    if !ours {
+                        return Ok(BundledOutcome::Skipped);
+                    }
+                    Some(installed.installed_release_id.clone())
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let known = self
+            .github_repositories
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .find(|repository| same_repository(&repository.repository_url, repository_url))
+            .map(|repository| repository.id.clone());
+        let repository = match known {
+            Some(id) => self.refresh_github_repository(&id).await?,
+            None => self.add_github_repository(repository_url).await?,
+        };
+        if repository.manifest.plugin_code != code {
+            return Err(update_unavailable(
+                "the bundled repository publishes another plugin code",
+            ));
+        }
+        let Some(newest) = newest_compatible_release(&repository) else {
+            return Err(update_unavailable(
+                "the bundled repository has no release for this platform",
+            ));
+        };
+        if installed_release.as_deref() == Some(newest.release_id.as_str()) {
+            return Ok(BundledOutcome::Current);
+        }
+        let release_id = newest.release_id.clone();
+        self.install_github_repository_release(&repository.id, &release_id)
+            .await?;
+        Ok(BundledOutcome::Installed(release_id))
+    }
+}
+
+/// Two GitHub repository URLs name the same repository (case, `.git` and a
+/// trailing slash aside).
+fn same_repository(a: &str, b: &str) -> bool {
+    let normalize = |url: &str| {
+        url.trim()
+            .trim_end_matches('/')
+            .trim_end_matches(".git")
+            .to_ascii_lowercase()
+    };
+    normalize(a) == normalize(b)
+}
+
+/// Keeps the bundled plugins installed and current, in the background: a first
+/// pass shortly after start, then every six hours. Nothing reaches the screen.
+pub(crate) fn spawn_bundled_plugins(state: crate::gateway::GatewayState) {
+    const FIRST: std::time::Duration = std::time::Duration::from_secs(20);
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+    const RETRY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+    tokio::spawn(async move {
+        tokio::time::sleep(FIRST).await;
+        loop {
+            let mut failed = false;
+            for (code, url) in BUNDLED_PLUGINS {
+                match state.plugins.ensure_bundled_plugin(code, url).await {
+                    Ok(BundledOutcome::Installed(release)) => {
+                        tracing::info!(plugin_code = %code, %release, "bundled plugin installed or updated");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        failed = true;
+                        tracing::warn!(plugin_code = %code, %error, "bundled plugin not installed; retrying later");
+                    }
+                }
+            }
+            tokio::time::sleep(if failed { RETRY } else { EVERY }).await;
+        }
+    });
+}
+
 pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
     const REFRESH: std::time::Duration = std::time::Duration::from_secs(600);
     const RETRY: std::time::Duration = std::time::Duration::from_secs(30);
@@ -4113,7 +4294,8 @@ pub(crate) fn spawn_host_context(state: crate::gateway::GatewayState) {
                 Ok(()) => {
                     // The image components this node serves, again: after a
                     // restart, or a plugin closed and reopened since.
-                    let call = crate::components::live_plugins(std::sync::Arc::clone(&state.plugins));
+                    let call =
+                        crate::components::live_plugins(std::sync::Arc::clone(&state.plugins));
                     crate::components::restore(&state.database, &call).await;
                     REFRESH
                 }
@@ -4745,15 +4927,18 @@ pub(crate) struct PluginCatalogQuery {
     q: Option<String>,
     page: Option<u32>,
     per_page: Option<u32>,
+    /// Comma-separated plugin codes the store leaves out of the page and its total.
+    exclude: Option<String>,
 }
 
 /// Largest store answer passed on to the browser.
 const PLUGIN_CATALOG_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// The store URL for a listing, or `None` when the query is out of bounds.
-/// Only these three parameters are passed on.
+/// Only these four parameters are passed on.
 fn plugin_catalog_url(base: &str, query: &PluginCatalogQuery) -> Option<String> {
-    let mut url = reqwest::Url::parse(&format!("{}/v1/plugins", base.trim_end_matches('/'))).ok()?;
+    let mut url =
+        reqwest::Url::parse(&format!("{}/v1/plugins", base.trim_end_matches('/'))).ok()?;
     {
         let mut pairs = url.query_pairs_mut();
         if let Some(q) = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
@@ -4773,6 +4958,20 @@ fn plugin_catalog_url(base: &str, query: &PluginCatalogQuery) -> Option<String> 
                 return None;
             }
             pairs.append_pair("per_page", &per_page.to_string());
+        }
+        if let Some(exclude) = query.exclude.as_deref().filter(|e| !e.is_empty()) {
+            let codes: Vec<&str> = exclude.split(',').collect();
+            let valid_code = |code: &str| {
+                (2..=64).contains(&code.len())
+                    && code.starts_with(|c: char| c.is_ascii_lowercase())
+                    && code
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            };
+            if codes.len() > 20 || !codes.iter().all(|code| valid_code(code)) {
+                return None;
+            }
+            pairs.append_pair("exclude", exclude);
         }
     }
     let url = url.to_string();
@@ -5403,6 +5602,55 @@ mod tests {
     }
 
     #[test]
+    fn a_bundled_plugin_takes_the_newest_release_this_node_can_install() {
+        let release = |id: &str, published: &str, available: bool, prerelease: bool| {
+            crate::plugin_github::GithubRepositoryRelease {
+                release_id: id.into(),
+                tag_name: id.into(),
+                name: None,
+                changelog: None,
+                published_at: Some(published.into()),
+                prerelease,
+                asset_name: None,
+                asset_size: None,
+                available_for_node: available,
+            }
+        };
+        let repository = crate::plugin_github::GithubRepository {
+            id: "r".into(),
+            repository_url: "https://github.com/o/p".into(),
+            manifest_path: "release/manifest.json".into(),
+            manifest: serde_json::from_value(serde_json::json!({
+                "schema": 1, "plugin_code": "huggingface", "display_name": "Hugging Face", "plugin_abi": 1, "feature_set": [], "artifacts": {}
+            }))
+            .unwrap(),
+            ui_manifest: None,
+            releases: vec![
+                release("old", "2026-01-01T00:00:00Z", true, false),
+                release("other-os", "2026-03-01T00:00:00Z", false, false),
+                release("beta", "2026-04-01T00:00:00Z", true, true),
+                release("new", "2026-02-01T00:00:00Z", true, false),
+            ],
+            description: Default::default(),
+            screenshot_urls: vec![],
+            checked_at: String::new(),
+            check_error: None,
+        };
+        assert_eq!(
+            super::newest_compatible_release(&repository).map(|r| r.release_id.as_str()),
+            Some("new")
+        );
+        assert!(super::same_repository(
+            "https://github.com/PieceOfMindCloud/pom-plugin-hugging-face.git/",
+            "https://github.com/pieceofmindcloud/pom-plugin-hugging-face"
+        ));
+        assert!(!super::same_repository(
+            "https://github.com/someone/pom-plugin-hugging-face",
+            "https://github.com/pieceofmindcloud/pom-plugin-hugging-face"
+        ));
+    }
+
+    #[test]
     fn the_catalog_relay_passes_on_only_a_bounded_query() {
         let base = "https://license.example/";
         let url = |q: Option<&str>, page, per_page| {
@@ -5412,6 +5660,7 @@ mod tests {
                     q: q.map(str::to_owned),
                     page,
                     per_page,
+                    exclude: None,
                 },
             )
         };
@@ -5426,6 +5675,22 @@ mod tests {
         assert!(url(Some(&"x".repeat(201)), None, None).is_none());
         assert!(url(None, Some(0), None).is_none());
         assert!(url(None, None, Some(101)).is_none());
+        let excluding = |exclude: &str| {
+            plugin_catalog_url(
+                base,
+                &PluginCatalogQuery {
+                    exclude: Some(exclude.to_owned()),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(
+            excluding("base,pom_x2").as_deref(),
+            Some("https://license.example/v1/plugins?exclude=base%2Cpom_x2")
+        );
+        assert!(excluding("Base").is_none());
+        assert!(excluding("base,../admin").is_none());
+        assert!(excluding(&vec!["ab"; 21].join(",")).is_none());
         assert_eq!(
             plugin_catalog_entry_url(base, "pom-plugin_base2").as_deref(),
             Some("https://license.example/v1/plugins/pom-plugin_base2")
@@ -7001,7 +7266,10 @@ mod tests {
     fn host_context_carries_the_model_dirs() {
         let dirs = vec!["/models/a".to_owned(), "/models/b".to_owned()];
         let context = host_context_payload(8080, "sk-test", "/data/workspace", &dirs);
-        assert_eq!(context["model_dirs"], serde_json::json!(["/models/a", "/models/b"]));
+        assert_eq!(
+            context["model_dirs"],
+            serde_json::json!(["/models/a", "/models/b"])
+        );
     }
 
     #[test]

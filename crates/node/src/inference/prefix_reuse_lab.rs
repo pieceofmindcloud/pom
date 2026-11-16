@@ -732,7 +732,10 @@ async fn fake_slot(State(hop): State<Hop>, Json(req): Json<Value>) -> Response {
             Json(json!({"bin_bytes": bytes})).into_response()
         }
         Some("restore") => {
-            let dest = req["dest_session_id"].as_str().unwrap_or_default().to_string();
+            let dest = req["dest_session_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
             let Some(saved) = engine.slots.get(&name).cloned() else {
                 return (StatusCode::NOT_FOUND, "unknown slot").into_response();
             };
@@ -1327,8 +1330,10 @@ async fn unknown_session_during_prefill_is_recovered() {
 #[tokio::test]
 async fn unknown_session_recovery_is_bounded() {
     for transport in Transport::all() {
+        // A loop never ends; a generous bound keeps a debug build under a
+        // loaded parallel run (five seconds for three transports was not) from failing.
         let measurement = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(30),
             conversation_with_hops_fault(transport, 1, true, 2, Some((1, 1, usize::MAX))),
         )
         .await
@@ -1369,8 +1374,10 @@ async fn unknown_session_recovery_is_bounded() {
 #[tokio::test]
 async fn mid_prefill_transport_failure_does_not_corrupt_recurrent_session() {
     for transport in Transport::all() {
+        // A loop never ends; a generous bound keeps a debug build under a
+        // loaded parallel run (five seconds for three transports was not) from failing.
         let measurement = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(30),
             conversation_with_hops_transport_fault(transport, 1, true, 2, Some((1, 1, 2))),
         )
         .await
@@ -1519,8 +1526,9 @@ async fn a_new_conversation_starts_from_the_system_part_the_last_one_pinned() {
     let _scheme_lock = crate::peer_client::GLOBAL_POLICY.lock();
     crate::peer_client::set_tls_enabled(false);
 
-    let engines: Vec<Arc<Mutex<Engine>>> =
-        (0..2).map(|_| Arc::new(Mutex::new(Engine::default()))).collect();
+    let engines: Vec<Arc<Mutex<Engine>>> = (0..2)
+        .map(|_| Arc::new(Mutex::new(Engine::default())))
+        .collect();
     let mut peers = Vec::new();
     for (i, engine) in engines.iter().enumerate() {
         let url = spawn_hop(Hop {
@@ -1531,7 +1539,8 @@ async fn a_new_conversation_starts_from_the_system_part_the_last_one_pinned() {
         })
         .await;
         let port: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
-        let mut p = crate::gateway::testkit::peer(&format!("hop{i}"), &format!("m{i}"), 9000 + i as u16);
+        let mut p =
+            crate::gateway::testkit::peer(&format!("hop{i}"), &format!("m{i}"), 9000 + i as u16);
         p.addr = "127.0.0.1:42777".into();
         p.inference_port = Some(port);
         p.model = "lab".into();
@@ -1557,7 +1566,10 @@ async fn a_new_conversation_starts_from_the_system_part_the_last_one_pinned() {
     let system: String = (0..600).map(|i| format!("instruction{i:05} ")).collect();
     let mut reprocessed = Vec::new();
     let mut cached = Vec::new();
-    for question in ["first conversation asks this", "second conversation asks that"] {
+    for question in [
+        "first conversation asks this",
+        "second conversation asks that",
+    ] {
         let history = vec![msg("system", &system), msg("user", question)];
         let prompt = crate::openai::render_prompt(&history, &[]);
         let cache_key = crate::openai::conversation_cache_key(&history, &[]);
@@ -1615,9 +1627,14 @@ async fn a_new_conversation_starts_from_the_system_part_the_last_one_pinned() {
     eprintln!("reprocessed={reprocessed:?} cached={cached:?} system={system_tokens}");
     // The first conversation reads the system part once (alone, then its question on top).
     assert!(reprocessed[0] >= system_tokens && reprocessed[0] < system_tokens * 2);
-    assert!(cached[0] >= system_tokens - 2, "the request continued the system part's session");
+    assert!(
+        cached[0] >= system_tokens - 2,
+        "the request continued the system part's session"
+    );
     // The second restores it on every hop and reads only its question.
-    assert!(engines.iter().all(|engine| engine.lock().unwrap().restores == 1));
+    assert!(engines
+        .iter()
+        .all(|engine| engine.lock().unwrap().restores == 1));
     assert!(reprocessed[1] < 32, "reprocessed {}", reprocessed[1]);
     assert!(cached[1] >= system_tokens - 2);
     let _ = std::fs::remove_dir_all(&dir);

@@ -214,6 +214,9 @@ Per-file list:
   Description and rules are edited as plain Markdown text with no live
   preview, and the channels in one line; the read-only view renders them with
   the Markdown renderer the Chat uses.
+  Below the information panel, `../components/MeteringPanel` switches GPU
+  work metering at run time (principal only, read-only for others, hidden on a
+  visitor).
 - `Plugins.tsx` - `/plugins` combines the public catalog, read by the node
   (`/api/ui/plugin-catalog`), with local state from
   `GET /api/ui/plugins`, using `code` as the identity. The public client lives
@@ -244,13 +247,16 @@ Per-file list:
   catalog, GitHub repository and local state for the same code share one card.
   The screen has two tabs, on the right side of the title bar
   (`FullBleedHeader` `actions`). "Plugins" searches and pages the store on the
-  license server (`GET /v1/plugins?q=&page=&per_page=10`, featured and POM-team
+  license server (`GET /v1/plugins?q=&page=&per_page=<PAGE_SIZE>&exclude=base`, Previous / Next above and below the list, featured and POM-team
   plugins first; the full unpaged catalog is still read to decide whether the
   license form shows and to name the plugins a key granted). Plugins known only
   to this node (a registered repository, an active plugin outside the store or,
-  in development mode, a mounted source) are appended to the first page and
-  filtered by the same search text. The example plugin (`base`) is left out of
-  this list. Its right column is license activation and the "Add from GitHub"
+  in development mode, a mounted source) are a separate "On this machine" list below
+  the pagination (`plugins-local`), filtered by the same search text, so they never
+  skew a page. The example plugin (`base`) is left out by the store itself
+  (`exclude`, so the page and the total count only what is listed; an older store
+  that ignores it is still filtered here) and lives in the Develop tab; a visitor,
+  with no Develop tab, gets it in the list. Its right column is license activation and the "Add from GitHub"
   card (public repository URL), plus a development notice only when the source
   mount is missing, empty or unreadable. The header's "Check for updates" asks
   every installed plugin (a GitHub install refreshes its repository, a licensed
@@ -321,6 +327,13 @@ Per-file list:
   not answered (`pending`) it keeps loading instead of "no budget". The query
   is `useMyQuota` (`lib/queries.ts`), shared with `components/UsageButton.tsx`. The admins' side is the logs plugin's Quota
   screen.
+
+- `Payments.tsx` - "Payments" (`/config/payments`, admin): charging on or
+  off, prices per model, the visitor networks' accounts with their visitors,
+  grants, credit requests (approve/decline) and the ledger, from
+  `/api/ui/payments*`. `MyCredit.tsx` - "Credit" (`/config/credit`, visitor):
+  its home network's balance where it visits, the prices, what this machine
+  spent and a credit request. See `docs/subsystems/payments.md`.
 
 ## Chat
 - `Chat.tsx` - The chat: `POST /v1/chat/completions` with `stream: true`,

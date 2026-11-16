@@ -812,6 +812,9 @@ pub struct GenerateResponse {
     #[serde(skip_serializing_if = "is_false")]
     pub partial: bool,
     pub trace: Option<crate::prefill::RequestTrace>,
+    /// What a visitor's charged request cost (see `GenSummary::payment`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment: Option<serde_json::Value>,
 }
 
 pub(super) fn is_false(value: &bool) -> bool {
@@ -930,7 +933,10 @@ pub(crate) enum SharedPrefix {
     None,
     /// The system part ends `prompt_bytes` into the rendered prompt and
     /// `key_bytes` into the prefix cache key.
-    Offer { prompt_bytes: usize, key_bytes: usize },
+    Offer {
+        prompt_bytes: usize,
+        key_bytes: usize,
+    },
     /// This request is a system part read on its own: its KV is pinned on
     /// disk before the request it opens goes on.
     Build,
@@ -1001,6 +1007,14 @@ pub struct GenSummary {
     pub legs: u32,
     /// Detailed per-request observations. It never affects planning.
     pub trace: Option<crate::prefill::RequestTrace>,
+    /// What a visitor's charged request cost (`{account, charged_micro,
+    /// balance_micro}`), set at the settlement (`crate::delegation::settle`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment: Option<serde_json::Value>,
+    /// The metering bundle of the request and its cycle, when metered: the
+    /// settlement names it so income lines up with payouts.
+    #[serde(skip)]
+    pub metering_bundle: Option<(String, u64)>,
 }
 
 /// Performance summary of a request, aggregated over the whole pipeline.
@@ -1254,6 +1268,8 @@ pub(super) fn summary_for(
     timings.client_ttft_ms = trace.client_ttft_ms;
     trace.refresh_telemetry(total_ms);
     GenSummary {
+        payment: None,
+        metering_bundle: None,
         source: format!(
             "pipeline:{}{}",
             plan.hop_chain(),

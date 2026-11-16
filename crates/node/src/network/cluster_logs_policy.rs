@@ -225,12 +225,24 @@ mod tests {
     #[tokio::test]
     async fn probe_from_secondary_retries_a_ghost_gateway_candidate() {
         let principal = std::sync::Arc::new(
-            crate::network::Network::testkit(PRINCIPAL.into(), "principal-authority".into(), vec![], None, None)
+            crate::network::Network::testkit(
+                PRINCIPAL.into(),
+                "principal-authority".into(),
+                vec![],
+                None,
+                None,
+            )
             .await
             .unwrap(),
         );
         principal.set_cluster_logs_enabled(true);
-        let secondary = crate::network::Network::testkit("secondary-1".into(), "secondary-authority".into(), vec![], None, None)
+        let secondary = crate::network::Network::testkit(
+            "secondary-1".into(),
+            "secondary-authority".into(),
+            vec![],
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -273,6 +285,7 @@ mod tests {
                 addr_candidates: vec![format!("127.0.0.1:{gateway_port}")],
                 model: "model".into(),
                 deploy_id: String::new(),
+                deployment_name: String::new(),
                 start_layer: 0,
                 end_layer: 1,
                 total_layers: 2,

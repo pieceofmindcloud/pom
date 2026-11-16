@@ -11,7 +11,7 @@ order: 10
 O Painel é a primeira tela do administrador: mostra se o modelo em serviço está completo, quais máquinas o carregam, quão rápido cada uma responde e como uma pergunta vai do gateway pelas máquinas e volta.
 :::
 
-![O Painel de uma rede com três máquinas servindo um modelo, na visão Fluxo, com as propriedades da implantação à direita.](../images/pt-BR/dashboard.webp)
+![O Painel de uma rede com uma máquina servindo um modelo e o gateway fechando o ciclo, na visão Fluxo, com as propriedades da implantação à direita.](../images/pt-BR/dashboard.webp)
 
 ## A barra do topo
 
@@ -48,7 +48,7 @@ Um modelo de imagem escolhido no seletor de modelo (marcado com um ícone de ima
 
 :::steps
 ### Escolher o modelo na tela
-O chip do modelo no topo do mapa escolhe qual implantação é desenhada. Adicionar, Desimplantar e o painel de propriedades seguem esse modelo.
+Arraste o fundo pontilhado para levar o mapa a qualquer lugar, além de qualquer borda, e solte onde ele fica melhor de ver; um cartão também vai para onde você o soltar; a roda do mouse ou a pinça do trackpad dá zoom em volta do ponteiro, como no mapa do Deploy. O chip do modelo no topo do mapa escolhe qual implantação é desenhada. Adicionar, Desimplantar e o painel de propriedades seguem esse modelo.
 ### Adicionar uma máquina
 **Adicionar** coloca mais uma máquina na implantação; o diálogo lista o que a máquina escolhida já tem no disco. Quando a máquina tem um projetor de visão para o modelo, uma chave permite que ela leia imagens; ela já vem ligada quando a implantação já lê.
 ### Desimplantar

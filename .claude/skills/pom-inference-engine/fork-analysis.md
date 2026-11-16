@@ -30,6 +30,7 @@ rebase. The engine is linked in process: `pom-plugin-llama.cpp` builds
 | GPU cache for host-resident experts | `6b99580c2` `d5926811e` | Port of upstream PRs #29887 and #29030 (`--moe-cache-mib`, lazy-row reads), extended to one cache per GPU. |
 | External MTP draft | `1b9c07a81` `7af965b84` | `qwen4exp` exports `h_nextn` for an outside draft head and loads a nextn-only draft file (shared MTP module) with its own `DECODER_MTP` graph. |
 | External tensor data (branch `pom-external-data`) | `bd4b9586a` | The loader reads `general.external_data.files`, `.tensor_files` and `.tensor_offsets` from a GGUF header and maps each listed tensor from another file at an absolute offset. It lets a header-only "virtual slice" serve a layer range of the whole model without copying weights (POM's `write_virtual_slice`, `POM_VIRTUAL_SLICES=1`). Now on `pom`. |
+| Virtual slice reads for MoE experts, range-only prefetch | `pom-plugin-llama.cpp` `e5be176` `6fc1520` | The in-process MoE path reads experts through the virtual slice's external data and prefetches only the range's bytes, not the whole file. |
 | Parallel constrained decisions | `5ddafd2d3` `ef5b9bfa4` `5b1f9f9c5` | `/v1/decision` and `llama-parallel-decision`: every allowed value of a finite schema scored in branch sequences forked from one cached context (the POM's typed decisions). Contributed from another fork and merged. |
 
 ### Characteristics
@@ -109,6 +110,7 @@ downloads.
 | Vision through the deployment's projector (`mmproj_path`, `images`) | `8a7b811` `4287149` |
 | Release to GitHub and the license server | `bb3987c` |
 | Prefill/decode split (`role`, `prefill_only`, `decode_holds`, `session_source`) | `a32eba5` ... `aa7956c` |
+| A range of the whole model as one stage: `range` in `engine.load`, `stage_ranges`, the range applied again after packing (Strata `a1cfbbb4`, `5540f121` `pack_gguf --layers`, branch `pom-whole-range`) | `0c080be` `b77c6b1` `b17a4ab` |
 
 ### Characteristics
 
@@ -138,6 +140,27 @@ downloads.
 | The KV cache format is a deployment setting, the same on every machine | `d15fbdf` |
 | Prefill turns: no thinking budget, two tokens, session kept after the generator ends | `ce57ba0` `356ebf6` `765eb1b` |
 
+## 3b. Avalon fork (`pom` vs upstream `main`) and pom-plugin-avalon
+
+Avalon is a llama.cpp fork tuned for one model (`qwen4exp`, experts in RAM
+with a GPU expert cache, its own in-process two-GPU pipeline). Its `pom`
+branch carries three neutral branches:
+
+| Branch | What it adds |
+|---|---|
+| `feature/external-tensor-data` | The POM llama.cpp fork's external tensor data loader and range-only prefetch (cherry-picks), so a header-only virtual slice loads. Avalon already had the packed-expert `llama_tensor_weight` constructor; the merge kept its version. |
+| `feature/hidden-state-input` | The explicit input row width and the qwen4exp wide residual fixes (cherry-picks), ported onto Avalon's `stage_first` graph code. |
+| `feature/stage-link` | A model split by layers across processes, per decode: `llama_set_input_rows_cb` replaces a token batch's embeddings with the earlier stage's rows, `llama_set_memory_op_cb` mirrors `seq_rm`/`cp`/`keep`/`add`/`div` there; `common/stage-link` frames (`H`, `P`, `W`, `M`, `Q`, the POM envelope); `llama-stage-server --stage-serve` for earlier stages, `--stage-prev` on any context (so `llama-server` is unchanged as the last stage and a middle stage is a stage server with both). The earlier stage reads its rows with `llama_set_embeddings_nextn` (unmasked). |
+
+The plugin runs `llama-server` (whole model and last stage) or
+`llama-stage-server` (earlier stages) as children, declares `pom_settings`
+`cache_types`, `batch`, `sampling` (llama.cpp's Default settings card on the
+deploy screen), keeps conversation sessions with llama-server's slot
+save/restore (`id_slot` per conversation, whole sessions, no delta), and
+answers typed decisions from the first token's `top_logprobs`. A Strata pack
+(`GSQ-RCO`, `Q2_0` experts) does not run on Avalon: its hosted MoE kernel
+aborts; the plugin names that abort in the status.
+
 ## 4. What a new engine needs, derived
 
 | Need | From | Lives in |
@@ -151,6 +174,7 @@ downloads.
 | Conversation sessions: save/restore, delta, by slot | Strata sessions commits | engine fork (feature branch) + bridge routes |
 | Typed decisions: label distribution of the first token | llama.cpp `/v1/decision`, Strata `PROBE` | engine fork + bridge `probe` |
 | Images through a projector | plugin `8a7b811` | engine + bridge `images` |
+| Serve a range with no slice on disk: read the virtual slice header, or cut the range itself | llama.cpp `bd4b9586a`, Strata `a1cfbbb4` | engine fork (feature branch) + `stage_ranges` |
 | Run a layer slice of a POM-sliced GGUF, exchange hidden states | llama.cpp `05efc320b`, Strata `dc94b4b9` | engine fork + plugin `engine.link` |
 | Build with no shared library the node image lacks, pinned commit | both | plugin `scripts/build-runtime.sh`, `engine.lock` |
 | Robust on the operator's GPUs (compiler bugs, OOM retry) | llama.cpp fixes | engine fork (fix branches) |

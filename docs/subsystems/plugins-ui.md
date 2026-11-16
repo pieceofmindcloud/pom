@@ -561,7 +561,11 @@ Deploy screen), `deploy_block` checks each machine with
 (`plugin_cuts_range` in `webui/jobs_apply.rs`) and `engine.load` carries
 `range: {start_layer, end_layer}` whenever a stage's file is the whole model
 (`load_params`). Strata publishes `["qwen4exp"]` on its `pom-whole-range`
-branch. A service whose engine takes a
+branch. A service that runs slices and names no `stage_ranges` (Avalon) also
+takes a whole model split in ranges (`plugin_engine::serves_whole_ranges`,
+`serviceCutsRanges`): the apply cuts each machine's range from its own whole
+file, a header-only virtual slice when the node opts in, a real slice
+otherwise, and the engine loads that slice. A service whose engine takes a
 drafter file from the deployment names the model architectures in
 `draft_architectures`: the Deploy screen then offers the compatible files
 (`serviceTakesDraft`), the plan resolves the choice on the stage with the last
@@ -570,8 +574,11 @@ layer, and `engine.load` receives it as `mtp_draft_path`. Strata names
 uses the drafts it finds itself. The service lists in `pom_settings`
 the POM deployment settings that
 apply to it, by their `RuntimeParams` name: `prefill_max_inflight_chunks`,
-`hidden_state_dtype` and `inference_role` are the known ones, any other name is
-dropped. The deploy inspector draws only the declared ones, in their own card
+`hidden_state_dtype`, `inference_role` and `prefill_min_tokens` are the known
+ones, plus three groups of llama.cpp's defaults the engine takes:
+`cache_types`, `batch` and `sampling` (the inspector draws them in the Default
+settings card; `engine.load` always carries their values, see below). Any other
+name is dropped. The deploy inspector draws only the declared ones, in their own card
 (the first two when the slices cross machines, `inference_role` when the model
 runs whole on one machine; see `inference.md`, "Prefill/decode split"). Such a
 plugin implements four operations the node calls through its own local host,
@@ -607,7 +614,7 @@ plugin, so a plugin only ever speaks as itself.
 | `POST /api/plugin-host/catalog/refresh` | `{ok: true}` after asking the node to rescan its catalog, so a file the plugin just wrote reaches the screens and the deploy survey |
 | `GET /api/plugin-host/components` | `{components: [{deploy_id, name, component, files, status, node_id, hostname, plugin_code}]}`: the image model components served on the network now |
 | `POST /api/plugin-host/component/:deploy_id/:component/:op` | runs an op of a network component on the machine that serves it and answers its status and body unchanged; the body is opaque, at most 64 MiB (413 above); 404 when no machine serves it, 502 naming the machine when it does not answer, 400 for an op that is not a short lowercase word. An optional `x-pom-job` header names the ComfyUI generation the call belongs to |
-| `POST /api/plugin-host/image-job/begin` | `{job_id, prompt, model, details}`: a ComfyUI generation that uses network components starts (`job_id` is ComfyUI's prompt id). The image budget is checked first (`quota.check` with `images`); a refusal is 429 `{error, retry_after_secs}`, recorded as a refused request. Otherwise one audit record opens (route `/comfyui/image`, caller `plugin:<code>` labelled ComfyUI on this node, `request_details.kind = "image"`); the same id again is a no-op. Component calls carrying `x-pom-job` add to its telemetry |
+| `POST /api/plugin-host/image-job/begin` | `{job_id, prompt, model, details}`: a ComfyUI generation that uses network components starts (`job_id` is ComfyUI's prompt id). The image budget is checked first (`quota.check` with `images`); a refusal is 429 `{error, retry_after_secs}`, recorded as a refused request. Otherwise one audit record opens (route `/imagestudio/image`, caller `plugin:<code>` labelled ComfyUI on this node, `request_details.kind = "image"`); the same id again is a no-op. Component calls carrying `x-pom-job` add to its telemetry |
 | `POST /api/plugin-host/image-job/complete` | `{job_id, status: ok|error|interrupted, error?, images, width?, height?, steps?}` closes the record with `telemetry {kind: "image", images, width, height, steps, components: [{component, deploy_id, name, node_id, hostname, calls, ms, bytes_in, bytes_out}], total_ms}`, the serving hostnames as `hops` and `source` `components:<hosts>`; 404 for an unknown id. A generation left open 30 minutes is closed `incomplete` |
 | `GET /api/plugin-host/image-deployments` | the deploy screen's `{deployments: [{deploy_id, name, created_at, components: [{component, node_id, hostname, path, status}]}]}`. This and the next three answer only on a `principal` or `admin` node (403 `{error: "only an admin node deploys"}` otherwise) and act with the node's own authority, as the screen's routes do: ComfyUI's admin-only "Deploy on POM" dialog uses them |
 | `GET /api/plugin-host/image-files` | `{machines: [{node_id, hostname, image_files: [{path, name, category}], has_image_service}]}`: the network's image files per machine, so a dialog offers only machines that hold a file |

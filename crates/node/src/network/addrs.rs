@@ -200,12 +200,59 @@ pub fn local_addrs() -> Vec<LocalAddr> {
     }
     #[cfg(target_os = "linux")]
     {
-        parse_ip_addr(&run("ip", &["-o", "addr"]))
+        // `ip` also says which IPv6 is temporary or deprecated; without the
+        // program (a container without `iproute2`) the system call still lists
+        // the addresses, without those flags.
+        let found = parse_ip_addr(&run("ip", &["-o", "addr"]));
+        if found.is_empty() {
+            interface_addrs()
+        } else {
+            found
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Vec::new()
     }
+}
+
+/// The interfaces' addresses through `getifaddrs(3)`, for a Linux without `ip`.
+#[cfg(target_os = "linux")]
+fn interface_addrs() -> Vec<LocalAddr> {
+    let mut out = Vec::new();
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: `getifaddrs` fills `head` with a list we only read and then free
+    // with `freeifaddrs`; every pointer is checked for null before use.
+    unsafe {
+        if libc::getifaddrs(&mut head) != 0 {
+            return out;
+        }
+        let mut entry = head;
+        while !entry.is_null() {
+            let current = &*entry;
+            entry = current.ifa_next;
+            if current.ifa_addr.is_null() {
+                continue;
+            }
+            let interface = (!current.ifa_name.is_null()).then(|| {
+                std::ffi::CStr::from_ptr(current.ifa_name).to_string_lossy().into_owned()
+            });
+            let ip = match i32::from((*current.ifa_addr).sa_family) {
+                libc::AF_INET => {
+                    let addr = &*(current.ifa_addr as *const libc::sockaddr_in);
+                    std::net::Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr)).to_string()
+                }
+                libc::AF_INET6 => {
+                    let addr = &*(current.ifa_addr as *const libc::sockaddr_in6);
+                    std::net::Ipv6Addr::from(addr.sin6_addr.s6_addr).to_string()
+                }
+                _ => continue,
+            };
+            out.push(LocalAddr { ip, interface, deprecated: false, temporary: false });
+        }
+        libc::freeifaddrs(head);
+    }
+    out
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -534,7 +581,7 @@ mod tests {
         let found = filter_candidates(local_addrs(), None);
         // Without this line the test would pass vacuously on a machine where the
         // enumeration did not work, which is exactly what it should catch.
-        assert!(!found.is_empty(), "the enumeration found no address at all");
+        assert!(!found.is_empty(), "the enumeration found no address at all: {:?}", local_addrs());
         assert!(found.len() <= 4, "cap of 2 per family: {found:?}");
         for ip in found {
             assert!(!disposable(&ip), "{ip} should not have passed");

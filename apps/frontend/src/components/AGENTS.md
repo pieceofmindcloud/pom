@@ -194,7 +194,8 @@ Per-file list:
   at the end of the `Topbar` and renders only inside the macOS app.
 ## App chrome
 
-- `nav.ts` - `NAV`: the menu as data. Deploy (`nav.deployments`) is a single entry to
+- `LogsTabs.tsx` - the Logs entry opens the logs plugin's request logs (`/logs`) with the deployment logs (`/deployments/logs`) as a tab beside them; no tabs without the plugin or for a demonstration visitor, whose `/deployments/logs` goes back to `/logs`.
+- `nav.ts` - `NAV`: the menu as data. Logs is one leaf (`/logs`). `DEV_ONLY_ROUTES` (Payments and Credit, features still in development) leave the menu unless `navForProfile` gets `devMode` (`pom_dev_mode`, from `POM_DEV_MODE`), and `App.tsx`'s `DevOnly` sends their addresses back to the Dashboard outside that mode. Deploy (`nav.deployments`) is a single entry to
   `/deploy` with `Rocket`; History (`/deployments`) has no menu entry and opens
   from the History button beside Deploy on that screen. Logs has separate
   leaves for requests and deployment; Network Chat is its own
@@ -508,7 +509,13 @@ Per-file list:
   imports it); only `trackOf` (the repeating color palette, `TRACKS`) is still
   exported, reused by `PeerDetailCard`, `Dashboard` and `DeployModel`.
   Currently rendered hidden on Dashboard.
-- `ModelNetworkCanvas.tsx` - each machine card also shows the measured TPS of
+- `ModelNetworkCanvas.tsx` - pans and zooms like `DeployNetworkCanvas`, through
+  `lib/usePanZoom.ts`: the map is translated, never scrolled, so dragging its background
+  (`dashboard-map-scroll` or `data-map-background`, never a card or a button) moves it
+  anywhere, past every edge, and the wheel or trackpad pinch zooms around the pointer,
+  40% to 160%; a card drops wherever it is let go, with no bounds. The toolbars,
+  the legend and the properties button stay on the section, outside the moving map.
+  Each machine card also shows the measured TPS of
   decode and of prefill (`machine-tps`, from the `peer_perf` of
   `/api/ui/chat/telemetry`) as badges (`speed-decode`/`speed-prefill`)
   colored by `rateSpeed` (`../lib/peerSpeed`): the ratio to the fastest slice of the same model
@@ -653,6 +660,14 @@ Per-file list:
   engine in use, plus a `llama.cpp` pseudo badge when the engine is llama.cpp
   (`PeerView.engine` null). Tests in
   `PluginServices.test.tsx`.
+- `MeteringPanel.tsx` - GPU work metering on the Network screen
+  (`NetworkSettings.metering`): the principal turns it on or off at run time
+  and sets the cycle, grace, samples, challenges, penalty, verifier and plugin
+  engine re-execution; it posts the whole network document with only
+  `metering` changed and hands the saved document back (`onSaved`) so the
+  screen's own draft does not restore the old values. Read-only for anyone
+  else; warns when the metering plugin is not active on this machine. Tests in
+  `MeteringPanel.test.tsx`.
 - `KvCache.tsx` - the KV cache block of `PeerDetailCard`: disk used by the
   machine's snapshot directory (`node.kv_cache`), the host-memory cache from
   `/health` (`cache_ram`) and "Clear cache" with a confirmation, sent to the
@@ -961,12 +976,12 @@ Key logic carriers:
   starting layer, machines joined by `|`) and the route chips sit on the
   section, outside the area that scrolls (`deploy-map-scroll`), so they stay
   put. Shift+click toggles the card's mark (`markedNodeIds`/`onToggleMarked`)
-  instead of inspecting it. Dragging the dotted background scrolls the map like
-  its scrollbars (a gesture that starts on a card, button or field keeps its
+  instead of inspecting it. Pan and zoom come from `lib/usePanZoom.ts`:
+  dragging the dotted background moves the map freely, past every edge and with
+  no scrollbar (a gesture that starts on a card, button or field keeps its
   own); the wheel and the trackpad pinch (a wheel with ctrlKey) zoom around the
-  pointer, 40% to 160%, through a native non-passive wheel listener. On a narrow viewport, the map uses
-  internal scrolling to preserve the cards' size and align the curve to the
-  endpoints even when the content is wider than the panel. The separation exists because this graph
+  pointer and the zoom buttons around the centre, 40% to 160%; Fit, Organize and
+  Reset bring the view back to the origin at 100%. A card drops wherever it is let go. The separation exists because this graph
   represents a deployment that has not been applied yet.
 - `SidecarPicker.tsx` - the vision projector / MTP draft picker shared by the
   three screens: a select naming each compatible file with its size and
@@ -999,6 +1014,11 @@ Key logic carriers:
   setting the service publishes with `placement: "pom"` (the Strata's
   `session_save`) goes to that same card in both modes, whole model and slices,
   and is not in the engine's card. A service that declares none has no such card.
+  A service that declares `cache_types`, `batch` or `sampling` (the Avalon
+  engine) gets the "Default settings" card of llama.cpp for those groups -
+  context, sessions, `n_batch`/`n_ubatch`, the sampling knobs (`SAMPLING_KNOBS`)
+  and seed, the K/V cache types and idle unloading - and its own card
+  ("<name> settings") keeps only the engine's settings.
 - `DeploymentInspector.tsx` - the inspector of a deployment's properties, and
   **one single** one for the two screens: the deploy screen uses it editable, the History
   uses it with `readOnly` to show with which parameters a version came up. In

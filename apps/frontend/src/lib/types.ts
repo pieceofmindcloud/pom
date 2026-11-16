@@ -444,6 +444,8 @@ export interface NodeInfo {
   dev_update: boolean;
   /** Whether the development-only POM controls are exposed. */
   pom_dev_mode: boolean;
+  /** A worker admitted as a validator: it re-runs sampled work, serves no model. */
+  validator?: boolean;
   /** The name the operator gave this machine; `null` means the system hostname. */
   node_name: string | null;
   /** Address pinned by the operator. `null` when nothing was pinned. */
@@ -505,6 +507,24 @@ export interface NetworkSettings {
   /** Which relays the machines may use; absent reads as `all`. */
   relay_policy?: RelayPolicy;
   location: NetworkLocation | null;
+  /** GPU work metering; absent from an older node. */
+  metering?: MeteringSettings;
+}
+
+/** GPU work metering (`NetworkSettings.metering`, `crates/metering-core/src/settings.rs`). */
+export interface MeteringSettings {
+  enabled: boolean;
+  cycle_secs: number;
+  retain_cycles: number;
+  samples_per_node: number;
+  challenges_per_node: number;
+  penalty_factor: number;
+  draft_weight: number;
+  /** Node id of a dedicated verifier; absent: the ledger's admin. */
+  verifier?: string | null;
+  gateway_fee: { per_request: number; per_prompt_token: number };
+  grace_secs: number;
+  verify_plugin_engines: boolean;
 }
 
 export interface NetworkInfoView {
@@ -669,6 +689,8 @@ export interface PeerView {
   short_id: string;
   addr: string;
   model: string;
+  /** The operator's name for the deployment (what `/v1` takes); absent or empty on an older node. */
+  deployment_name?: string;
   start_layer: number;
   end_layer: number;
   total_layers: number;
@@ -804,7 +826,11 @@ export type PomSetting =
   | "prefill_max_inflight_chunks"
   | "hidden_state_dtype"
   | "inference_role"
-  | "prefill_min_tokens";
+  | "prefill_min_tokens"
+  // groups of llama.cpp's Default settings the engine takes: the KV cache types, the prompt batch, the sampling defaults
+  | "cache_types"
+  | "batch"
+  | "sampling";
 
 /** A whole-model machine's part in a prefill/decode split of a plugin inference service. */
 /** `shared` is not chosen on screen: the deploy gives it to a `both` machine that runs the whole model beside others. */
@@ -2343,6 +2369,9 @@ export interface DeployLoadDistribution {
 export type MtpPlacement = "auto" | "vram" | "ram";
 
 export interface RuntimeParams {
+  /** What a visitor of a charging network pays, in micro-credits per 1000
+   *  tokens; absent leaves the network's price, zero and zero removes it. */
+  pricing?: { in_micro_per_1k: number; out_micro_per_1k: number } | null;
   /** The plugin whose inference service runs the whole model instead of
    *  llama.cpp (`"strata"`); absent is POM's own engine. */
   inference_service?: string | null;

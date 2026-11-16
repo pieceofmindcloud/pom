@@ -7,6 +7,8 @@ import type { DeployMachine, DeployPlan, DeploySelection, DeployStep } from "../
 import { DeployNetworkCanvas } from "./DeployNetworkCanvas";
 import type { PipelineCycleCost } from "./PipelineGatewayNode";
 
+const zoomOf = (element: HTMLElement) => parseFloat(/scale\(([^)]+)\)/.exec(element.style.transform)![1]);
+
 // jsdom has no PointerEvent nor pointer capture: a MouseEvent that keeps the
 // pointer fields, and no-op captures
 if (typeof window !== "undefined" && !("PointerEvent" in window)) {
@@ -291,24 +293,24 @@ describe("DeployNetworkCanvas", () => {
     expect(within(canvas).getByText("a | b")).toBeTruthy();
   });
 
-  it("scrolls the map when the dotted background is dragged, not when a card is", () => {
+  it("moves the map freely when the dotted background is dragged, not when a card is", () => {
     const steps = [step(0, 3, "a", 1), step(4, 11, "b", 2)];
     renderCanvas(plan(steps, []), steps.map(({ start_layer, end_layer, target_node_id }) => ({ start_layer, end_layer, target_node_id })));
     const scroll = screen.getByTestId("deploy-map-scroll");
-    scroll.scrollLeft = 100;
-    scroll.scrollTop = 80;
+    const layer = () => scroll.querySelector<HTMLElement>("div.origin-top-left")!;
 
     fireEvent.pointerDown(scroll, { button: 0, clientX: 300, clientY: 300, pointerId: 1 });
     fireEvent.pointerMove(scroll, { clientX: 260, clientY: 270, pointerId: 1 });
     fireEvent.pointerUp(scroll, { clientX: 260, clientY: 270, pointerId: 1 });
-    expect(scroll.scrollLeft).toBe(140);
-    expect(scroll.scrollTop).toBe(110);
+    // past any edge: no scrollbar is needed to move the map anywhere
+    expect(layer().style.transform).toBe("translate(-40px, -30px) scale(1)");
+    expect(scroll.style.backgroundPosition).toBe("-40px -30px");
 
     // a drag that starts on a card moves the card, not the map
     const card = screen.getByRole("heading", { name: /^a/ }).closest("article")!;
     fireEvent.pointerDown(card, { button: 0, clientX: 300, clientY: 300, pointerId: 2 });
     fireEvent.pointerMove(scroll, { clientX: 200, clientY: 200, pointerId: 2 });
-    expect(scroll.scrollLeft).toBe(140);
+    expect(layer().style.transform).toBe("translate(-40px, -30px) scale(1)");
   });
 
   it("zooms with the wheel and the trackpad pinch", async () => {
@@ -316,14 +318,14 @@ describe("DeployNetworkCanvas", () => {
     renderCanvas(plan(steps, []), [{ start_layer: 0, end_layer: 3, target_node_id: "a" }]);
     const scroll = screen.getByTestId("deploy-map-scroll");
     const layer = () => scroll.querySelector<HTMLElement>("div.origin-top-left")!;
-    expect(layer().style.transform).toBe("scale(1)");
+    expect(layer().style.transform).toBe("translate(0px, 0px) scale(1)");
 
     // the wheel down zooms out, a pinch (ctrlKey) zooms in
     fireEvent.wheel(scroll, { deltaY: 200, clientX: 10, clientY: 10 });
-    await waitFor(() => expect(parseFloat(layer().style.transform.slice(6))).toBeLessThan(1));
-    const out = parseFloat(layer().style.transform.slice(6));
+    await waitFor(() => expect(zoomOf(layer())).toBeLessThan(1));
+    const out = zoomOf(layer());
     fireEvent.wheel(scroll, { deltaY: -40, ctrlKey: true, clientX: 10, clientY: 10 });
-    await waitFor(() => expect(parseFloat(layer().style.transform.slice(6))).toBeGreaterThan(out));
+    await waitFor(() => expect(zoomOf(layer())).toBeGreaterThan(out));
   });
 
   it("keeps the toolbar, the legend and the route chips out of the area that scrolls", () => {

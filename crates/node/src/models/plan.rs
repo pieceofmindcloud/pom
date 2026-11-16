@@ -523,8 +523,8 @@ pub async fn write_virtual_shard(
     is_first: bool,
     is_last: bool,
 ) -> Result<String> {
-    let src = std::fs::canonicalize(source_model)
-        .with_context(|| format!("resolve {source_model}"))?;
+    let src =
+        std::fs::canonicalize(source_model).with_context(|| format!("resolve {source_model}"))?;
     let meta = std::fs::metadata(&src).with_context(|| format!("stat {}", src.display()))?;
     let identity = {
         use sha2::{Digest, Sha256};
@@ -545,11 +545,20 @@ pub async fn write_virtual_shard(
     let tail = if is_last { "-last" } else { "" };
     let dir = virtual_slice_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let dst = dir.join(format!("{stem}-{identity}-L{start_layer}-{end_layer}{tail}.gguf"));
+    let dst = dir.join(format!(
+        "{stem}-{identity}-L{start_layer}-{end_layer}{tail}.gguf"
+    ));
     let tmp = dst.with_extension("gguf.tmp");
     let tmp_for_write = tmp.clone();
     tokio::task::spawn_blocking(move || {
-        crate::splitter::write_virtual_slice(&src, &tmp_for_write, start_layer, end_layer, is_first, is_last)
+        crate::splitter::write_virtual_slice(
+            &src,
+            &tmp_for_write,
+            start_layer,
+            end_layer,
+            is_first,
+            is_last,
+        )
     })
     .await
     .context("virtual slice task")??;

@@ -935,6 +935,21 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
 /// one stays one whatever it announces: on every node its membership token
 /// says so (`crate::membership`), and on the admins their admission list
 /// as well. Everywhere, a node that announces itself as a visitor is one.
+impl GatewayState {
+    /// Whether this node runs as a visitor (`crate::profile::NodeProfile`).
+    pub(crate) fn local_profile_is_visitor(&self) -> bool {
+        self.network.profile() == crate::profile::NodeProfile::Visitor
+    }
+}
+
+/// A worker admitted as a validator: it announces `metering/validator-v1`
+/// and is never a deployment target nor part of a pipeline.
+pub(crate) fn peer_is_validator(peer: &PeerInfo) -> bool {
+    peer.inference_frame_capabilities
+        .iter()
+        .any(|c| c == crate::pipeline::CAP_METERING_VALIDATOR)
+}
+
 pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
     peer.profile == crate::profile::NodeProfile::Visitor
@@ -943,10 +958,7 @@ pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
             .network_chat
             .admission_of(&peer.node_id)
             .is_some_and(|record| record.role == EnrollmentRole::Visitor)
-        || state
-            .network_chat
-            .admitted_role(&peer.node_id, None)
-            == Some(EnrollmentRole::Visitor)
+        || state.network_chat.admitted_role(&peer.node_id, None) == Some(EnrollmentRole::Visitor)
 }
 
 /// What a node-to-node request may reach, by the caller's identity.
@@ -1012,10 +1024,10 @@ pub(crate) async fn caller_may_ask(
 async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
     crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Worker)
-        || state
-            .network_chat
-            .admitted_role(&peer.node_id, state.admin_trust.revoked_node_at(&peer.node_id))
-            == Some(EnrollmentRole::Worker)
+        || state.network_chat.admitted_role(
+            &peer.node_id,
+            state.admin_trust.revoked_node_at(&peer.node_id),
+        ) == Some(EnrollmentRole::Worker)
         || state.auth.read().await.network.open_admission()
 }
 
@@ -1061,8 +1073,24 @@ pub(crate) async fn require_admin_for_surface(
     };
     let internal_node_request = internal_node.is_some();
     let request = Request::from_parts(parts, body);
-    let profile = state.auth.read().await.profile;
+    let (profile, validator) = {
+        let cfg = state.auth.read().await;
+        (cfg.profile, cfg.validator)
+    };
     let scope = crate::webui::route_scope(&method, &path);
+    // A validator re-runs samples from its own copy of the model and serves
+    // none: it refuses what would make it hold or serve one, as a visitor does.
+    if validator && crate::webui::visitor_refuses(&path) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "this machine was admitted as a validator and does not serve models",
+                "reason": "validator_profile",
+                "path": path,
+            })),
+        )
+            .into_response();
+    }
     // An inference node holds and serves no model, whoever asks. This comes
     // before everything else on purpose: the profile gate below lets a
     // node-to-node request through, and an admin's request is one.
@@ -1489,7 +1517,9 @@ pub(crate) async fn ready_for_pipeline(
                     // `last_seen` made the planner drop the peer as dead
                     // (`PEER_TIMEOUT_SECS`) and report a gap at its layers.
                     peer.last_seen = last_seen;
-                    tracing::info!("admission: peer {short} still probing; using its last admission");
+                    tracing::info!(
+                        "admission: peer {short} still probing; using its last admission"
+                    );
                     admitted.push(peer);
                 }
                 None => tracing::info!("admission: peer {short} still probing; left out"),
@@ -1817,6 +1847,10 @@ impl GatewayState {
                 deploy_id: local
                     .as_ref()
                     .map(|assignment| assignment.deploy_id.clone())
+                    .unwrap_or_default(),
+                deployment_name: local
+                    .as_ref()
+                    .map(|assignment| assignment.deployment_name.clone())
                     .unwrap_or_default(),
                 node_id: self.network.node_id.clone(),
                 tls: self.network.tls_enabled(),

@@ -26,10 +26,7 @@ impl InferState {
         self.engine.token_to_piece_bytes(token, special)
     }
 
-    pub(super) fn new(
-        engine: LlmEngine,
-        cfg: &NodeConfig,
-    ) -> Self {
+    pub(super) fn new(engine: LlmEngine, cfg: &NodeConfig) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
         // The deployment's seed restarts the sampler's generator once, here,
@@ -85,6 +82,8 @@ impl InferState {
             thinking_forced_open,
             preserved_specials,
             thinking_open: HashMap::new(),
+            meters: Default::default(),
+            tail_embeddings: false,
             no_thinking: cfg.no_thinking,
             // Keeps the behavior of old callers that do not send the
             // flag. The current gateway always states it explicitly per endpoint.
@@ -1406,6 +1405,9 @@ fn health_body(s: &InferState, scheduler: &SchedulerHandle, slot_count: usize) -
     if scheduler.config.enabled {
         caps.push(crate::pipeline::CAP_FRAME_BATCH);
     }
+    if crate::metering::context().is_some() {
+        caps.push(crate::pipeline::CAP_METERING_RECEIPT);
+    }
     let ram_cache = s.ram_cache.stats();
     if s.slot_dir.is_some() {
         caps.push(crate::pipeline::CAP_SLOT_PERSIST);
@@ -1808,6 +1810,9 @@ pub(super) fn replicate_slot_call(
 #[derive(Deserialize)]
 pub(super) struct ReleaseRequest {
     pub(super) session_id: String,
+    /// The gateway's bundle nonce when it meters this request (`meter.rs`).
+    #[serde(default)]
+    pub(super) metering_bundle: Option<String>,
 }
 
 pub(super) async fn handle_release(
@@ -1826,16 +1831,18 @@ pub(super) async fn handle_release(
         Err(error) => return err500(error),
     };
     let existed = s.sessions.contains_key(&req.session_id);
+    let receipt = close_meter(&mut s, &req.session_id, req.metering_bundle.as_deref());
     s.finish(&req.session_id);
     let free = s.seq_pool.len();
     let max = s.max_sessions;
     drop(s);
-    Json(json!({
+    let mut body = json!({
         "released": existed,
         "free_slots": free,
         "max_sessions": max,
-    }))
-    .into_response()
+    });
+    attach_receipt(&mut body, receipt);
+    Json(body).into_response()
 }
 
 // ── /v1/session/rewind ───────────────────────────────────────────────────────
@@ -1844,6 +1851,30 @@ pub(super) async fn handle_release(
 pub(super) struct RewindRequest {
     pub(super) session_id: String,
     pub(super) n_tokens: u32,
+    /// The gateway's bundle nonce when it meters this turn (`meter.rs`).
+    #[serde(default)]
+    pub(super) metering_bundle: Option<String>,
+}
+
+/// Closes the turn's meter of `sid` for the gateway's nonce (`meter.rs`).
+fn close_meter(s: &mut InferState, sid: &str, nonce: Option<&str>) -> Option<(String, Vec<i32>)> {
+    let nonce = super::meter::bundle_nonce(&json!({ "metering_bundle": nonce }));
+    s.meter_close(sid, nonce)
+}
+
+/// Adds the receipt, and the head's computed sequence (LE i32, base64) for
+/// re-execution, to a lifecycle answer. Only a metered turn adds the fields:
+/// an older gateway sees the same answer as before.
+fn attach_receipt(body: &mut Value, receipt: Option<(String, Vec<i32>)>) {
+    let Some((receipt, tokens)) = receipt else {
+        return;
+    };
+    body["receipt"] = json!(receipt);
+    if !tokens.is_empty() {
+        use base64::Engine;
+        let bytes: Vec<u8> = tokens.iter().flat_map(|t| t.to_le_bytes()).collect();
+        body["metering_tokens"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+    }
 }
 
 /// Confirms that the session stopped at the end of the prompt, ready for the
@@ -1870,33 +1901,46 @@ pub(super) async fn handle_rewind(
         Ok(state) => state,
         Err(error) => return err500(error),
     };
+    // The turn's work is done whatever the rewind decides below.
+    let receipt = close_meter(&mut state, &req.session_id, req.metering_bundle.as_deref());
+    let answer = |mut body: Value, receipt| {
+        attach_receipt(&mut body, receipt);
+        Json(body).into_response()
+    };
     let Some(prompt_len) = state
         .sessions
         .get(&req.session_id)
         .map(|session| session.prompt_len)
     else {
-        return Json(json!({ "rewound": false, "reason": "unknown session" })).into_response();
+        return answer(
+            json!({ "rewound": false, "reason": "unknown session" }),
+            receipt,
+        );
     };
     if req.n_tokens != prompt_len {
-        return Json(json!({
-            "rewound": false,
-            "reason": format!(
-                "gateway prompt does not match the one of this session: {} != {prompt_len}",
-                req.n_tokens
-            ),
-        }))
-        .into_response();
+        return answer(
+            json!({
+                "rewound": false,
+                "reason": format!(
+                    "gateway prompt does not match the one of this session: {} != {prompt_len}",
+                    req.n_tokens
+                ),
+            }),
+            receipt,
+        );
     }
     let Some(retained) = state.retain_prompt(&req.session_id) else {
-        return Json(json!({
-            "rewound": false,
-            "reason": "session without a prompt to retain",
-        }))
-        .into_response();
+        return answer(
+            json!({
+                "rewound": false,
+                "reason": "session without a prompt to retain",
+            }),
+            receipt,
+        );
     };
     drop(state);
     replicate_session_rewind(&app.state, &headers, &req.session_id, req.n_tokens);
-    Json(json!({ "rewound": true, "n_past": retained })).into_response()
+    answer(json!({ "rewound": true, "n_past": retained }), receipt)
 }
 
 // ── /v1/session/rollback ─────────────────────────────────────────────────────
@@ -1941,6 +1985,7 @@ pub(super) fn rollback_session(
     batch_width: u32,
 ) -> Result<bool> {
     let mut s = lock_inference_state(state)?;
+    s.meter_rollback(session_id, accept_count, batch_width);
     let Some((seq_id, n_past_after_batch)) = s
         .sessions
         .get(session_id)
@@ -1952,6 +1997,7 @@ pub(super) fn rollback_session(
     if new_n_past < n_past_after_batch && !s.engine.kv_remove(seq_id, new_n_past as i32, -1) {
         return Ok(false);
     }
+    s.meter_truncate(session_id, new_n_past);
     if let Some(session) = s.sessions.get_mut(session_id) {
         session.n_past = new_n_past;
     }
@@ -2091,7 +2137,9 @@ mod tests {
         let test_started = std::time::Instant::now();
         let cleanup = tokio::spawn(run_native_cleanup(move || {
             cleanup_started_by_task.store(true, Ordering::Release);
-            std::thread::sleep(std::time::Duration::from_millis(250));
+            // Long enough that health answering before it ends cannot be luck,
+            // even on a loaded test run.
+            std::thread::sleep(std::time::Duration::from_millis(2000));
         }));
 
         // On the buggy implementation this yield polls the cleanup task first
@@ -2109,14 +2157,14 @@ mod tests {
                 .unwrap();
             test_started.elapsed()
         });
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(75);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(1000);
         let health_response = tokio::time::timeout_at(deadline, health).await;
 
         let elapsed = health_response
             .expect("a health request must be polled while native cleanup is running")
             .unwrap();
         assert!(
-            elapsed < std::time::Duration::from_millis(150),
+            elapsed < std::time::Duration::from_millis(1500),
             "health was not polled until native cleanup ended: {elapsed:?}"
         );
         cleanup.await.unwrap().unwrap();
@@ -2147,9 +2195,11 @@ const PRESERVED_MARKERS: &[&str] = &[
 fn preserved_marker_tokens(engine: &LlmEngine) -> std::collections::HashSet<i32> {
     PRESERVED_MARKERS
         .iter()
-        .filter_map(|marker| match engine.tokenize(marker, false, true).as_slice() {
-            [token] if engine.token_to_piece_bytes(*token, false).is_empty() => Some(*token),
-            _ => None,
-        })
+        .filter_map(
+            |marker| match engine.tokenize(marker, false, true).as_slice() {
+                [token] if engine.token_to_piece_bytes(*token, false).is_empty() => Some(*token),
+                _ => None,
+            },
+        )
         .collect()
 }

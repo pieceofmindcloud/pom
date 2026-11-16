@@ -751,28 +751,27 @@ pub async fn save_setup(
     }
     // `bootstrap` and `advertise_addr` are local hints typed by the operator
     // (they may be DNS names), never read from the trust document.
-    let (mut network, directory_inputs, relay_hints) = if profile
-        == crate::profile::NodeProfile::Admin
-    {
-        (
-            req.network.clone(),
-            req.public_directory.clone(),
-            Vec::new(),
-        )
-    } else {
-        let Some(metadata) = trust_document.setup.as_ref() else {
-            return (
+    let (mut network, directory_inputs, relay_hints) =
+        if profile == crate::profile::NodeProfile::Admin {
+            (
+                req.network.clone(),
+                req.public_directory.clone(),
+                Vec::new(),
+            )
+        } else {
+            let Some(metadata) = trust_document.setup.as_ref() else {
+                return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": "the root does not contain the initial network settings" })),
             )
                 .into_response();
+            };
+            (
+                network_from_trust_metadata(metadata),
+                metadata.directory_replicas.clone(),
+                metadata.relay_hints.clone(),
+            )
         };
-        (
-            network_from_trust_metadata(metadata),
-            metadata.directory_replicas.clone(),
-            metadata.relay_hints.clone(),
-        )
-    };
     let bootstrap = req.bootstrap.trim().to_string();
     let advertise_addr = req.advertise_addr.clone();
     network.public_name = network.public_name.trim().to_string();

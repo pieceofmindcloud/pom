@@ -24,14 +24,11 @@ describe("navigation structure", () => {
     expect(NAV.some((section) => section.labelKey === "nav.deploy")).toBe(false);
   });
 
-  it("groups request and deployment logs under Logs", () => {
+  it("has one Logs entry, the request logs; the deployment logs are a tab of it", () => {
     const logs = NAV.find((section) => section.labelKey === "nav.logs");
 
-    expect(logs?.to).toBeUndefined();
-    expect(logs?.children?.map((child) => [child.labelKey, child.to])).toEqual([
-      ["nav.requestLogs", "/logs"],
-      ["nav.deploymentLogs", "/deployments/logs"],
-    ]);
+    expect(logs?.to).toBe("/logs");
+    expect(logs?.children).toBeUndefined();
   });
 
   it("gives statistics its own top-level destination after logs", () => {
@@ -184,5 +181,16 @@ describe("navForProfile", () => {
     const before = JSON.stringify(NAV.map((s) => (s.children ?? []).map((c) => c.to)));
     navForProfile("worker");
     expect(JSON.stringify(NAV.map((s) => (s.children ?? []).map((c) => c.to)))).toBe(before);
+  });
+});
+
+describe("screens still in development", () => {
+  const routes = (devMode: boolean, profile: "admin" | "visitor") =>
+    navForProfile(profile, true, { devMode }).flatMap((section) => [section.to, ...(section.children ?? []).map((child) => child.to)]);
+
+  it("shows Payments and Credit only in development mode", () => {
+    expect(routes(false, "admin")).not.toContain("/config/payments");
+    expect(routes(true, "admin")).toContain("/config/payments");
+    expect(routes(false, "visitor")).not.toContain("/config/credit");
   });
 });

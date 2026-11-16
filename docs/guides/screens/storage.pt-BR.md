@@ -8,10 +8,10 @@ order: 310
 ---
 
 :::lead
-Armazenamento diz a esta máquina onde procurar modelos, onde escrever fatias e quanto disco as fatias podem ocupar, além da pasta compartilhada que os plugins usam para projetos.
+Armazenamento diz a esta máquina onde procurar modelos, além da pasta compartilhada que os plugins usam para projetos.
 :::
 
-![Armazenamento: o workspace de projetos, as pastas de modelos inteiros e, à direita, o que a detecção automática encontraria.](../images/pt-BR/folders.webp)
+![Armazenamento: o workspace de projetos, as pastas de modelos inteiros e, à direita, o que a detecção automática encontraria.](../images/pt-BR/storage.webp)
 
 :::cards
 ### Workspace de projetos

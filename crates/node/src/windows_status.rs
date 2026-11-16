@@ -73,9 +73,9 @@ mod native {
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tao::platform::run_return::EventLoopExtRunReturn;
     use tao::window::WindowBuilder;
+    use tracing::warn;
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
     use tray_icon::{Icon, TrayIconBuilder};
-    use tracing::warn;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2_14, COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
     };
@@ -112,7 +112,9 @@ mod native {
                 take_pwstr(pem)
             };
             if crate::web_ca::is_local_web_certificate_pem(&pem) {
-                unsafe { args.SetAction(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW)? };
+                unsafe {
+                    args.SetAction(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW)?
+                };
             }
             Ok(())
         }));
@@ -326,10 +328,20 @@ pub fn report_startup_failure(error: &anyhow::Error) {
         crate::brand::name(),
         log.display()
     );
-    let wide = |value: &str| value.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let wide = |value: &str| {
+        value
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
     let (text, caption) = (wide(&text), wide(crate::brand::name()));
     unsafe {
-        MessageBoxW(None, PCWSTR(text.as_ptr()), PCWSTR(caption.as_ptr()), MB_OK | MB_ICONERROR);
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(caption.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
     }
     std::process::exit(STARTUP_FAILED_EXIT_CODE);
 }

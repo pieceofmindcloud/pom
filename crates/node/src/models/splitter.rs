@@ -221,6 +221,23 @@ fn align_up(n: u64) -> u64 {
     (n + a - 1) & !(a - 1)
 }
 
+/// A GGUF key as it is written before its type: u64 length, then the bytes.
+fn encode_key(key: &str) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(8 + key.len() + 64);
+    buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+    buf.extend_from_slice(key.as_bytes());
+    buf
+}
+
+/// `<prefix>.blk.<N>` -> (prefix, N): metadata that belongs to one layer.
+fn per_layer_key(key: &str) -> Option<(&str, u32)> {
+    let (prefix, layer) = key.rsplit_once(".blk.")?;
+    if prefix.is_empty() || layer.is_empty() || !layer.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((prefix, layer.parse().ok()?))
+}
+
 fn encode_kv_u32(key: &str, value: u32) -> Vec<u8> {
     let mut buf = Vec::with_capacity(8 + key.len() + 4 + 4);
     let kb = key.as_bytes();
@@ -285,7 +302,8 @@ fn encode_kv_u32_array_with_type(key: &str, element_type: u32, values: &[u32]) -
 
 fn encode_kv_string_array(key: &str, values: &[String]) -> Vec<u8> {
     let kb = key.as_bytes();
-    let mut buf = Vec::with_capacity(8 + kb.len() + 16 + values.iter().map(|v| 8 + v.len()).sum::<usize>());
+    let mut buf =
+        Vec::with_capacity(8 + kb.len() + 16 + values.iter().map(|v| 8 + v.len()).sum::<usize>());
     buf.extend_from_slice(&(kb.len() as u64).to_le_bytes());
     buf.extend_from_slice(kb);
     buf.extend_from_slice(&T_ARR.to_le_bytes());
@@ -688,7 +706,14 @@ pub fn read_context_length(src: &Path) -> Result<Option<u32>> {
             continue;
         }
         r.skip_value(vtype)?;
-        let entry = KvSource { start: 0, end: r.pos, key, vtype, value_start, array: None };
+        let entry = KvSource {
+            start: 0,
+            end: r.pos,
+            key,
+            vtype,
+            value_start,
+            array: None,
+        };
         if entry.key == "general.architecture" {
             architecture = source_string(mm, &entry);
         } else if entry.key.ends_with(".context_length") {
@@ -724,7 +749,16 @@ pub fn split(
     is_last: bool,
     on_progress: impl Fn(f64),
 ) -> Result<WrittenSlice> {
-    split_impl(src, dst, start_layer, end_layer, is_first, is_last, false, on_progress)
+    split_impl(
+        src,
+        dst,
+        start_layer,
+        end_layer,
+        is_first,
+        is_last,
+        false,
+        on_progress,
+    )
 }
 
 /// A header-only slice: the same header `split` writes (same metadata and
@@ -742,7 +776,16 @@ pub fn write_virtual_slice(
     is_first: bool,
     is_last: bool,
 ) -> Result<WrittenSlice> {
-    split_impl(src, dst, start_layer, end_layer, is_first, is_last, true, |_| {})
+    split_impl(
+        src,
+        dst,
+        start_layer,
+        end_layer,
+        is_first,
+        is_last,
+        true,
+        |_| {},
+    )
 }
 
 /// Metadata keys of the external tensor data the loader reads.
@@ -853,7 +896,9 @@ fn split_impl(
     };
     if let Some(original) = original_block_count {
         if let Some(&layer) = ple_layers.iter().find(|&&layer| layer >= original) {
-            bail!("{ple_key} contains layer {layer}, but the source declares only {original} blocks");
+            bail!(
+                "{ple_key} contains layer {layer}, but the source declares only {original} blocks"
+            );
         }
     }
 
@@ -931,6 +976,17 @@ fn split_impl(
                 continue;
             }
             None => {}
+        }
+        // Metadata of one layer, named after it (`<prefix>.blk.<N>`, as Avalon's
+        // `avalon.experts_packed.blk.N`): the slice renumbers its layers from 0,
+        // so the key follows its layer, and a layer outside the range drops it.
+        if let Some((prefix, layer)) = per_layer_key(key) {
+            if (start_layer..=end_layer).contains(&layer) && entry.value_start >= 4 {
+                let mut buf = encode_key(&format!("{prefix}.blk.{}", layer - start_layer));
+                buf.extend_from_slice(&mm[entry.value_start - 4..entry.end]);
+                kv_out.push(KvOut::Encoded(buf));
+            }
+            continue;
         }
         if key.ends_with(".block_count") {
             kv_out.push(KvOut::Encoded(encode_kv_u32(key, n_split)));
@@ -1096,16 +1152,7 @@ fn split_impl(
     let selected: Vec<&TensorRecord> = source_read_order(&all_tensors)
         .into_iter()
         .map(|index| &all_tensors[index])
-        .filter(|t| {
-            want_tensor(
-                &t.name,
-                &arch,
-                start_layer,
-                end_layer,
-                is_last,
-                &ple_layers,
-            )
-        })
+        .filter(|t| want_tensor(&t.name, &arch, start_layer, end_layer, is_last, &ple_layers))
         .collect();
 
     if selected.is_empty() {
@@ -1185,16 +1232,25 @@ fn split_impl(
                 }
             }
         }
-        kv_out.push(KvOut::Encoded(encode_kv_string_array(EXTERNAL_DATA_FILES_KEY, &files)));
+        kv_out.push(KvOut::Encoded(encode_kv_string_array(
+            EXTERNAL_DATA_FILES_KEY,
+            &files,
+        )));
         kv_out.push(KvOut::Encoded(encode_kv_array(
             EXTERNAL_DATA_TENSOR_FILES_KEY,
             T_I32,
-            &tensor_files.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>(),
+            &tensor_files
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>(),
         )));
         kv_out.push(KvOut::Encoded(encode_kv_array(
             EXTERNAL_DATA_TENSOR_OFFSETS_KEY,
             T_U64,
-            &tensor_offsets.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>(),
+            &tensor_offsets
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>(),
         )));
     }
 
@@ -2933,6 +2989,17 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn per_layer_metadata_keys_are_recognized() {
+        assert_eq!(
+            per_layer_key("avalon.experts_packed.blk.32"),
+            Some(("avalon.experts_packed", 32))
+        );
+        assert_eq!(per_layer_key("qwen4exp.block_count"), None);
+        assert_eq!(per_layer_key("x.blk.3a"), None);
+        assert_eq!(per_layer_key(".blk.3"), None);
+    }
+
+    #[test]
     fn payload_reads_are_ordered_by_source_part_and_offset() {
         let tensors = vec![
             TensorRecord {
@@ -2999,7 +3066,9 @@ mod tests {
             if key == want {
                 return match vtype {
                     T_U32 => Some(u32::from_le_bytes(r.take(4).ok()?.try_into().unwrap())),
-                    T_I32 => u32::try_from(i32::from_le_bytes(r.take(4).ok()?.try_into().unwrap())).ok(),
+                    T_I32 => {
+                        u32::try_from(i32::from_le_bytes(r.take(4).ok()?.try_into().unwrap())).ok()
+                    }
                     T_U64 => Some(r.u64().ok()? as u32),
                     _ => None,
                 };
@@ -3027,7 +3096,10 @@ mod tests {
         let virt = out.join(format!("virtual-{range}.gguf"));
         let written = split(&src, &real, start, end, start == 0, is_last, |_| {}).unwrap();
         let header = write_virtual_slice(&src, &virt, start, end, start == 0, is_last).unwrap();
-        eprintln!("real {} bytes, virtual {} bytes", written.bytes, header.bytes);
+        eprintln!(
+            "real {} bytes, virtual {} bytes",
+            written.bytes, header.bytes
+        );
     }
 
     /// Tensor names of a GGUF header, in table order.
@@ -3071,14 +3143,21 @@ mod tests {
 
             let real_bytes = std::fs::read(&real).unwrap();
             let virt_bytes = std::fs::read(&virt).unwrap();
-            for key in ["llama.block_count", &crate::brand::gguf_key("start_layer"), &crate::brand::gguf_key("end_layer")] {
+            for key in [
+                "llama.block_count",
+                &crate::brand::gguf_key("start_layer"),
+                &crate::brand::gguf_key("end_layer"),
+            ] {
                 assert_eq!(kv_u32(&virt_bytes, key), kv_u32(&real_bytes, key), "{key}");
             }
 
             let real_src = crate::multipart::GgufSource::open(&real).unwrap();
             let real_part = &real_src.parts()[0];
-            let real_by_name: HashMap<&str, &crate::multipart::GgufTensor> =
-                real_src.tensors().iter().map(|t| (t.name.as_str(), t)).collect();
+            let real_by_name: HashMap<&str, &crate::multipart::GgufTensor> = real_src
+                .tensors()
+                .iter()
+                .map(|t| (t.name.as_str(), t))
+                .collect();
 
             let names = tensor_table_names(&virt_bytes);
             let files = kv_i32_array(&virt_bytes, EXTERNAL_DATA_TENSOR_FILES_KEY).unwrap();
@@ -3099,7 +3178,8 @@ mod tests {
                 let got = if files[i] < 0 {
                     // The only data in the header: the identity output_norm, at the start of its data section.
                     let data_start = virt_bytes.len() - align_up(size as u64) as usize;
-                    let bytes = &virt_bytes[data_start + internal_offset..data_start + internal_offset + size];
+                    let bytes = &virt_bytes
+                        [data_start + internal_offset..data_start + internal_offset + size];
                     internal_offset += align_up(size as u64) as usize;
                     bytes
                 } else {
@@ -4816,7 +4896,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-
     fn deepseek41_split_at_valid_cut(dir: &Path) -> (Vec<u8>, Vec<u8>) {
         std::fs::create_dir_all(dir).unwrap();
         let whole = dir.join("whole.gguf");
@@ -4830,7 +4909,10 @@ mod tests {
 
         assert_eq!(layout.slice_bytes(0, 3, false), first_written.bytes);
         assert_eq!(layout.slice_bytes(4, 7, true), second_written.bytes);
-        (std::fs::read(&first).unwrap(), std::fs::read(&second).unwrap())
+        (
+            std::fs::read(&first).unwrap(),
+            std::fs::read(&second).unwrap(),
+        )
     }
 
     #[test]
@@ -4846,9 +4928,15 @@ mod tests {
             kv_u32_array(&first, "deepseek41.attention.indexer.source_layers"),
             Some(vec![1])
         );
-        assert_eq!(kv_u32_array(&first, "deepseek41.ple.layers"), Some(vec![1, 3]));
         assert_eq!(
-            kv_u32(&first, "deepseek41.attention.indexer.candidate_source_layer"),
+            kv_u32_array(&first, "deepseek41.ple.layers"),
+            Some(vec![1, 3])
+        );
+        assert_eq!(
+            kv_u32(
+                &first,
+                "deepseek41.attention.indexer.candidate_source_layer"
+            ),
             None,
             "llama.cpp reads an absent key as no candidate selection"
         );
@@ -4872,8 +4960,13 @@ mod tests {
             .iter()
             .map(|tensor| tensor.name.clone())
             .collect();
-        assert!(names.iter().any(|name| name == "per_layer_token_embd.weight"));
-        assert!(names.iter().any(|name| name == "output.weight"), "the loader requires it");
+        assert!(names
+            .iter()
+            .any(|name| name == "per_layer_token_embd.weight"));
+        assert!(
+            names.iter().any(|name| name == "output.weight"),
+            "the loader requires it"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -4891,15 +4984,24 @@ mod tests {
             Some(vec![0, 2])
         );
         assert_eq!(
-            kv_u32(&second, "deepseek41.attention.indexer.candidate_source_layer"),
+            kv_u32(
+                &second,
+                "deepseek41.attention.indexer.candidate_source_layer"
+            ),
             Some(0)
         );
         assert_eq!(
-            kv_type(&second, "deepseek41.attention.indexer.candidate_source_layer"),
+            kv_type(
+                &second,
+                "deepseek41.attention.indexer.candidate_source_layer"
+            ),
             Some(T_I32),
             "llama.cpp reads the candidate source as INT32 and refuses a UINT32"
         );
-        assert_eq!(kv_u32_array(&second, "deepseek41.ple.layers"), Some(Vec::new()));
+        assert_eq!(
+            kv_u32_array(&second, "deepseek41.ple.layers"),
+            Some(Vec::new())
+        );
         assert_eq!(
             kv_u32_array(&second, "deepseek41.attention.compress_ratios"),
             Some(vec![1, 1, 1, 1]),
@@ -5185,7 +5287,10 @@ mod tests {
         let path = dir.join("unknown.gguf");
         std::fs::write(&path, bytes).unwrap();
         let error = crate::gguf::read_layout(&path).unwrap_err().to_string();
-        assert!(error.contains("GGML dtype 99") && error.contains("token_embd.weight"));
+        assert!(
+            error.contains("GGML dtype 99") && error.contains("token_embd.weight"),
+            "{error}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -5201,7 +5306,8 @@ mod tests {
         let layout_error = crate::gguf::read_layout(&whole).unwrap_err().to_string();
         assert!(
             layout_error.contains("llama.future_layer_metadata")
-                && layout_error.contains("length 3")
+                && layout_error.contains("length 3"),
+            "{layout_error}"
         );
         let split_error = split(&whole, &out, 0, 0, true, true, |_| {})
             .unwrap_err()

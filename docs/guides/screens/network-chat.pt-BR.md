@@ -11,13 +11,13 @@ order: 40
 O Chat da rede é uma conversa entre as máquinas da rede, não com um modelo: as pessoas que operam cada máquina escrevem aqui, e arquivos podem ir junto. À direita, quem está online.
 :::
 
-![O Chat da rede, com as mensagens no meio e as nove máquinas online à direita.](../images/pt-BR/network-chat.webp)
+![O Chat da rede, com as mensagens no meio e as máquinas online à direita.](../images/pt-BR/network-chat.webp)
 
 :::cards
 ### Rede
 A sala que todo membro da rede lê. Mensagens e arquivos viajam pela própria rede, e a máquina principal os valida.
 ### Lobby
-A sala do administrador com as máquinas que estão pedindo para entrar. Cada candidata tem uma conversa própria, com **Aprovar** e **Recusar** acima das mensagens. Só aparece quando a rede mantém o lobby aberto.
+A sala do administrador com as máquinas que estão pedindo para entrar. Cada candidata tem uma conversa própria, com **Aprovar** e **Recusar** acima das mensagens. Só aparece quando a rede mantém o lobby aberto. Uma máquina que pede como validador aparece assim: ela confere o trabalho das outras máquinas e não serve modelo.
 :::
 
 :::note Baixa prioridade de propósito

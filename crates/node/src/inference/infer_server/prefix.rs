@@ -850,6 +850,11 @@ mod slot_count_tests {
 pub(crate) struct InferState {
     pub(super) engine: LlmEngine,
     pub(super) sessions: HashMap<String, Session>,
+    /// GPU work meters of the metered sessions (`meter.rs`).
+    pub(super) meters: super::meter::MeterTable,
+    /// Whether llama.cpp's embeddings output is on for the last stage's
+    /// proofs (`InferState::meter_tail_ready`).
+    pub(super) tail_embeddings: bool,
     pub(super) seq_pool: Vec<u32>,
     pub(super) max_sessions: u32,
     pub(super) sampling: SamplingConfig,
@@ -1068,6 +1073,16 @@ pub(super) async fn require_inference_auth(
     next: Next,
 ) -> Response {
     let (parts, body) = request.into_parts();
+    if crate::auth::visitor_must_delegate(&config, &parts.extensions).await {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": "visitor_must_use_gateway",
+                "message": "this network serves visitors through its entry nodes",
+            })),
+        )
+            .into_response();
+    }
     let public_transport = {
         let cfg = config.read().await;
         cfg.network.visibility == crate::config::NetworkVisibility::Public
@@ -1103,7 +1118,7 @@ pub(super) async fn require_inference_auth(
         &parts.extensions,
         parts.uri.path(),
     )
-        .await
+    .await
     {
         Ok(()) => next.run(Request::from_parts(parts, body)).await,
         Err(rejection) => rejection.into_response(),

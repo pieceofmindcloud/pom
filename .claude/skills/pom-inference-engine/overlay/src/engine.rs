@@ -57,6 +57,10 @@ pub struct LoadRequest {
     /// `prefill` or `decode`; `None` = both.
     pub role: Option<String>,
     pub prefill_min_tokens: Option<u32>,
+    /// A stage cut from the whole model: `(start_layer, end_layer)`, inclusive
+    /// (`launch::STAGE_RANGES`). `None` = `model_path` is the whole model or a
+    /// slice (real or virtual) that already holds only its layers.
+    pub range: Option<(u32, u32)>,
 }
 
 fn absolute(value: &Value, name: &str) -> Result<Option<PathBuf>, String> {
@@ -118,6 +122,16 @@ impl LoadRequest {
             prefill_min_tokens: value["prefill_min_tokens"]
                 .as_u64()
                 .map(|tokens| tokens.min(u64::from(u32::MAX)) as u32),
+            range: match (
+                value["range"]["start_layer"].as_u64(),
+                value["range"]["end_layer"].as_u64(),
+            ) {
+                (Some(start), Some(end)) if start <= end && end <= u64::from(u32::MAX) => {
+                    Some((start as u32, end as u32))
+                }
+                (None, None) => None,
+                _ => return Err("range needs start_layer <= end_layer".into()),
+            },
         })
     }
 
@@ -131,6 +145,9 @@ impl LoadRequest {
         }
         if self.link.is_some() && !launch::STAGES {
             return Err("this engine does not run a slice of a model split across machines".into());
+        }
+        if self.range.is_some() && launch::STAGE_RANGES.is_empty() {
+            return Err("this engine does not cut a range from the whole model".into());
         }
         if self.role.is_some() {
             return Err("this engine has no prefill/decode split".into());
@@ -236,6 +253,9 @@ impl Snapshot {
         });
         if launch::STAGES {
             service["stages"] = json!(true);
+            if !launch::STAGE_RANGES.is_empty() {
+                service["stage_ranges"] = json!(launch::STAGE_RANGES);
+            }
         }
         if launch::VISION {
             service["vision"] = json!(true);

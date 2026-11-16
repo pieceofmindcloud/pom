@@ -449,8 +449,9 @@ inference service runs a whole model instead through `plugin_engine.rs`.
   the `link` from `plugin_stage_link::prepare`. A stage whose file is the whole
   model (`file_is_whole_model`) also gets `range: {start_layer, end_layer}`;
   `runs_ranges` says whether a service's `stage_ranges` covers an
-  architecture, and `deploy_block` takes `ranges` for a whole model split in
-  ranges. See
+  architecture; `serves_whole_ranges` also accepts a slice-running service
+  that names no `stage_ranges` (the apply cuts the slice), and `deploy_block`
+  and the add-machine check use it for a whole model split in ranges. See
   `docs/subsystems/inference.md`, "Plugin inference services".
 - `engine_telemetry.rs` - what the POM measures about any plugin engine. A
   plugin reports only its basic data in the `done` event (`EngineReport::from_done`:
@@ -742,6 +743,22 @@ inference service runs a whole model instead through `plugin_engine.rs`.
   `Config::slot_save_path_effective`); with it empty the route answers 400. `replicate_slot_call`
   forwards the action to the TP workers. Capability `inference/slot-persist-v1`.
   See `inference.md` §3.1.1.
+- `plugin_metering.rs` - GPU work metering of a split plugin engine (Strata):
+  parses the stage protocol's requests, pairs them with the answers on both
+  sides of the link (`plugin_stage_link`), counts the serving stage from its
+  `done` line, and signs the turn's receipt at
+  `POST /api/internal/plugins/:code/engine/metering/:deploy`. See
+  `docs/subsystems/inference.md` 10.1.
+- `infer_server/meter.rs` - the per-session GPU work meter (`MeterTable`,
+  held in `InferState.meters`, testable without an engine): counts, link
+  digests, the head's computed sequence and the TOPLOC proof buffer, fed from
+  the compute functions; `close` signs the turn's receipt when the gateway's
+  nonce arrives in the rewind or release (`server.rs`, `close_meter` /
+  `attach_receipt`). The last stage proves its plain decode steps by its
+  post-norm rows: `InferState::meter_tail_ready` turns the engine's
+  embeddings output on while metering is on, `meter_tail_rows` reads the row
+  of the output token (`step_blocking.rs`, `step_batch_blocking`). See
+  `docs/subsystems/inference.md` 10.1.
 - `infer_server/ram_cache.rs` - the host-memory KV cache (`--cache-ram`):
   `KvRamCache` parks the serialized `prompt_seq` of a retained session that
   loses its sequence and `InferState::park_session`/`unpark_session`
@@ -1257,6 +1274,16 @@ earlier never reaches the server.
 The projector's placement and caps, the hyper-connection `hc` copies, the four M-RoPE positions per
 row, the KV-cell versus logical-position split and the cause of a failed prefill:
 `docs/subsystems/inference.md`, "Multimodal input".
+## Defects noted
+
+- `/health` can read a freed llama.cpp context during an unload: a node
+  crashed with SIGSEGV at address 0x8 in `LlmEngine::n_ctx` called from
+  `infer_server/server.rs` `health_body` right after "model memory returned",
+  while an apply that timed out ("previous supervisor did not stop in 5s")
+  overlapped the unload (seen 2026-11-14 on a CPU node of the metering test
+  setup). The health read needs to see that the engine is gone, or hold off
+  until the unload finishes.
+
 ## Maintaining this file
 
 This file is a map of the folder's responsibilities. When you change an inference interface or a

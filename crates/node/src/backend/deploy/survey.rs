@@ -494,6 +494,8 @@ pub(super) async fn survey(
         .await
         .into_iter()
         .filter(|peer| !crate::gateway::peer_is_visitor(state, peer))
+        // A validator holds the model to re-run samples, and serves none.
+        .filter(|peer| !crate::gateway::peer_is_validator(peer))
         .collect();
     let self_id = state.network.node_id.clone();
     let mut route_rtt: std::collections::HashMap<String, f64> = state

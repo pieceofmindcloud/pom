@@ -22,6 +22,7 @@ import { PipelineGatewayNode, type PipelineCycleCost } from "./PipelineGatewayNo
 import { RouteRttLabel } from "./RouteRttLabel";
 import { AlertTooltip, Badge, Button, Progress } from "./ui";
 import { useI18n } from "../i18n/provider";
+import { usePanZoom } from "../lib/usePanZoom";
 
 type DeployNetworkCanvasProps = {
   plan: DeployPlan;
@@ -415,43 +416,9 @@ export function DeployNetworkCanvas({
   onToggleMarked,
 }: DeployNetworkCanvasProps) {
   const { t } = useI18n();
-  const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
-  // the zoom the wheel handler reads between renders
-  const zoomRef = useRef(1);
-  zoomRef.current = zoom;
-  // dragging the dotted background scrolls the map, like its scrollbars
-  const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
-  const [panning, setPanning] = useState(false);
+  const { surface: canvas, setZoom, resetView, toMap, panning, panHandlers, surfaceStyle, contentStyle } = usePanZoom(MIN_ZOOM, MAX_ZOOM, "map-view.deploy");
 
-  // The wheel and the trackpad pinch (a wheel event with ctrlKey) zoom around
-  // the pointer. A native listener, not React's: React's wheel handler is
-  // passive and cannot keep the page from scrolling.
-  useEffect(() => {
-    const element = canvas.current;
-    if (!element) return;
-    const onWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      const bounds = element.getBoundingClientRect();
-      const pointerX = event.clientX - bounds.left;
-      const pointerY = event.clientY - bounds.top;
-      const previous = zoomRef.current;
-      // a pinch sends small deltas, a mouse wheel larger ones
-      const next = clampZoom(previous * Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.0015)));
-      if (next === previous) return;
-      const contentX = (element.scrollLeft + pointerX) / previous;
-      const contentY = (element.scrollTop + pointerY) / previous;
-      zoomRef.current = next;
-      setZoom(next);
-      requestAnimationFrame(() => {
-        element.scrollLeft = contentX * next - pointerX;
-        element.scrollTop = contentY * next - pointerY;
-      });
-    };
-    element.addEventListener("wheel", onWheel, { passive: false });
-    return () => element.removeEventListener("wheel", onWheel);
-  }, []);
   const [positions, setPositions] = useState<Record<string, CanvasPosition>>({});
   const [dragging, setDragging] = useState<string | null>(null);
 
@@ -507,28 +474,24 @@ export function DeployNetworkCanvas({
   const organize = () => {
     clearPositions(layoutKey);
     setPositions({});
-    setZoom(1);
+    resetView();
   };
-  const reset = () => { clearPositions(layoutKey); setPositions({}); setZoom(1); };
-  const fit = () => setZoom(1);
+  const reset = () => { clearPositions(layoutKey); setPositions({}); resetView(); };
+  const fit = () => resetView();
 
   function beginDrag(nodeId: string, index: number, event: PointerEvent<HTMLElement>) {
     if (!canvas.current) return;
-    const bounds = canvas.current.getBoundingClientRect();
     const current = positionOf(nodeId, index);
-    dragOffset.current = { x: (event.clientX - bounds.left) / zoom - current.left, y: (event.clientY - bounds.top) / zoom - current.top };
+    const point = toMap(event.clientX, event.clientY);
+    dragOffset.current = { x: point.x - current.left, y: point.y - current.top };
     setDragging(nodeId);
     event.currentTarget.setPointerCapture(event.pointerId);
   }
   function drag(nodeId: string, event: PointerEvent<HTMLElement>) {
     if (dragging !== nodeId || !canvas.current) return;
-    const bounds = canvas.current.getBoundingClientRect();
-    const maxLeft = Math.max(16, bounds.width / zoom - CARD_WIDTH - 16);
-    const maxTop = Math.max(58, bounds.height / zoom - DEPLOY_CARD_SIZE.height - 16);
-    updatePosition(nodeId, {
-      left: Math.max(16, Math.min(maxLeft, (event.clientX - bounds.left) / zoom - dragOffset.current.x)),
-      top: Math.max(58, Math.min(maxTop, (event.clientY - bounds.top) / zoom - dragOffset.current.y)),
-    });
+    // The map is unbounded: a card goes wherever it is dropped, like the map itself.
+    const point = toMap(event.clientX, event.clientY);
+    updatePosition(nodeId, { left: point.x - dragOffset.current.x, top: point.y - dragOffset.current.y });
   }
 
   const stages = stagesOf(plan, rows);
@@ -612,36 +575,17 @@ export function DeployNetworkCanvas({
         ref={canvas}
         data-testid="deploy-map-scroll"
         className={clsx(
-          "absolute inset-0 overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]",
+          "absolute inset-0 overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]",
           panning ? "cursor-grabbing select-none" : "cursor-grab",
         )}
-        style={{ backgroundSize: "18px 18px" }}
-        onPointerDown={(event) => {
-          // a card, a button or a field keeps its own gesture
-          if (event.button !== 0 || (event.target as Element).closest("article, button, a, input, select, textarea")) return;
-          const element = event.currentTarget;
-          pan.current = { x: event.clientX, y: event.clientY, left: element.scrollLeft, top: element.scrollTop };
-          element.setPointerCapture?.(event.pointerId);
-          setPanning(true);
-        }}
-        onPointerMove={(event) => {
-          const start = pan.current;
-          if (!start) return;
-          event.currentTarget.scrollLeft = start.left - (event.clientX - start.x);
-          event.currentTarget.scrollTop = start.top - (event.clientY - start.y);
-        }}
-        onPointerUp={(event) => {
-          if (!pan.current) return;
-          pan.current = null;
-          setPanning(false);
-          if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-        }}
-        onPointerCancel={() => { pan.current = null; setPanning(false); }}
+        style={surfaceStyle}
+        // a card, a button or a field keeps its own gesture
+        {...panHandlers((event) => !(event.target as Element).closest("article, button, a, input, select, textarea"))}
       >
       {machines.length === 0 ? (
         <div className="flex h-full items-center justify-center text-sm text-muted">{t("deployStudio.dropMachine")}</div>
       ) : (
-        <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
+        <div className="absolute inset-0 origin-top-left" style={contentStyle}>
           <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
             <defs><marker id="deploy-route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker></defs>
             {allEdges.map((route, index) => {

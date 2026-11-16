@@ -30,8 +30,8 @@ A aba **Imagem** lista os arquivos de imagem das mesmas pastas com o que cada um
 As pastas lidas são definidas em Configurações > Armazenamento. **Varrer de novo** lê de novo depois que você copia um arquivo à mão.
 :::
 
-:::note O fatiamento é local
-Cada máquina extrai a própria faixa da própria cópia do GGUF. Nenhum peso viaja pela rede por causa do fatiamento.
+:::note Nada é copiado para implantar
+Uma implantação serve a faixa de cada máquina direto da própria cópia do GGUF inteiro: nenhuma fatia é escrita e nenhum peso viaja pela rede. Enquanto uma transferência de um admin mais antigo está em andamento, uma aba **Transferências** aparece aqui também.
 :::
 
 :::deep docs/subsystems/slicing.md

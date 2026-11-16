@@ -1211,6 +1211,13 @@ pub(super) fn prefill_blocking(
         }
     }
 
+    // GPU work meter (`meter.rs`): this chunk's input.
+    if let Some((hidden, shape)) = tensor.as_ref() {
+        s.meter_input_tensor(&sid_key, expected_pos, shape[0] as u32, hidden, wire_dtype);
+    } else if !tokens_for_chunk.is_empty() {
+        s.meter_input_tokens(&sid_key, expected_pos, &tokens_for_chunk);
+    }
+
     let n_tokens;
     let mut multimodal_n_past = None;
     let mut multimodal_complete = false;
@@ -1270,6 +1277,12 @@ pub(super) fn prefill_blocking(
     timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     s.perf.observe_prefill(decode_started.elapsed(), n_tokens);
+    s.meter_prefill(
+        &sid_key,
+        n_tokens as u32,
+        if chunk_index == 0 { cached_tokens } else { 0 },
+        decode_started.elapsed().as_millis() as u64,
+    );
     timings.tp = crate::tp::take_decode_telemetry();
     timings.backend_call_us += engine_timing.backend_call_us;
     timings.backend_sync_us += engine_timing.backend_sync_us;
@@ -1483,6 +1496,15 @@ pub(super) fn prefill_blocking(
         wire_dtype,
     )?;
     timings.encode_us += encode_started.elapsed().as_micros() as u64;
+    let width = residual.shape.get(1).copied().unwrap_or(0);
+    s.meter_output(
+        &sid_key,
+        expected_pos,
+        n_tokens as u32,
+        &bytes,
+        wire_dtype,
+        Some((&residual.values, width)),
+    );
     Ok(TimedReply { bytes, timings })
 }
 
@@ -1669,6 +1691,24 @@ pub(super) fn prefill_batch_blocking(
             let stable = s.sessions[&sid_key].stable_len;
             if expected_pos >= stable {
                 s.open_generation(&sid_key)?;
+            }
+            // GPU work meter (`meter.rs`): this chunk's input.
+            if let Some((hidden, shape)) = tensor.as_ref() {
+                let rows = shape.first().copied().unwrap_or(0) as u32;
+                s.meter_input_tensor(&sid_key, expected_pos, rows, hidden, wire_dtype);
+            } else {
+                let session = &s.sessions[&sid_key];
+                let start = expected_pos as usize;
+                let mut end = start.saturating_add(chunk_size as usize);
+                if expected_pos < stable {
+                    end = end.min(stable as usize);
+                }
+                let tokens = session
+                    .prompt_tokens
+                    .get(start..end.min(session.prompt_tokens.len()))
+                    .unwrap_or(&[])
+                    .to_vec();
+                s.meter_input_tokens(&sid_key, expected_pos, &tokens);
             }
             let (seq_id, n_past, prompt_tokens, input, n_tokens) = {
                 let session = &s.sessions[&sid_key];
@@ -1861,6 +1901,16 @@ pub(super) fn prefill_batch_blocking(
 
     for (reply, item) in prepared {
         let result = (|| -> Result<TimedReply> {
+            s.meter_prefill(
+                &item.sid_key,
+                item.n_tokens as u32,
+                if item.chunk_index == 0 {
+                    item.requested_cached_tokens
+                } else {
+                    0
+                },
+                engine_timings.backend_call_us / 1000,
+            );
             let session = s.sessions.get_mut(&item.sid_key).unwrap();
             if let Some(positions) = item.mrope_positions.as_deref() {
                 session.n_past = logical_end_from_mrope_positions(
@@ -1935,6 +1985,10 @@ pub(super) fn prefill_batch_blocking(
                     .ok_or_else(|| {
                         anyhow::anyhow!("batch produced no logits for {}", item.sid_key)
                     })?;
+                // The last stage's post-norm row proves its work (plain steps).
+                if item.n_tokens == 1 {
+                    s.meter_tail_rows(&item.sid_key, item.n_past, logits_index as i32);
+                }
                 let recent = s.sessions[&item.sid_key].recent_tokens.clone();
                 let logits = s.engine.logits_ith(logits_index as i32);
                 let (next_id, sampling_timing) = sample_token_within_budget(
@@ -2004,8 +2058,7 @@ pub(super) fn prefill_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let (residual, residual_shape) =
-                output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let (residual, residual_shape) = output.residual_for(&item.sid_key, s.engine.n_embd)?;
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let mut meta = json!({
                 "done": false,
@@ -2032,8 +2085,17 @@ pub(super) fn prefill_batch_blocking(
                 meta["tokens"] = json!(tokens);
             }
             let started = Instant::now();
+            let width = residual_shape.get(1).copied().unwrap_or(0);
             let (bytes, wire_timing) =
                 wire::encode_profiled(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
+            s.meter_output(
+                &item.sid_key,
+                item.start_pos,
+                item.n_tokens as u32,
+                &bytes,
+                item.wire_dtype,
+                Some((&residual, width)),
+            );
             timings.residual_wire_f16_encode_ns = timings
                 .residual_wire_f16_encode_ns
                 .saturating_add(wire_timing.f16_conversion_ns);
@@ -2228,6 +2290,10 @@ pub(super) fn step_batch_blocking(
             session.last_used = Instant::now();
             let seq_id = session.seq_id();
             let n_past = session.n_past;
+            if let Some((hidden, shape)) = tensor.as_ref() {
+                let rows = shape.first().copied().unwrap_or(0) as u32;
+                s.meter_input_tensor(&sid_key, n_past, rows, hidden, wire_dtype);
+            }
             let input = if let Some((hidden, shape)) = tensor {
                 let n_tokens = shape.first().copied().unwrap_or(0);
                 crate::llm::validate_hidden_tensor(
@@ -2251,6 +2317,7 @@ pub(super) fn step_batch_blocking(
                     .unwrap()
                     .recent_tokens
                     .push(token);
+                s.meter_fed_tokens(&sid_key, n_past, &[token]);
                 PreparedStepInput::Tokens { token }
             };
             let n_tokens = match &input {
@@ -2310,6 +2377,9 @@ pub(super) fn step_batch_blocking(
         }
     }
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
+    if prepared.iter().any(|(_, item)| item.is_last) {
+        s.meter_tail_ready();
+    }
     let decode_started = Instant::now();
     let decode_result = match &prepared[0].1.input {
         PreparedStepInput::Tokens { .. } => {
@@ -2374,6 +2444,7 @@ pub(super) fn step_batch_blocking(
                 .n_past
                 .saturating_add(item.n_tokens as u32);
             s.sessions.get_mut(&item.sid_key).unwrap().n_past = new_n_past;
+            s.meter_step(&item.sid_key, item.n_tokens as u32, 0);
             let mut timings = NodeTimings {
                 session_id: Some(item.sid_key.clone()),
                 queue_us: item.queued_at.elapsed().as_micros() as u64,
@@ -2452,8 +2523,7 @@ pub(super) fn step_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let (residual, residual_shape) =
-                output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let (residual, residual_shape) = output.residual_for(&item.sid_key, s.engine.n_embd)?;
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let tokens = match &item.input {
                 PreparedStepInput::Tokens { token } => vec![*token],
@@ -2464,8 +2534,17 @@ pub(super) fn step_batch_blocking(
                 meta["tokens"] = json!(tokens);
             }
             let encode_started = Instant::now();
+            let width = residual_shape.get(1).copied().unwrap_or(0);
             let (bytes, wire_timing) =
                 wire::encode_profiled(&meta, Some((&residual, residual_shape)), item.wire_dtype)?;
+            s.meter_output(
+                &item.sid_key,
+                item.n_past,
+                item.n_tokens as u32,
+                &bytes,
+                item.wire_dtype,
+                Some((&residual, width)),
+            );
             timings.residual_wire_f16_encode_ns = timings
                 .residual_wire_f16_encode_ns
                 .saturating_add(wire_timing.f16_conversion_ns);

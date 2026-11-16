@@ -43,7 +43,7 @@ desktop = ["dep:tao", "dep:wry", "dep:webkit2gtk"]
 [dependencies]
 # All the llama.cpp code (FFI, MTP, MoE, GGUF, sysmon) lives here, so that
 # editing the backend/network/routing of `node` does not rebuild it.
-llama-engine = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "75293ef85064d69dfc0c51f4a1d66d007a64bbfb" }
+llama-engine = { git = "ssh://git@github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "143311b60fb731262667a8c61749db3e79ac5dcd" }
 brand = { path = "../brand" }
 enterprise-protocol = { path = "../enterprise-protocol" }
 arc-swap = "1"
@@ -58,6 +58,7 @@ semver = "1"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+metering-core = { path = "../metering-core" }
 rand = "0.8"
 sha2 = "0.10"
 hmac = "0.12"
@@ -93,10 +94,10 @@ futures = "0.3"
 tokio-util = { version = "0.7", features = ["io", "compat"] }
 # Peer-to-peer transport: QUIC endpoints dialed by Ed25519 key, relays with
 # hole punching, gossip and LAN discovery. See `network/p2p.rs`.
-iroh = { version = "1.3", features = ["unstable-net-report"] }
+iroh = { version = "1.4.1", features = ["unstable-net-report"] }
 iroh-gossip = "0.101"
 iroh-mdns-address-lookup = "0.6"
-iroh-relay = { version = "1.3", features = ["server"] }
+iroh-relay = { version = "1.4.1", features = ["server"] }
 pkarr = "8.1"
 async-trait = "0.1"
 subtle = "2"

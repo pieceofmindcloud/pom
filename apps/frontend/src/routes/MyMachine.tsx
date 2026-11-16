@@ -118,7 +118,7 @@ export function MyMachine() {
                 </Mono>
               </KeyValue>
               <KeyValue label={t("network.profile")}>
-                {t(`profile.${node.data.profile}`)}
+                {node.data.validator ? t("lobby.validatorRole") : t(`profile.${node.data.profile}`)}
               </KeyValue>
               {/* The old "Role" (principal/node) left `/api/ui/node` with the
                   trust model and left the cell blank. What exists today

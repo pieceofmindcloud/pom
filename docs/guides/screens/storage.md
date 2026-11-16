@@ -8,10 +8,10 @@ order: 310
 ---
 
 :::lead
-Storage tells this machine where to look for models, where to write slices and how much disk slices may take, plus the shared folder plugins use for projects.
+Storage tells this machine where to look for models, plus the shared folder plugins use for projects.
 :::
 
-![Storage: the project workspace, the folders of full models and, on the right, what automatic detection would find.](../images/en/folders.webp)
+![Storage: the project workspace, the folders of full models and, on the right, what automatic detection would find.](../images/en/storage.webp)
 
 :::cards
 ### Project workspace

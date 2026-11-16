@@ -33,7 +33,7 @@ A node can be blocked by identity, and that identity derives from a key living i
 
 :::faq
 ### Where do I see the connection key?
-In Settings > Connection keys. Rotating it cuts off every other node, so the button only shows up for whoever has authority.
+In My Network > Sharing, on the principal. Rotating it cuts off every other node, so the button only shows up for whoever has authority.
 ### Does a leaked API key compromise the cluster?
 It only opens the inference routes. Revoke it in API keys and create another; the connection key stays valid.
 :::

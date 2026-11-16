@@ -47,8 +47,7 @@ pub const ROTATE_AFTER: Duration = Duration::from_secs(60 * 60);
 const RETIRE_AFTER: Duration = Duration::from_secs(10 * 60);
 /// When a relay's pass in the map is swapped for a newer one: two thirds
 /// into its life, as the membership token is renewed.
-const PASS_SWAP_AFTER: Duration =
-    Duration::from_secs(crate::membership::RENEW_AFTER_SECS as u64);
+const PASS_SWAP_AFTER: Duration = Duration::from_secs(crate::membership::RENEW_AFTER_SECS as u64);
 /// Bound of one binding frame.
 const MAX_BIND_BYTES: usize = 4 * 1024;
 
@@ -109,8 +108,11 @@ pub fn check_binding(material: &[u8; 32], binding: &Binding) -> Option<EndpointI
     }
     let signature: [u8; 64] = hex::decode(&binding.signature).ok()?.try_into().ok()?;
     let id = EndpointId::from_bytes(&raw).ok()?;
-    id.verify(&signed_bytes(material), &iroh::Signature::from_bytes(&signature))
-        .ok()?;
+    id.verify(
+        &signed_bytes(material),
+        &iroh::Signature::from_bytes(&signature),
+    )
+    .ok()?;
     Some(id)
 }
 
@@ -275,7 +277,12 @@ pub struct AnonTunnels {
 }
 
 impl AnonTunnels {
-    pub fn new(secret: SecretKey, node_id: String, handler: AnonHandler, is_member: MemberCheck) -> Self {
+    pub fn new(
+        secret: SecretKey,
+        node_id: String,
+        handler: AnonHandler,
+        is_member: MemberCheck,
+    ) -> Self {
         Self {
             secret,
             node_id,
@@ -296,8 +303,15 @@ impl AnonTunnels {
             retiring.retain(|(_, since)| since.elapsed() < RETIRE_AFTER);
         }
         let fresh: Vec<&AnonymousRelay> = {
-            let used = self.used_passes.lock().map(|used| used.clone()).unwrap_or_default();
-            relays.iter().filter(|relay| !used.contains(&relay.pass)).collect()
+            let used = self
+                .used_passes
+                .lock()
+                .map(|used| used.clone())
+                .unwrap_or_default();
+            relays
+                .iter()
+                .filter(|relay| !used.contains(&relay.pass))
+                .collect()
         };
         let mut current = self.current.write().await;
         let rotate = current
@@ -308,7 +322,11 @@ impl AnonTunnels {
                 Ok(generation) => {
                     info!(
                         "anon-tunnel: ephemeral endpoint on {} visitor relay(s)",
-                        generation.relays.lock().map(|relays| relays.len()).unwrap_or(0)
+                        generation
+                            .relays
+                            .lock()
+                            .map(|relays| relays.len())
+                            .unwrap_or(0)
                     );
                     self.mark_used(&fresh);
                     if let Some(old) = current.replace(Arc::new(generation)) {
@@ -393,10 +411,12 @@ impl AnonTunnels {
             .await
         {
             Ok(endpoint) => endpoint,
-            Err(_) => builder()
-                .bind_addr(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?
-                .bind()
-                .await?,
+            Err(_) => {
+                builder()
+                    .bind_addr(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?
+                    .bind()
+                    .await?
+            }
         };
         let router = iroh::protocol::Router::builder(endpoint)
             .accept(
@@ -525,7 +545,10 @@ mod tests {
     async fn a_binding_round_trips_and_is_bounded() {
         let binding = sign_binding(&[3; 32], &SecretKey::from_bytes(&[4; 32]), "node");
         let mut wire = Vec::new();
-        BindCodec.write_request(&mut wire, binding.clone()).await.unwrap();
+        BindCodec
+            .write_request(&mut wire, binding.clone())
+            .await
+            .unwrap();
         let read = BindCodec
             .read_request(&mut futures::io::Cursor::new(wire))
             .await

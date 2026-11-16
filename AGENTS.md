@@ -25,6 +25,7 @@ place is there, not here.
 | `web-ui.md` | how the UI comes up, menu, modals, Panel, Chat, slicing/deploy screens |
 | `plugins-ui.md` | menus, screens, routes, profiles and i18n provided by plugins (`pom-plugin-ui/v1` manifest) |
 | `enterprise-licensing.md` | independent plugins, licenses, lease, process host, GitHub repositories |
+| `payments.md` | charging visitors: member gateway, home statements, prepaid credit gate, leases |
 | `security-model.md` | roles, trust chain, membership tokens, revocation, mutual TLS, route scopes, local API keys |
 
 **By folder** (`AGENTS.md`) - what each file does, function by function, and the

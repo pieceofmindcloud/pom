@@ -16,7 +16,7 @@ The client calls any gateway with an API key; the answer comes back with x_pom.s
 
 :::steps
 ### Create an API key
-In Settings > API keys. Each profile creates its own; the cluster connection key does not work for inference.
+In My Network > API keys (a person signed in with their own account uses My API keys). Each profile creates its own; the cluster connection key does not work for inference.
 ### Find the model and the limit
 GET /v1/models lists the models the network serves right now, with the available context and the maximum output tokens.
 ### Make the call

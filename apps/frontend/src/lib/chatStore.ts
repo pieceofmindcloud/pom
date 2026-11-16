@@ -68,6 +68,9 @@ export interface ChatMessage {
   requestContent?: ChatRequestContent;
   /** Set when the answer failed; the turn stays visible with its reason. */
   error?: string;
+  /** `payment_required`: the network charges visitors and the account ran
+   *  dry (HTTP 402); the Chat points to the Credit page. */
+  errorKind?: "payment_required";
   /** `x_pom.source`-style hop chain, when the node reported one. */
   source?: string;
   /** Thinking blocks emitted by models with reasoning enabled. */
@@ -520,7 +523,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
           patchReply({ error: options.interruptedMessage }, true);
         } else {
           const detail = error instanceof Error ? error.message : String(error);
-          patchReply({ error: detail }, true);
+          const paymentRequired = error instanceof ApiError && error.status === 402;
+          patchReply(paymentRequired ? { error: detail, errorKind: "payment_required" } : { error: detail }, true);
           if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
             options.onUnauthorized?.();
           }

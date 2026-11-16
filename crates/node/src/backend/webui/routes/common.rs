@@ -9,10 +9,21 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/connection", get(connection_status))
         .route("/api/ui/plugins", get(crate::plugins::list_plugins))
         .route("/api/ui/quota", get(crate::quota::my_quota))
+        .route(
+            "/api/ui/payments/balance",
+            get(crate::payments::runtime::my_balance),
+        )
+        .route(
+            "/api/ui/payments/request",
+            post(crate::payments::runtime::request_credit),
+        )
         .route("/api/ui/quota/reset", post(crate::quota::reset_my_session))
         .route("/api/ui/quota/request", post(crate::quota::request_more))
         .route("/api/ui/plugins/ui", get(crate::plugin_ui::list_plugin_ui))
-        .route("/api/ui/plugin-catalog", get(crate::plugins::plugin_catalog))
+        .route(
+            "/api/ui/plugin-catalog",
+            get(crate::plugins::plugin_catalog),
+        )
         .route(
             "/api/ui/plugin-catalog/:code",
             get(crate::plugins::plugin_catalog_entry),
@@ -94,7 +105,10 @@ pub(super) fn routes() -> Router<GatewayState> {
                 axum::extract::DefaultBodyLimit::max(crate::components::MAX_COMPONENT_BODY),
             ),
         )
-        .route("/api/internal/gpu/yield", post(crate::gpu_arbiter::yield_route))
+        .route(
+            "/api/internal/gpu/yield",
+            post(crate::gpu_arbiter::yield_route),
+        )
         .route(
             "/api/internal/gpu/release-images",
             post(crate::gpu_arbiter::release_route),
@@ -144,6 +158,10 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(crate::plugin_stage_link::link_secret_route),
         )
         .route(
+            "/api/internal/plugins/:code/engine/metering/:deploy",
+            post(crate::plugin_metering::metering_route),
+        )
+        .route(
             "/api/internal/plugins/:code/engine/link/:deploy/:conn",
             post(crate::plugin_stage_link::link_frame_route).layer(
                 axum::extract::DefaultBodyLimit::max(crate::plugin_stage_link::MAX_FRAME),
@@ -167,7 +185,10 @@ pub(super) fn routes() -> Router<GatewayState> {
                 crate::chat_image::MAX_RUN_BODY,
             )),
         )
-        .route("/api/ui/chat/image/:hash", get(crate::chat_image::image_route))
+        .route(
+            "/api/ui/chat/image/:hash",
+            get(crate::chat_image::image_route),
+        )
         .route("/api/ui/cluster/models", get(cluster_models))
         .route(
             "/api/ui/model-sidecar-links",
@@ -186,8 +207,14 @@ pub(super) fn routes() -> Router<GatewayState> {
             post(crate::windows_firewall::retry),
         )
         .route("/api/ui/tls/ca", get(super::super::https::ca_status))
-        .route("/api/ui/tls/ca.crt", get(super::super::https::ca_certificate))
-        .route("/api/ui/tls/ca/install", post(super::super::https::ca_install))
+        .route(
+            "/api/ui/tls/ca.crt",
+            get(super::super::https::ca_certificate),
+        )
+        .route(
+            "/api/ui/tls/ca/install",
+            post(super::super::https::ca_install),
+        )
         .route("/api/ui/network/geo/countries", get(geo_countries))
         .route("/api/ui/network/geo/cities", get(geo_cities))
         .route("/api/ui/network/geo/nearest", get(geo_nearest))

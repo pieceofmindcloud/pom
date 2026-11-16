@@ -30,8 +30,8 @@ function stateTone(state: PluginStatus["state"] | null): Tone {
   }
 }
 
-/** Cards per page of the store; two columns from `xl`. */
-const PAGE_SIZE = 10;
+/** Cards per page of the store; two columns from `xl`, so an even number fills the rows. */
+export const PAGE_SIZE = 20;
 /** The reference plugin the "Develop your plugin" tab puts first. */
 const EXAMPLE_PLUGIN_CODE = "base";
 const EXAMPLE_PLUGIN_REPOSITORY = "https://github.com/pieceofmindcloud/pom-plugin-base";
@@ -749,7 +749,10 @@ function PluginCard({
                 : developmentSource.active ? t("plugins.devRebuildInstall") : t("plugins.devInstall")}
             </Button>
           )}
-          {!active && hasRequiredLicense && licenseStatusAvailable && entry && !hasLicense && (
+          {entry?.coming_soon && !active && (
+            <Badge tone="iris">{t("plugins.comingSoon")}</Badge>
+          )}
+          {!active && hasRequiredLicense && licenseStatusAvailable && entry && !entry.coming_soon && !hasLicense && (
             <Button
               variant="ghost"
               type="button"
@@ -886,7 +889,9 @@ export function Plugins() {
   }, [search]);
   // The license server searches and pages the store; the whole catalog above
   // still decides activation and names the plugins a key granted.
-  const storePage = usePublicPluginCatalog({ q: query || undefined, page, perPage: PAGE_SIZE });
+  // The example plugin is listed apart, in the Develop tab, so the store leaves it out
+  // of the page and its total and every page fills its rows. A visitor has no Develop tab.
+  const storePage = usePublicPluginCatalog({ q: query || undefined, page, perPage: PAGE_SIZE, ...(readOnly ? {} : { exclude: [EXAMPLE_PLUGIN_CODE] }) });
   const examplePlugin = usePublicPlugin(EXAMPLE_PLUGIN_CODE);
   const [licenseKey, setLicenseKey] = useState("");
   const [activateBusy, setActivateBusy] = useState(false);
@@ -1153,18 +1158,22 @@ export function Plugins() {
     if (!codes.includes(code)) codes.push(code);
   };
   pageEntries.forEach((entry) => addCode(entry.code));
-  if (page === 1) {
-    [...developmentByCode.values()]
-      .filter((source) => !catalogCodes.has(source.plugin_code) && matchesQuery(source.plugin_code, source.display_name))
-      .forEach((source) => addCode(source.plugin_code));
-    repositories
-      .filter((repository) => !catalogCodes.has(repository.manifest.plugin_code)
-        && matchesQuery(repository.manifest.plugin_code, repository.manifest.display_name))
-      .forEach((repository) => addCode(repository.manifest.plugin_code));
-    localStatuses
-      .filter((status) => status.active && !catalogCodes.has(status.code) && matchesQuery(status.code))
-      .forEach((status) => addCode(status.code));
-  }
+  // What only this node knows (a mounted source, a registered repository, an active plugin
+  // outside the store) is a list of its own below the store, so it never skews a page.
+  const localCodes: string[] = [];
+  const addLocal = (code: string) => {
+    if (!codes.includes(code) && !localCodes.includes(code)) localCodes.push(code);
+  };
+  [...developmentByCode.values()]
+    .filter((source) => !catalogCodes.has(source.plugin_code) && matchesQuery(source.plugin_code, source.display_name))
+    .forEach((source) => addLocal(source.plugin_code));
+  repositories
+    .filter((repository) => !catalogCodes.has(repository.manifest.plugin_code)
+      && matchesQuery(repository.manifest.plugin_code, repository.manifest.display_name))
+    .forEach((repository) => addLocal(repository.manifest.plugin_code));
+  localStatuses
+    .filter((status) => status.active && !catalogCodes.has(status.code) && matchesQuery(status.code))
+    .forEach((status) => addLocal(status.code));
   const cardFor = (code: string) => ({
     code,
     entry: pageEntries.find((entry) => entry.code === code)
@@ -1174,11 +1183,35 @@ export function Plugins() {
     repository: repositoryByCode.get(code) ?? null,
     licenseStatus: licenseStatusByCode.get(code) ?? localByCode.get(code) ?? null,
   });
-  // The example plugin lives in the "Develop your plugin" tab.
-  // A visitor has no Develop tab, so the example plugin joins the list.
-  const cards = codes.filter((code) => readOnly || code !== EXAMPLE_PLUGIN_CODE).map(cardFor);
+  // The example plugin lives in the "Develop your plugin" tab (an older store that ignores
+  // `exclude` may still send it). A visitor has no Develop tab, so it joins the list there.
+  const listed = (code: string) => readOnly || code !== EXAMPLE_PLUGIN_CODE;
+  const cards = codes.filter(listed).map(cardFor);
+  const localCards = localCodes.filter(listed).map(cardFor);
   const total = storePage.data?.total ?? null;
   const pageCount = total === null ? 1 : Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // Previous / Next, drawn above and below the list.
+  const pagination = (where: "top" | "bottom") => pageCount > 1 && (
+    <nav aria-label={t("plugins.pagination")} data-testid={`plugins-pagination-${where}`} className="flex items-center justify-between gap-3">
+      <Button
+        variant="outline"
+        disabled={page <= 1 || storePage.isFetching}
+        icon={<ChevronLeft className="h-3.5 w-3.5" />}
+        onClick={() => setPage(page - 1)}
+      >
+        {t("plugins.pagePrevious")}
+      </Button>
+      <p className="text-xs text-muted" aria-live={where === "bottom" ? "polite" : undefined}>{t("plugins.pageStatus", { page, pages: pageCount })}</p>
+      <Button
+        variant="outline"
+        disabled={page >= pageCount || storePage.isFetching}
+        onClick={() => setPage(page + 1)}
+      >
+        {t("plugins.pageNext")}
+        <ChevronRight className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
+      </Button>
+    </nav>
+  );
   const licenseStatusAvailable = !plugins.isLoading && !plugins.isError && plugins.data !== undefined;
   const targetOs = node.data?.system.os ?? null;
   const targetArch = node.data?.system.arch ?? null;
@@ -1334,6 +1367,7 @@ export function Plugins() {
                 autoComplete="off"
               />
             </label>
+            {pagination("top")}
             {storePage.isLoading && (
               <div role="status" aria-label={t("plugins.catalogLoading")} className="grid gap-4 xl:grid-cols-2">
                 <Skeleton className="h-44 w-full" />
@@ -1357,7 +1391,7 @@ export function Plugins() {
             )}
 
             {!storePage.isLoading && !storePage.isError && licenseStatusAvailable && !githubRepositories.isLoading
-              && cards.length === 0 && (
+              && cards.length === 0 && localCards.length === 0 && (
               <Panel>
                 <Empty
                   icon={<Package className="h-5 w-5" />}
@@ -1366,26 +1400,18 @@ export function Plugins() {
               </Panel>
             )}
 
-            {pageCount > 1 && (
-              <nav aria-label={t("plugins.pagination")} className="flex items-center justify-between gap-3">
-                <Button
-                  variant="outline"
-                  disabled={page <= 1 || storePage.isFetching}
-                  icon={<ChevronLeft className="h-3.5 w-3.5" />}
-                  onClick={() => setPage(page - 1)}
-                >
-                  {t("plugins.pagePrevious")}
-                </Button>
-                <p className="text-xs text-muted" aria-live="polite">{t("plugins.pageStatus", { page, pages: pageCount })}</p>
-                <Button
-                  variant="outline"
-                  disabled={page >= pageCount || storePage.isFetching}
-                  onClick={() => setPage(page + 1)}
-                >
-                  {t("plugins.pageNext")}
-                  <ChevronRight className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
-                </Button>
-              </nav>
+            {pagination("bottom")}
+
+            {localCards.length > 0 && (
+              <section aria-labelledby="plugins-local-title" data-testid="plugins-local" className="space-y-3 border-t border-line pt-4">
+                <div>
+                  <h2 id="plugins-local-title" className="text-sm font-semibold text-fg">{t("plugins.localTitle")}</h2>
+                  <p className="text-xs text-muted">{t("plugins.localSubtitle")}</p>
+                </div>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {localCards.map(renderCard)}
+                </div>
+              </section>
             )}
           </div>
 

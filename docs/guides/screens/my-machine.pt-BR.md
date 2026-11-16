@@ -19,7 +19,7 @@ A identidade da máquina na rede, derivada do arquivo de chave dela. Nunca é o 
 ### Portas
 P2P (descoberta), gateway (esta interface e a API) e inferência (os saltos entre máquinas).
 ### Perfil e autoridade
-Administrador, worker ou visitante, e se esta máquina é a administradora principal, uma secundária ou nenhuma das duas.
+Administrador, worker, validador ou visitante, e se esta máquina é a administradora principal, uma secundária ou nenhuma das duas. Um validador é um worker que reexecuta trabalho amostrado para conferir os outros e não serve modelo.
 ### Nome da máquina
 Só um rótulo para as outras. Vazio, usa o hostname do sistema.
 ### Endereço anunciado

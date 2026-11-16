@@ -91,8 +91,12 @@ fn fold(code: &str, phase: LinkPhase, sample: f64) {
     };
     let entry = perf.entry(code.to_owned()).or_default();
     match phase {
-        LinkPhase::Prefill => entry.prefill_ms_per_token = Some(blend(entry.prefill_ms_per_token, sample)),
-        LinkPhase::Decode => entry.decode_ms_per_step = Some(blend(entry.decode_ms_per_step, sample)),
+        LinkPhase::Prefill => {
+            entry.prefill_ms_per_token = Some(blend(entry.prefill_ms_per_token, sample))
+        }
+        LinkPhase::Decode => {
+            entry.decode_ms_per_step = Some(blend(entry.decode_ms_per_step, sample))
+        }
     }
 }
 
@@ -205,7 +209,11 @@ pub(crate) fn merge_reported_links(code: &str, done: &Value) {
 /// hop, in the phase its frames belonged to. A machine's `processing_ms` is its own work: the time it served the
 /// frames (reported in its answer) less the round trip to the machine below it, which the served time already
 /// includes. The head serves the prompt, so its own prompt time is the engine's, less the same round trip.
-pub(crate) fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: &str, prompt_ms: u64) {
+pub(crate) fn apply_stage_links(
+    trace: &mut crate::prefill::RequestTrace,
+    code: &str,
+    prompt_ms: u64,
+) {
     use super::plugin_stage_link::{take_channel_stats, take_link_stats, LinkPhase};
     let links = take_link_stats(code);
     let ids: Vec<String> = trace.hops.iter().map(|hop| hop.node_id.clone()).collect();
@@ -232,7 +240,10 @@ pub(crate) fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: 
         trace.total_bytes_sent += link.bytes_sent;
         trace.total_bytes_received += link.bytes_received;
     }
-    let sum = |node: &str, phase: LinkPhase, field: fn(&super::plugin_stage_link::LinkStats) -> u64| -> u64 {
+    let sum = |node: &str,
+               phase: LinkPhase,
+               field: fn(&super::plugin_stage_link::LinkStats) -> u64|
+     -> u64 {
         links
             .iter()
             .filter(|(n, p, _)| n == node && *p == phase)
@@ -283,7 +294,9 @@ pub(crate) fn apply_stage_links(trace: &mut crate::prefill::RequestTrace, code: 
 
 /// One channel's entry in a hop's transport summary. The round trips and the network time are means (with the
 /// maximum as the p95): the links report aggregates, not the sample list.
-fn channel_entry(channel: &super::plugin_stage_link::ChannelStats) -> crate::prefill::TransportSummaryEntry {
+fn channel_entry(
+    channel: &super::plugin_stage_link::ChannelStats,
+) -> crate::prefill::TransportSummaryEntry {
     use crate::relay::InferenceTransport;
     let transport = match channel.channel.as_str() {
         "quic" => InferenceTransport::Quic,
@@ -392,7 +405,10 @@ mod speed_tests {
         record_frame("strata-stage-test", LinkPhase::Decode, 30.0, 3);
         let first = perf_for("strata-stage-test");
         assert_eq!(first.decode_ms_per_step, Some(10.0));
-        assert_eq!(first.prefill_ms_per_token, None, "a phase nothing ran in is not measured");
+        assert_eq!(
+            first.prefill_ms_per_token, None,
+            "a phase nothing ran in is not measured"
+        );
         record_frame("strata-stage-test", LinkPhase::Decode, 0.0, 3);
         record_frame("strata-stage-test", LinkPhase::Decode, 9.0, 0);
         assert_eq!(perf_for("strata-stage-test").decode_ms_per_step, Some(10.0));
@@ -406,7 +422,10 @@ mod speed_tests {
                 "draft_proposed": 9, "draft_accepted": 7, "finish": "length"}),
             0,
         );
-        assert_eq!((own.prompt_tokens, own.cached_tokens, own.generated), (70, 4, 12));
+        assert_eq!(
+            (own.prompt_tokens, own.cached_tokens, own.generated),
+            (70, 4, 12)
+        );
         assert_eq!((own.prefill_ms, own.decode_ms), (Some(800.0), Some(400.0)));
         assert_eq!((own.draft_proposed, own.draft_accepted), (9, 7));
         assert_eq!(own.finish, "length");
@@ -416,10 +435,16 @@ mod speed_tests {
                 "draft_n_accepted": 2}}),
             40,
         );
-        assert_eq!((llama.prefill_ms, llama.decode_ms), (Some(1000.0), Some(2000.0)));
+        assert_eq!(
+            (llama.prefill_ms, llama.decode_ms),
+            (Some(1000.0), Some(2000.0))
+        );
         assert_eq!((llama.prompt_n, llama.decode_n), (64, 40));
         assert_eq!((llama.draft_proposed, llama.draft_accepted), (5, 2));
-        assert_eq!(llama.generated, 40, "the pieces count when the engine does not count its tokens");
+        assert_eq!(
+            llama.generated, 40,
+            "the pieces count when the engine does not count its tokens"
+        );
     }
 
     #[test]

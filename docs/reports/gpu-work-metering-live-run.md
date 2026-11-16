@@ -1,0 +1,213 @@
+# GPU work metering: live run on real nodes
+
+Date: 2026-11-09. Code: POM branch `feat/gpu-work-metering`, plugin
+`pom-plugin-metering` `main`, both local.
+
+## Setup
+
+Three `pom` debug builds in one sealed container (`--network none`, no GPU,
+CPU only), each with its own `POM_HOME`: machine A (principal, gateway and
+ledger with the metering plugin installed through the dev rebuild), B and C
+(workers). Model: a 27B IQ3_S GGUF of 65 layers served as virtual slices of
+the whole file (`POM_VIRTUAL_SLICES=1`). Metering on with a 5-minute cycle,
+30 s grace, 2 samples and 3 challenges per node.
+
+## What was checked
+
+1. **Two hops, f16 wire** (A `0..31`, B `32..64`). The first run found two
+   defects, both fixed before the results below:
+   - the head check compared the head's input chain with its whole computed
+     sequence, generated tokens included (it now stops after the prefilled
+     prompt positions);
+   - the output link hashed the reply frame, while in ring, direct and link
+     modes a hop encodes a separate frame for the next hop: the output link
+     now hashes what the relay encoders forward (`metering::note_forward`),
+     and hidden-state links no longer carry positions.
+   After the fixes both receipts were metered and linked, the bundle reached
+   the ledger through the outbox, and at cycle close the head's sample was
+   re-executed on A (layers 0-31 cut from the whole file, the head's token
+   sequence run on CPU) and **passed**. Each node got a signed statement with
+   full payout (head 1152 layer-positions, tail 1188).
+2. **Three hops, f8 wire** (A `0..23`, C `24..47`, B `48..64`). All three
+   receipts metered with f8 links; a challenge on C passed; at cycle close
+   C's sample was re-executed through the reproduced f8 boundary (layers 0-23,
+   `wire::decode(wire::encode(.., f8))`, then 24-47) and **passed** with the
+   paper's bf16 TOPLOC thresholds.
+
+## Not covered
+
+- The tail keeps no proofs (it outputs tokens), so its work was paid on
+  receipts alone.
+- No dishonest node was run live; the failure paths are covered by unit
+  tests (TOPLOC on other weights and coarse quantization, ledger failures,
+  missing proofs, wrong roots).
+- Threshold calibration at range ends across model families and GPUs (plan
+  task 2.5) still needs a dedicated run.
+
+## Strata (split plugin engine), 2026-11-09
+
+Two machines, one GPU each (RTX 3060, RTX 5060 Ti), Flash-Next IQ3_XXS split
+`0..23` / `24..47` over an f8 stage link, metering on, the ledger on the
+first machine.
+
+- **Receipts: confirmed.** Every turn produced linked receipts on both stages
+  (`out_chain` of stage 0 equal to `in_chain` of stage 1 over f8), the
+  gateway collected them after the stream, and the ledger accepted them and
+  paid both stages in the cycle statements.
+- **Found and fixed:** Flash-Next's engine reads a prompt as verify windows
+  (`'W'`/`'V'`), not prompt pieces; the earlier stage now takes the later
+  stage's phase tag (`?phase=prefill`) to meter such windows as prompt. Decode
+  windows are proved only for their kept rows (at the commit), so rejected
+  drafts are never proved.
+- **Found:** Strata answers a prompt piece with prompt rows (10240 floats per
+  token on Flash-Next: 4 hyper-connection streams of 2560) and a window with
+  window rows (12804). The verifier reads the sequence both ways and accepts
+  the layout that matches.
+- **Re-execution runs end to end** on real Strata: the verifier's plugin
+  loads an audit stage of layers 0-23, the node reads its rows, and the
+  TOPLOC check runs; repeated re-executions of one receipt agree with each
+  other (deterministic). A sample taken while the deployment still held the
+  GPU was void (out of memory), as designed.
+- **More found and fixed in later cycles:** the stage protocol commits prompt
+  windows like decode windows (`'V'` keep 6, `'C'` 6), and the later stage's
+  phase tag lags into the first decode window; so every window is now held
+  until its commit and only its kept rows are proved, the tag only deciding
+  whether kept positions count as prompt. A window row is the prompt row
+  (10240 floats) followed by 2564 values that depend on how the sequence was
+  cut into windows: only the prompt part is proved, learned from the link's
+  hello (`lo, hi, window_floats, prompt_floats, features`). The verifier
+  judges each chunk against both readings (prompt pieces, committed windows).
+- **Result:** the pipeline works end to end and some honest receipts pass
+  completely (every chunk within the paper's limits), but honest chunks also
+  fail, up to 116 of 128 exponent mismatches. The decisive case: four
+  receipts share the same first chunk (the same 32-token chat template, the
+  same stored proof), and re-executing it against the same tokens gave
+  verdicts from a pass to 96 mismatches depending on the rest of the
+  sequence. Strata's output for a fixed prefix is not reproducible enough for
+  the paper's TOPLOC limits - consistent with its MoE expert tiering, where an
+  expert runs on GPU or CPU kernels depending on the cache.
+- **Decision in code:** re-executing plugin engines is off by default
+  (`metering.verify_plugin_engines`); their samples are void and the stages
+  are paid on receipts and challenges, which this run confirmed work. Turning
+  it on needs a calibration of the limits for the engine (honest variance
+  against dishonest runs: another quantization, skipped layers), or an audit
+  mode where the engine places experts deterministically.
+
+## Strata calibration, 2026-11-09
+
+Same setup (Flash-Next IQ3_XXS, stage 0 = layers 0-23 on an RTX 3060, f8
+link). Six fresh turns (11-19 prompt tokens, 120 output tokens, five proof
+chunks each); four receipts re-executed through the ledger's `rpc.calibrate`:
+`honest` three times, and the audited stage with its last 1 and 4 layers
+skipped (`skip:1`, `skip:4`), 20 runs, both readings recorded per chunk.
+
+- **Re-execution is deterministic**: the three honest runs of every receipt
+  are identical, number for number. The variance seen before was the
+  bookkeeping defects fixed above.
+- **Exponent mismatches are useless for Strata**: honest chunks show 44-120
+  of 128 (the verifier's top-128 picks differ from the live ones), so the
+  paper's limit (38) fails every honest stage.
+- **Mantissa error separates honest work from skipped layers**. Per chunk,
+  in the better of the two readings:
+
+  | variant | mean | median |
+  |---|---|---|
+  | honest | 3.7 - 12.5 | 3 - 8 |
+  | skip 1 of 24 layers | 4.1 - 12.4 | 3 - 11 |
+  | skip 4 of 24 layers | 34.2 - 60.8 (short last chunk: 6.2) | 27 - 64 |
+
+- **Limits for Strata** (`toploc::Params::for_engine("strata")`): mean <= 20,
+  median <= 16, exponent count not used. Every honest chunk passes; every
+  skip-4 sample fails in 4 of its 5 chunks. Skipping one layer is not
+  detected: it stays inside the honest range.
+- **Confirmed through the normal path** with `metering.verify_plugin_engines`
+  on: two honest receipts re-checked (`rpc.recheck`) pass, a skip-4
+  re-execution fails.
+
+Limits of this calibration: one model, one quantization, one stage, one GPU
+model, short prompts. `verify_plugin_engines` stays off by default; a network
+serving this model may turn it on. Another model or engine needs its own run
+of `rpc.calibrate` (honest repeats and skipped layers) before its re-execution
+pays or penalizes anyone.
+
+## llama.cpp calibration, 2026-11-09
+
+Qwen3.8-27B IQ3_S over three machines with an f8 link: A layers 0-23 on an
+RTX 3060, C layers 24-47 on an RTX 5060 Ti, B (the tail) on CPU; CUDA build
+for architectures 86 and 120. Six turns (11-19 prompt tokens, up to 100 output
+tokens, five proof chunks per stage). Three receipts of A and three of C
+re-executed through `rpc.calibrate`: `honest` twice and `skip:1` / `skip:4`
+on the 3060 (24 runs), then `honest` again on a CPU verifier (4 runs). C's
+re-executions cross the f8 boundary (decoded) and another GPU model.
+
+| variant | exponent mismatches | mean | median |
+|---|---|---|---|
+| honest, GPU verifier | 0 - 4 | 0.2 - 0.7 | 0 - 1 |
+| honest, CPU verifier | 0 - 5 | 0.5 - 1.6 | 0 - 1 |
+| skip 1 of 24 layers | 7 - 24 | 4.9 - 13.3 | 4 - 9 |
+| skip 4 of 24 layers | 12 - 66 | 16.7 - 42.9 | 12 - 43 |
+
+- Re-execution is deterministic (repeats identical) and near-exact across
+  GPU models, through f8, and from GPU work to a CPU verifier.
+- The paper's limits (38 / 10 / 8) catch 4 skipped layers but let 4 of 6
+  one-layer skips pass.
+- **Limits for llama.cpp** (`toploc::Params::for_engine("llama.cpp")`):
+  mean <= 3.0, median <= 2.5, exponent count <= 12 (kept loose: it separates
+  honest from a one-layer skip by only 2). Every honest chunk passes, every
+  chunk of every one-layer skip fails. Confirmed through the normal path: two
+  honest receipts re-checked pass, a one-layer skip fails in all five chunks.
+
+Not measured: Metal or ROCm, other quantizations and models, long prompts.
+A network mixing those backends should run `rpc.calibrate` once.
+
+## Proofs of the last stage, 2026-11-14
+
+Qwen3.8-27B IQ3_S over three CPU-only nodes (0-23, 24-47, 48-64), the last
+stage proving its plain decode steps by its post-norm rows (llama.cpp's
+embeddings output, `pom-plugin-llama.cpp` `set_output_embeddings`). Two of its
+receipts re-executed on a CPU verifier through `rpc.calibrate`:
+
+| variant | exponent mismatches | mean | median |
+|---|---|---|---|
+| honest (4 runs) | 2 - 3 | 1.09 - 1.44 | 1 |
+| skip 1 of 17 layers | 89 - 106 | 34.4 - 40.8 | 31 - 34 |
+| skip 5 of 17 layers | 99 - 111 | 28.3 - 46.1 | 21 - 42 |
+
+- Repeats are identical; every honest chunk passes the llama.cpp limits
+  (mean <= 3.0, median <= 2.5, exponent count <= 12) and every skipped one
+  fails, so the limits stay as they are.
+- `skip:4` (range 48..61) could not load: 61 is not a valid cut of this
+  model's layout (multiples of 4), so `skip:5` stands in for it.
+- With metering on, the last stage generated at 1.13 and 1.17 tok/s against
+  1.13 and 1.04 off: no measurable cost.
+
+Not measured: the last stage on a GPU checked by a CPU verifier (both GPUs
+were busy), and the last stage's prefill, which stays unproved.
+
+## Validators, 2026-11-14
+
+Three CPU nodes (the GPUs were taken by another workload) plus two CPU
+validators holding the model, `validators_per_sample` 2, `reference_rate`
+0.5, 10-minute cycles, `samples_per_node` 2.
+
+- Cycle 45775: every sample went to both validators, which answered their
+  readings and agreed with each other on all six (`agree`); the first and
+  middle stages passed against the agreed reading. Each validator was paid
+  187.2 for 6753 agreed layer positions: together 374.4, the 5 % cap of the
+  workers' pay, taken out of it (3744 earned, 3556.8 paid each), the cycle's
+  total unchanged.
+- The last stage failed both its samples there and in cycle 45774 (mean
+  3.06-3.10, median 3, against the limits 3.0 / 2.5), with the validators and
+  the admin agreeing with each other: these answers were one or two tokens, so
+  its proof chunks held one or two rows, where the calibration's chunks held
+  32 (honest mean 1.1-1.4). Fixed by proving full chunks only on the last
+  stage: a short answer now leaves its receipt unproved (cycle 45777).
+- A first try found no validator usable: their container did not mount the
+  model folder, so each answered that it did not hold the model and the
+  admin's reference decided alone (the plugin records nothing for the
+  validators then).
+
+Not measured: the reading-against-reading limits on their own (validators
+agreed far inside the proof limits), a validator answering wrongly in a live
+run (unit-tested), the pause after strikes live.
+

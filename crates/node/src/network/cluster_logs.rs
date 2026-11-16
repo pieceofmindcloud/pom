@@ -5,12 +5,12 @@
 //! p2p send live in their own tasks and may lose lines when they are busy.
 
 use crate::network::Network;
+use crate::p2p::Codec;
+use crate::p2p::EndpointId;
 use anyhow::Result;
 use arc_swap::ArcSwap;
-use crate::p2p::Codec;
 use async_trait::async_trait;
 use futures::prelude::*;
-use crate::p2p::EndpointId;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -352,31 +352,21 @@ impl Codec for ClusterLogsCodec {
     type Request = LogBatch;
     type Response = LogResponse;
 
-    async fn read_request<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Request>
+    async fn read_request<T>(&mut self, io: &mut T) -> std::io::Result<Self::Request>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_msg(io).await
     }
 
-    async fn read_response<T>(
-        &mut self,
-        io: &mut T,
-    ) -> std::io::Result<Self::Response>
+    async fn read_response<T>(&mut self, io: &mut T) -> std::io::Result<Self::Response>
     where
         T: AsyncRead + Unpin + Send,
     {
         read_msg(io).await
     }
 
-    async fn write_request<T>(
-        &mut self,
-        io: &mut T,
-        request: Self::Request,
-    ) -> std::io::Result<()>
+    async fn write_request<T>(&mut self, io: &mut T, request: Self::Request) -> std::io::Result<()>
     where
         T: AsyncWrite + Unpin + Send,
     {
@@ -394,7 +384,6 @@ impl Codec for ClusterLogsCodec {
         write_msg(io, &response).await
     }
 }
-
 
 /// Cluster log state.
 ///
@@ -840,16 +829,22 @@ mod tests {
         let (capture, receiver) = LogCapture::new(8);
         let service = ClusterLogs::new(capture, receiver);
         service.set_admin_receiver(true);
-        assert!(service.try_ingest_remote("node-a", LogBatch {
-            source_node_id: "node-a".into(),
-            entries: vec![entry("first")],
-            dropped: 2,
-        }));
-        assert!(service.try_ingest_remote("node-a", LogBatch {
-            source_node_id: "node-a".into(),
-            entries: vec![entry("segundo")],
-            dropped: 0,
-        }));
+        assert!(service.try_ingest_remote(
+            "node-a",
+            LogBatch {
+                source_node_id: "node-a".into(),
+                entries: vec![entry("first")],
+                dropped: 2,
+            }
+        ));
+        assert!(service.try_ingest_remote(
+            "node-a",
+            LogBatch {
+                source_node_id: "node-a".into(),
+                entries: vec![entry("segundo")],
+                dropped: 0,
+            }
+        ));
         let mut queue = service
             .plugin_queue
             .lock()
@@ -899,11 +894,14 @@ mod tests {
     async fn a_non_admin_refuses_and_counts_the_batch() {
         let (capture, receiver) = LogCapture::new(8);
         let service = ClusterLogs::new(capture, receiver);
-        assert!(!service.try_ingest_remote("node-a", LogBatch {
-            source_node_id: "node-a".into(),
-            entries: vec![entry("refused")],
-            dropped: 1,
-        }));
+        assert!(!service.try_ingest_remote(
+            "node-a",
+            LogBatch {
+                source_node_id: "node-a".into(),
+                entries: vec![entry("refused")],
+                dropped: 1,
+            }
+        ));
         assert_eq!(service.dropped.load(Ordering::Relaxed), 2);
     }
 
@@ -916,9 +914,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_local_batch_is_sent_to_all_known_admins() {
-        let network = crate::network::Network::testkit("worker".into(), "pk".into(), vec![], None, None)
-        .await
-        .expect("rede de teste");
+        let network =
+            crate::network::Network::testkit("worker".into(), "pk".into(), vec![], None, None)
+                .await
+                .expect("rede de teste");
         let mut admin = crate::gateway::testkit::peer("secondary", "secondary", 8081);
         admin.profile = crate::profile::NodeProfile::Admin;
         admin.endpoint_id = Some(crate::p2p::random_endpoint_id().to_string());

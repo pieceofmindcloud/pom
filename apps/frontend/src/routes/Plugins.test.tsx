@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
-import { Plugins } from "./Plugins";
+import { PAGE_SIZE, Plugins } from "./Plugins";
 import { ApiError } from "../lib/api";
 
 function pluginStatus(code: string, overrides: Record<string, unknown> = {}) {
@@ -346,7 +346,7 @@ describe("Plugins", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("leaves the example plugin out of the store list", () => {
+  it("leaves the example plugin out of the store list, even from a store that sends it", () => {
     mocks.catalog.data = { plugins: [publicPlugin("base", { display_name: "POM Plugin Base" }), publicPlugin("alpha")] };
     renderPage();
     expect(screen.queryByRole("heading", { name: "POM Plugin Base" })).toBeNull();
@@ -421,7 +421,10 @@ describe("Plugins", () => {
     mocks.plugins.data = [pluginStatus("local-active", { active: true, state: "active" })];
     renderPage();
 
-    expect(screen.getByRole("heading", { name: "local-active" })).toBeTruthy();
+    // a plugin only this node knows sits in its own list, below the store's pages
+    const local = screen.getByTestId("plugins-local");
+    expect(within(local).getByRole("heading", { name: "local-active" })).toBeTruthy();
+    expect(within(local).queryByRole("heading", { name: "public-plugin" })).toBeNull();
     expect(screen.getByRole("heading", { name: "public-plugin" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Desativar" })).toHaveLength(1);
   });
@@ -1152,13 +1155,17 @@ describe("Plugins", () => {
   it("searches and pages the store on the license server", async () => {
     mocks.catalog.data = { plugins: [publicPlugin("first")], total: 25 } as { plugins: Array<Record<string, unknown>> };
     renderPage();
-    expect(mocks.catalogQueries).toContainEqual({ q: undefined, page: 1, perPage: 10 });
-    expect(screen.getByText("Página 1 de 3")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
-    expect(mocks.catalogQueries.at(-1)).toEqual({ q: undefined, page: 2, perPage: 10 });
+    const pages = Math.ceil(25 / PAGE_SIZE);
+    expect(mocks.catalogQueries).toContainEqual({ q: undefined, page: 1, perPage: PAGE_SIZE, exclude: ["base"] });
+    // Previous / Next above and below the list
+    expect(screen.getByTestId("plugins-pagination-top")).toBeTruthy();
+    expect(screen.getByTestId("plugins-pagination-bottom")).toBeTruthy();
+    expect(screen.getAllByText(`Página 1 de ${pages}`)).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole("button", { name: "Próxima" })[0]);
+    expect(mocks.catalogQueries.at(-1)).toEqual({ q: undefined, page: 2, perPage: PAGE_SIZE, exclude: ["base"] });
 
     fireEvent.change(screen.getByLabelText("Buscar plugins"), { target: { value: "  qdrant " } });
-    await waitFor(() => expect(mocks.catalogQueries.at(-1)).toEqual({ q: "qdrant", page: 1, perPage: 10 }));
+    await waitFor(() => expect(mocks.catalogQueries.at(-1)).toEqual({ q: "qdrant", page: 1, perPage: PAGE_SIZE, exclude: ["base"] }));
   });
 
   it("puts the example plugin and the publishing link in the Develop your plugin tab", async () => {

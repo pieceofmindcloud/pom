@@ -255,7 +255,67 @@ pub struct NetworkSettings {
     /// `location_precision`. A more exact point is never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<NetworkLocation>,
+    /// GPU work metering (`metering_core::settings`). Older nodes ignore the
+    /// block; a missing block is metering off.
+    #[serde(default)]
+    pub metering: MeteringSettings,
+    /// How visitors reach the models: planning themselves (`direct`, every
+    /// released network), or through a member entry node (`member_gateway`,
+    /// `member_gateway_only`). See `backend/delegation.rs`.
+    #[serde(default)]
+    pub inference_access: InferenceAccess,
+    /// Which members serve as entry nodes for visitors.
+    #[serde(default)]
+    pub entry_nodes: EntryNodes,
+    /// Charging visitors from prepaid credit (`crate::payments`).
+    #[serde(default)]
+    pub payments: PaymentsSettings,
 }
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceAccess {
+    #[default]
+    Direct,
+    MemberGateway,
+    MemberGatewayOnly,
+}
+
+impl InferenceAccess {
+    /// Whether a visitor hands its requests to an entry node.
+    pub fn delegates(self) -> bool {
+        !matches!(self, InferenceAccess::Direct)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryNodes {
+    #[default]
+    Admins,
+    AdminsAndWorkers,
+}
+
+/// Charging visitors (`docs/superpowers/specs/2026-11-09-visitor-charging-design.md`).
+/// Off: nothing is charged. On, it needs `inference_access =
+/// member_gateway_only`, so no visitor reaches a worker without an entry node.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PaymentsSettings {
+    pub enabled: bool,
+    /// Price per model id (the name clients use), in micro-credits per 1000
+    /// tokens. A model without a price is free even when charging is on.
+    pub prices: std::collections::BTreeMap<String, ModelPrice>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ModelPrice {
+    pub in_micro_per_1k: i64,
+    pub out_micro_per_1k: i64,
+}
+
+pub use metering_core::settings::MeteringSettings;
 
 impl NetworkSettings {
     /// Whether membership is open to anyone holding the trust document, with
@@ -275,6 +335,10 @@ impl NetworkSettings {
 /// Public networks need the coarse geographic key because discovery groups by
 /// country and city before measuring peer latency.
 pub fn validate_network_settings(settings: &NetworkSettings) -> Result<()> {
+    if settings.payments.enabled && settings.inference_access != InferenceAccess::MemberGatewayOnly
+    {
+        anyhow::bail!("charging visitors needs inference access through network members only");
+    }
     if settings.visibility == NetworkVisibility::Public {
         if settings.public_name.trim().is_empty() {
             anyhow::bail!("public networks need a public name");
@@ -369,6 +433,11 @@ pub struct Config {
     /// and is intentionally required in the new schema. Administrative
     /// capability comes only from the separate signed grant chain.
     pub profile: crate::profile::NodeProfile,
+    /// A worker admitted as a validator: it re-runs sampled work for the
+    /// metering ledger, announces `metering/validator-v1` and holds and serves
+    /// no model (validators spec, 1). Set by the admission grant.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub validator: bool,
     /// This file is a local preference shell waiting for first access. It is
     /// set when leaving a network so setup can preserve machine preferences
     /// without booting the old network.
@@ -1342,7 +1411,10 @@ mod tests {
         use super::RelayPolicy;
         let settings: NetworkSettings = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(settings.relay_policy, RelayPolicy::All);
-        for (text, policy) in [("members", RelayPolicy::Members), ("none", RelayPolicy::None)] {
+        for (text, policy) in [
+            ("members", RelayPolicy::Members),
+            ("none", RelayPolicy::None),
+        ] {
             let settings: NetworkSettings =
                 serde_json::from_value(serde_json::json!({ "relay_policy": text })).unwrap();
             assert_eq!(settings.relay_policy, policy);
@@ -1552,6 +1624,7 @@ mod tests {
     #[test]
     fn test_roundtrip_principal_config() {
         let cfg = Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             gpus: None,
@@ -1638,7 +1711,8 @@ mod tests {
         );
 
         let configured: Config =
-            serde_json::from_str(r#"{"profile":"worker","cluster_logs_min_level":"debug"}"#).unwrap();
+            serde_json::from_str(r#"{"profile":"worker","cluster_logs_min_level":"debug"}"#)
+                .unwrap();
         assert_eq!(
             configured.cluster_logs_min_level,
             crate::cluster_logs::ClusterLogLevel::Debug
@@ -1661,6 +1735,7 @@ mod tests {
     #[test]
     fn test_roundtrip_node_config() {
         let cfg = Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             gpus: None,
@@ -1772,9 +1847,10 @@ mod tests {
 
     #[test]
     fn relay_peers_are_read_from_the_config_and_empty_stays_out_of_it() {
-        let cfg: Config =
-            serde_json::from_str(r#"{"profile":"worker","relay_peers":["https://relay.example.org"]}"#)
-                .unwrap();
+        let cfg: Config = serde_json::from_str(
+            r#"{"profile":"worker","relay_peers":["https://relay.example.org"]}"#,
+        )
+        .unwrap();
         assert_eq!(cfg.relay_peers, vec!["https://relay.example.org"]);
 
         let cfg: Config = serde_json::from_str(r#"{"profile":"worker"}"#).unwrap();
@@ -1797,6 +1873,43 @@ mod tests {
         assert_eq!(parsed.thermal.limit_c, 82.0);
         assert_eq!(parsed.thermal.hysteresis_c, 7.0);
         assert_eq!(parsed.thermal.cooldown_secs, 45);
+    }
+
+    #[test]
+    fn charging_visitors_needs_member_gateway_only() {
+        let mut settings = NetworkSettings::default();
+        settings.payments.enabled = true;
+        assert!(validate_network_settings(&settings).is_err());
+        settings.inference_access = InferenceAccess::MemberGatewayOnly;
+        assert!(validate_network_settings(&settings).is_ok());
+    }
+
+    #[test]
+    fn access_policy_defaults_to_direct_and_charging_off() {
+        let old: NetworkSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.inference_access, InferenceAccess::Direct);
+        assert_eq!(old.entry_nodes, EntryNodes::Admins);
+        assert!(!old.payments.enabled);
+        let set: NetworkSettings = serde_json::from_str(
+            r#"{"inference_access":"member_gateway_only","entry_nodes":"admins_and_workers","payments":{"enabled":true}}"#,
+        )
+        .unwrap();
+        assert!(set.inference_access.delegates());
+        assert_eq!(set.entry_nodes, EntryNodes::AdminsAndWorkers);
+        assert!(set.payments.enabled);
+    }
+
+    #[test]
+    fn metering_settings_default_off_and_round_trip() {
+        let old: NetworkSettings = serde_json::from_str("{}").unwrap();
+        assert!(!old.metering.enabled);
+        assert_eq!(old.metering.cycle_secs, 7 * 86_400);
+        let mut s = old.clone();
+        s.metering.enabled = true;
+        s.metering.draft_weight = 0.4;
+        let back: NetworkSettings =
+            serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.metering, s.metering);
     }
 
     #[test]
@@ -1825,7 +1938,8 @@ mod tests {
         assert!(closed.accepted_enrollments.0.is_empty());
 
         let only_visitor =
-            AcceptedEnrollments(vec![EnrollmentRole::Visitor, EnrollmentRole::Visitor]).normalized();
+            AcceptedEnrollments(vec![EnrollmentRole::Visitor, EnrollmentRole::Visitor])
+                .normalized();
         assert_eq!(
             serde_json::to_value(&only_visitor).unwrap(),
             serde_json::json!(["visitor"])
@@ -1875,6 +1989,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let mut cfg = Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             profile: crate::profile::NodeProfile::Worker,
@@ -1960,10 +2075,13 @@ mod tests {
     /// is not written back.
     #[test]
     fn an_old_config_with_the_tls_switch_still_parses() {
-        let cfg: Config =
-            serde_json::from_str(r#"{"profile":"worker","connection_key":"k","tls_required":false}"#)
-                .unwrap();
-        assert!(!serde_json::to_string(&cfg).unwrap().contains("tls_required"));
+        let cfg: Config = serde_json::from_str(
+            r#"{"profile":"worker","connection_key":"k","tls_required":false}"#,
+        )
+        .unwrap();
+        assert!(!serde_json::to_string(&cfg)
+            .unwrap()
+            .contains("tls_required"));
     }
 
     #[test]
@@ -1975,7 +2093,8 @@ mod tests {
 
     #[test]
     fn a_blank_shard_dir_falls_back_instead_of_writing_to_the_root() {
-        let cfg: Config = serde_json::from_str(r#"{"profile":"worker","shard_dir":"   "}"#).unwrap();
+        let cfg: Config =
+            serde_json::from_str(r#"{"profile":"worker","shard_dir":"   "}"#).unwrap();
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
     }
 
@@ -2078,6 +2197,7 @@ mod tests {
     #[test]
     fn test_active_api_key() {
         let cfg = Config {
+            validator: false,
             retired_tls_required: (),
             saved_at: None,
             gpus: None,

@@ -30,7 +30,7 @@ For a licensed plugin, how many of the license's activations are in use and when
 
 :::steps
 ### From the store
-Free plugins install with one click. A paid plugin opens the purchase page in your browser; the license key it gives you is pasted in the license form here and activates every plugin that key grants.
+Free plugins install with one click. A paid plugin opens the purchase page in your browser; the license key it gives you is pasted in the license form here and activates every plugin that key grants. A plugin marked **Coming soon** is already announced but has no release yet: it shows in the list with nothing to buy or install.
 ### From GitHub
 **Add from GitHub** takes the address of a public repository and installs its newest release compatible with this machine. A plugin outside the POM team asks for a confirmation first: its code was not reviewed.
 ### Keeping them current

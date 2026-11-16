@@ -20,6 +20,11 @@ shared `[workspace.package]` metadata, shared `[workspace.dependencies]` for
 - `types` - infrastructure-free shared domain types (currently empty scaffolding)
 - `routing-contract` - versioned data contract for routing providers
 - `routing-base` - deterministic open-source routing provider
+- `metering-core` - GPU work metering logic shared by the node and the
+  metering plugin: payout cycles, link digests, signed work receipts and
+  bundles, Merkle proofs, TOPLOC (port of Prime Intellect's MIT
+  implementation), pay rule and payout, HMAC sampling. No I/O. Spec:
+  `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`
 - `node` - the only binary (`pom`), the whole product
 
 `default-members = ["crates/node"]`, so `cargo build`/`cargo test` at the root
@@ -35,6 +40,8 @@ builds and tests the node crate. `resolver = "2"`.
   `llama_engine_contract` checks against `brand::slug()`.
 - `routing-base` -> `routing-contract` (`crates/routing-base/Cargo.toml:7`).
 - `types` -> no dependencies, consumed by nothing.
+- `metering-core` -> `brand` (path dep, for the token headers); consumed by
+  `node` and by the private `pom-plugin-metering`.
 
 `node/src/main.rs` re-exports the `llama-engine` modules (`pub use
 llama_engine::{llm, mtp, moe, gguf, wire, sysmon, ...}`) and aliases `brand`, so

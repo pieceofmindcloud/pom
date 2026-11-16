@@ -33,7 +33,7 @@ Um nó pode ser bloqueado pela identidade, e a identidade dele é derivada de um
 
 :::faq
 ### Onde vejo a chave de conexão?
-Em Configurações > Chaves de conexão. Trocá-la corta todos os outros nós, por isso o botão só aparece para quem tem autoridade.
+Em Minha Rede > Compartilhamento, no principal. Trocá-la corta todos os outros nós, por isso o botão só aparece para quem tem autoridade.
 ### Uma chave de API vazada compromete o cluster?
 Ela só abre as rotas de inferência. Revogue a chave em API keys e gere outra; a chave de conexão continua valendo.
 :::

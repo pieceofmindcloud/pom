@@ -98,6 +98,16 @@
         assert!(super::normalize_deployment_name(Some(&"x".repeat(129)), "qwen35").is_err());
     }
 
+    #[test]
+    fn a_deployment_name_is_an_api_identifier() {
+        let name = |requested: &str| super::normalize_deployment_name(Some(requested), "x").unwrap();
+        assert_eq!(name("Meu modelo @ R&D"), "Meu-modelo-R-D");
+        assert_eq!(name("qwen3.8_flash-next"), "qwen3.8_flash-next");
+        assert_eq!(name("Qwen3.8-Flash.gguf"), "Qwen3.8-Flash");
+        assert_eq!(name("  café!  "), "caf");
+        assert!(super::normalize_deployment_name(Some("@@@"), "!!!").is_err());
+    }
+
     /// The tensor-parallel kind names the group, not a slice or a model: the
     /// screen offers the format, and the refusal has to speak the format's language.
     #[test]

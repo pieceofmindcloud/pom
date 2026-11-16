@@ -164,6 +164,12 @@ const DEFAULT_NUMERIC_KNOBS: NumericKey[] = [
   "dry_penalty_last_n",
 ];
 
+/** The sampling part of the defaults, for a plugin service that declares `sampling`. */
+const SAMPLING_KNOBS: NumericKey[] = DEFAULT_NUMERIC_KNOBS.slice(DEFAULT_NUMERIC_KNOBS.indexOf("temperature"));
+
+/** The `pom_settings` groups that bring llama.cpp's Default settings card to a plugin service. */
+const POM_DEFAULT_GROUPS = ["cache_types", "batch", "sampling"] as const;
+
 /** DRY is turned off with the multiplier at 0; its other numbers only apply when on. */
 const DRY_DETAIL_KNOBS: NumericKey[] = ["dry_base", "dry_allowed_length", "dry_penalty_last_n"];
 
@@ -712,6 +718,59 @@ export function DeploymentInspector({
     </Section>
   ) : null;
 
+  const seedField = () => (
+        <InspectorRow label={t("inspector.knob.seed")} tip={withLlamaCppName(t("deploy.knob.seedHint"), "seed")}>
+          {readOnly ? (
+            <ReadValue>{value.seed ?? DEFAULT_SAMPLER_SEED}</ReadValue>
+          ) : (
+            <Input
+              aria-label={t("inspector.knob.seed")}
+              name="seed"
+              type="text"
+              inputMode="numeric"
+              value={value.seed ?? DEFAULT_SAMPLER_SEED}
+              onChange={(event) => set({ seed: seedText(event.target.value) })}
+              onBlur={() => {
+                if (!value.seed) set({ seed: DEFAULT_SAMPLER_SEED });
+              }}
+            />
+          )}
+        </InspectorRow>
+  );
+  const cacheTypeFields = () => (
+    <>
+      {cacheTypes &&
+          (["k", "v"] as const).map((part) => {
+            const label = part === "k" ? t("inspector.cacheK") : t("inspector.cacheV");
+            const current = part === "k" ? cacheTypes.k : cacheTypes.v;
+            return (
+              <InspectorRow key={`cache_${part}`} label={label} tip={withLlamaCppName(t("inspector.cacheHint"), `cache_type_${part}`)}>
+                {readOnly ? (
+                  <ReadValue>{CACHE_TYPE_LABELS[current]}</ReadValue>
+                ) : (
+                  <Select
+                    aria-label={label}
+                    name={`cache_type_${part}`}
+                    value={current}
+                    disabled={cacheTypes.busy}
+                    onChange={(event) =>
+                      cacheTypes.onChange(part, event.target.value as KvCacheType)
+                    }
+                    compact
+                  >
+                    {cacheTypes.choices.map((choice) => (
+                      <option key={choice} value={choice}>
+                        {CACHE_TYPE_LABELS[choice]}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </InspectorRow>
+            );
+          })}
+    </>
+  );
+
   if (inferenceService) {
     // The POM carries the hidden state between the plugin's stages, so its own
     // settings only exist when the slices cross machines. The prefill/decode
@@ -728,23 +787,43 @@ export function DeploymentInspector({
     // The engine's own settings, and the ones the service places in the POM card (whatever the slices).
     const engineSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement !== "pom");
     const pomCardSettings = (inferenceService.settings ?? []).filter((setting) => setting.placement === "pom");
+    // A service that takes llama.cpp's generic settings (`cache_types`, `batch`, `sampling`) gets the same Default
+    // settings card as llama.cpp; its own card then holds only what is the engine's alone.
+    const hasDefaults = POM_DEFAULT_GROUPS.some((group) => declared.includes(group));
+    const unloadFields = () => (
+      <>
+        {toggle({
+          key: "unload_if_idle",
+          label: t("deploy.unloadIfIdle"),
+          alwaysVisible: true,
+          checked: value.unload_if_idle ?? false,
+          onToggle: (next) => set({ unload_if_idle: next }),
+          tip: t("deploy.unloadIfIdleHint"),
+        })}
+        {(value.unload_if_idle ?? false) && numeric("idle_minutes")}
+      </>
+    );
     return (
       <>
+        {hasDefaults && (
+          <Section title={t("inspector.sectionDefaults")} tone="iris" guide={DEPLOY_SETTINGS_GUIDES.defaults}>
+            {numeric("n_ctx")}
+            {numeric("max_sessions")}
+            {declared.includes("batch") && numeric("n_batch")}
+            {declared.includes("batch") && numeric("n_ubatch")}
+            {declared.includes("sampling") && SAMPLING_KNOBS.filter((key) => dryOn || !DRY_DETAIL_KNOBS.includes(key)).map((key) => numeric(key))}
+            {declared.includes("sampling") && seedField()}
+            {declared.includes("cache_types") && cacheTypeFields()}
+            {unloadFields()}
+          </Section>
+        )}
         <Section title={t("inspector.sectionInferenceService", { name: inferenceService.name })} tone="iris">
           <p className="px-0.5 pb-1 text-[0.6rem] leading-relaxed text-muted">
             {t("inspector.inferenceServiceNote", { name: inferenceService.name })}
           </p>
-          {numeric("n_ctx")}
-          {numeric("max_sessions")}
-          {toggle({
-            key: "unload_if_idle",
-            label: t("deploy.unloadIfIdle"),
-            alwaysVisible: true,
-            checked: value.unload_if_idle ?? false,
-            onToggle: (next) => set({ unload_if_idle: next }),
-            tip: t("deploy.unloadIfIdleHint"),
-          })}
-          {(value.unload_if_idle ?? false) && numeric("idle_minutes")}
+          {!hasDefaults && numeric("n_ctx")}
+          {!hasDefaults && numeric("max_sessions")}
+          {!hasDefaults && unloadFields()}
           {engineSettings.length > 0 && (
             <EngineSettingsFields
               settings={engineSettings}
@@ -803,53 +882,9 @@ export function DeploymentInspector({
     <>
       <Section title={t("inspector.sectionDefaults")} tone="iris" guide={DEPLOY_SETTINGS_GUIDES.defaults}>
         {DEFAULT_NUMERIC_KNOBS.filter((key) => dryOn || !DRY_DETAIL_KNOBS.includes(key)).map((key) => numeric(key))}
-        <InspectorRow label={t("inspector.knob.seed")} tip={withLlamaCppName(t("deploy.knob.seedHint"), "seed")}>
-          {readOnly ? (
-            <ReadValue>{value.seed ?? DEFAULT_SAMPLER_SEED}</ReadValue>
-          ) : (
-            <Input
-              aria-label={t("inspector.knob.seed")}
-              name="seed"
-              type="text"
-              inputMode="numeric"
-              value={value.seed ?? DEFAULT_SAMPLER_SEED}
-              onChange={(event) => set({ seed: seedText(event.target.value) })}
-              onBlur={() => {
-                if (!value.seed) set({ seed: DEFAULT_SAMPLER_SEED });
-              }}
-            />
-          )}
-        </InspectorRow>
+        {seedField()}
 
-        {cacheTypes &&
-          (["k", "v"] as const).map((part) => {
-            const label = part === "k" ? t("inspector.cacheK") : t("inspector.cacheV");
-            const current = part === "k" ? cacheTypes.k : cacheTypes.v;
-            return (
-              <InspectorRow key={`cache_${part}`} label={label} tip={withLlamaCppName(t("inspector.cacheHint"), `cache_type_${part}`)}>
-                {readOnly ? (
-                  <ReadValue>{CACHE_TYPE_LABELS[current]}</ReadValue>
-                ) : (
-                  <Select
-                    aria-label={label}
-                    name={`cache_type_${part}`}
-                    value={current}
-                    disabled={cacheTypes.busy}
-                    onChange={(event) =>
-                      cacheTypes.onChange(part, event.target.value as KvCacheType)
-                    }
-                    compact
-                  >
-                    {cacheTypes.choices.map((choice) => (
-                      <option key={choice} value={choice}>
-                        {CACHE_TYPE_LABELS[choice]}
-                      </option>
-                    ))}
-                  </Select>
-                )}
-              </InspectorRow>
-            );
-          })}
+        {cacheTypeFields()}
 
         {/* llama.cpp's --cpu-moe and --moe-cache-mib, for a MoE larger than VRAM */}
         {toggle({
@@ -1008,6 +1043,44 @@ export function DeploymentInspector({
           </InspectorRow>
         )}
         {showHiddenStateDtype && hiddenStateField()}
+        {/* What visitors of a charging network pay (`docs/subsystems/payments.md`). */}
+        {(["in_micro_per_1k", "out_micro_per_1k"] as const).map((side) => {
+          const micro = value.pricing?.[side];
+          const label = t(side === "in_micro_per_1k" ? "inspector.priceIn" : "inspector.priceOut");
+          return (
+            <InspectorRow key={side} label={label} tip={t("inspector.priceHint")}>
+              {readOnly ? (
+                <span className="text-right font-mono">{micro == null ? "-" : micro / 1_000_000}</span>
+              ) : (
+                <Input
+                  compact
+                  name={`pricing.${side}`}
+                  inputMode="decimal"
+                  aria-label={label}
+                  placeholder="-"
+                  value={micro == null ? "" : String(micro / 1_000_000)}
+                  onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    const other = side === "in_micro_per_1k" ? "out_micro_per_1k" : "in_micro_per_1k";
+                    if (!raw && value.pricing?.[other] == null) {
+                      set({ pricing: null });
+                      return;
+                    }
+                    const parsed = Math.round(Number(raw || 0) * 1_000_000);
+                    if (!Number.isFinite(parsed)) return;
+                    set({
+                      pricing: {
+                        in_micro_per_1k: value.pricing?.in_micro_per_1k ?? 0,
+                        out_micro_per_1k: value.pricing?.out_micro_per_1k ?? 0,
+                        [side]: parsed,
+                      },
+                    });
+                  }}
+                />
+              )}
+            </InspectorRow>
+          );
+        })}
         {/* <BetaGroup>{...settings still being measured}</BetaGroup> */}
       </Section>
 

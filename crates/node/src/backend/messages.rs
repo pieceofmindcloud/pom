@@ -37,11 +37,12 @@ use crate::gateway::{
     log_output_limit, GatewayState, GenEvent, GenSummary, GenerationInput, OutputTokenLimit,
     DEFAULT_MAX_TOKENS,
 };
-use crate::openai::{approx_tokens, cors_headers, preflight, resolve_model};
+use crate::openai::{approx_tokens, cors_headers, preflight};
 use crate::tool_call::{
-    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call, render_tools_block, OutputPart,
-    ScanEvent, TagScanner, ToolDef, ToolSignatures,
+    parse_output_truncated_with_tools, parse_output_with_tools, render_tool_call,
+    render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef, ToolSignatures,
 };
+use axum::extract::DefaultBodyLimit;
 use axum::{
     extract::State,
     http::StatusCode,
@@ -52,7 +53,6 @@ use axum::{
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use axum::extract::DefaultBodyLimit;
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
@@ -210,7 +210,9 @@ fn pin_billing_stamp(system: String) -> String {
         Some((start, end))
     };
     let mut pins = Vec::new();
-    if let Some((start, end)) = field(b"cch=").filter(|(start, end)| end > start && end - start <= 16) {
+    if let Some((start, end)) =
+        field(b"cch=").filter(|(start, end)| end > start && end - start <= 16)
+    {
         pins.push((start, end));
     }
     if let Some((start, end)) = field(b"cc_version=").filter(|(start, end)| end - start <= 64) {
@@ -599,12 +601,12 @@ async fn messages(
     }
     let request_details = body;
 
-    let model = match req.model.clone() {
-        Some(m) if !m.is_empty() => match resolve_model(&state, m).await {
-            Ok(model) => model,
+    let (model, named_head) = match req.model.clone() {
+        Some(m) if !m.is_empty() => match crate::openai::resolve_model_and_head(&state, m).await {
+            Ok(resolved) => resolved,
             Err(error) => return error_response(StatusCode::NOT_FOUND, "not_found_error", error),
         },
-        _ => state.active_model().await,
+        _ => (state.active_model().await, None),
     };
     let task_budget = req
         .output_config
@@ -652,8 +654,14 @@ async fn messages(
         };
         return error_response(status, "invalid_request_error", error);
     }
-    if let Some(denial) =
-        crate::quota::admit(&state, auth.caller(), &prompt, input_tokens, &request_details).await
+    if let Some(denial) = crate::quota::admit(
+        &state,
+        auth.caller(),
+        &prompt,
+        input_tokens,
+        &request_details,
+    )
+    .await
     {
         crate::gateway::record_rejected(
             &state,
@@ -693,6 +701,7 @@ async fn messages(
 
     let inference_token = auth.token().to_string();
     let params = ResponseParams {
+        preferred_head: named_head,
         state,
         caller: auth.into_caller(),
         inference_token,
@@ -750,6 +759,8 @@ fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'
 /// Both receive exactly the same thing, so the list travels together instead
 /// of being typed twice and growing on one side only.
 struct ResponseParams {
+    /// The head a `<deployment_name>@<node_id>` pinned.
+    preferred_head: Option<String>,
     state: GatewayState,
     caller: crate::reqlog::Caller,
     inference_token: String,
@@ -775,6 +786,7 @@ struct ResponseParams {
 
 async fn blocking_response(params: ResponseParams) -> Response {
     let ResponseParams {
+        preferred_head: named_head,
         state,
         caller,
         inference_token,
@@ -811,7 +823,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
             budget,
             stops,
             cache_key,
-            preferred_head: None,
+            preferred_head: named_head.clone(),
             request_details,
         },
     )
@@ -879,7 +891,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
                         "output_limits": output_limit,
                         // How many backend generations the response stitched.
                         // `1` is a single one - see `GenSummary::legs`.
-                        "continuation_legs": summary.legs,
+                        "continuation_legs": summary.legs, "payment": summary.payment,
                         "truncated_tool_call": truncated_tool_call,
                         // Present only when the request brought a task
                         // budget. See `TaskBudget`.
@@ -898,6 +910,7 @@ async fn blocking_response(params: ResponseParams) -> Response {
 
 fn stream_response(params: ResponseParams) -> Response {
     let ResponseParams {
+        preferred_head: named_head,
         state,
         caller,
         inference_token,
@@ -933,7 +946,7 @@ fn stream_response(params: ResponseParams) -> Response {
             budget,
             stops,
             cache_key,
-            preferred_head: None,
+            preferred_head: named_head.clone(),
             request_details,
         },
         tx,
@@ -1412,7 +1425,7 @@ fn sse_stream(
                                     "stop_sequence": summary.stop_sequence,
                                     "trace": summary.trace,
                                     "output_limits": s.output_limit,
-                                    "continuation_legs": summary.legs,
+                                    "continuation_legs": summary.legs, "payment": summary.payment,
                                     "truncated_tool_call": truncated_tool_call,
                                     "task_budget": s.task_budget_report,
                                     "task_budget_spent_this_turn":
@@ -1574,7 +1587,12 @@ mod tests {
         assert!(first_key.contains("tool\u{1f}read") && !first_key.contains("zebra"));
         // A short system part is not worth pinning.
         assert_eq!(
-            crate::gateway::SharedPrefix::offer("sys\n\nUser: q", "sys\u{1e}user", "sys", "sys\u{1e}"),
+            crate::gateway::SharedPrefix::offer(
+                "sys\n\nUser: q",
+                "sys\u{1e}user",
+                "sys",
+                "sys\u{1e}"
+            ),
             crate::gateway::SharedPrefix::None
         );
     }
@@ -1593,8 +1611,11 @@ mod tests {
         };
         let first = request("bf4", "b145e");
         let second = request("a07", "9c2d1");
-        let render = |req: &MessagesRequest| render_prompt(req.system.as_ref(), &req.messages, &req.tools);
-        let key = |req: &MessagesRequest| conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools);
+        let render =
+            |req: &MessagesRequest| render_prompt(req.system.as_ref(), &req.messages, &req.tools);
+        let key = |req: &MessagesRequest| {
+            conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools)
+        };
         assert_eq!(render(&first), render(&second));
         assert_eq!(key(&first), key(&second));
         assert!(render(&first).contains("cc_version=2.1.170.fff; cc_entrypoint=cli; cch=fffff;"));
@@ -1753,6 +1774,8 @@ mod tests {
     #[test]
     fn stop_reason_reflects_the_limit_and_tool_calls() {
         let summary = |n: u32| GenSummary {
+            payment: None,
+            metering_bundle: None,
             source: "pipeline:a→b".into(),
             tokens_generated: n,
             reasoning_tokens: 0,

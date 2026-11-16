@@ -53,7 +53,8 @@ impl LoadTracker {
 /// How many requests of `model` have chosen their first stage so far. Each request takes the next value, so requests
 /// that arrive together start their rotation over the heads at different points (see `fastest::rotate_head`).
 pub fn next_head_turn(model: &str) -> usize {
-    static TURNS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, usize>>> = std::sync::OnceLock::new();
+    static TURNS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, usize>>> =
+        std::sync::OnceLock::new();
     let mut turns = TURNS
         .get_or_init(Default::default)
         .lock()
@@ -196,6 +197,21 @@ pub const CAP_LINK_STREAM: &str = "transport/link-v1";
 /// Advertised only while the local inference server has the validated
 /// multi-item scheduler active. It is the first and only inference frame
 /// contract; peers are never downgraded to an older wire format.
+/// The node takes visitors' requests as their entry node
+/// (`POST /v1/gateway/delegate`, `crate::delegation`). Every member announces
+/// it; the visitor keeps those the network's `entry_nodes` policy allows.
+pub const CAP_GATEWAY_DELEGATE: &str = "gateway/delegate-v1";
+/// Announced by a visitor that hands its requests to an entry node when the
+/// network asks it to. A visitor without it (an older release) is cut off by
+/// `inference_access = member_gateway_only` (`docs/subsystems/payments.md`).
+pub const CAP_GATEWAY_CLIENT: &str = "gateway/client-v1";
+/// Announced by a worker admitted as a validator (validators spec, 1): it
+/// re-runs sampled work for the metering ledger and is never planned for
+/// inference nor made a deployment target.
+pub const CAP_METERING_VALIDATOR: &str = "metering/validator-v1";
+/// The node signs GPU work receipts in the session lifecycle answers when
+/// the gateway hands a bundle nonce (`crate::metering`).
+pub const CAP_METERING_RECEIPT: &str = "metering/receipt-v1";
 pub const CAP_FRAME_BATCH: &str = "inference/frame-v1-batch";
 
 /// Advertised when a node can decode and encode the optional FP8 E4M3FN
@@ -749,6 +765,7 @@ mod ipv6_tests {
     fn peer(addr: &str, start: u32, end: u32) -> PeerInfo {
         PeerInfo {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             tls: false,
             node_id: "n".repeat(64),
             pubkey: "p".into(),

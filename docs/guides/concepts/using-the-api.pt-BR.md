@@ -16,7 +16,7 @@ O cliente chama qualquer gateway com uma chave de API; a resposta volta com x_po
 
 :::steps
 ### Crie uma chave de API
-Em Configurações > API keys. Cada perfil cria a sua; a chave de conexão do cluster não serve para inferência.
+Em Minha Rede > API keys (uma pessoa conectada com a própria conta usa Minhas chaves de API). Cada perfil cria a sua; a chave de conexão do cluster não serve para inferência.
 ### Descubra o modelo e o limite
 GET /v1/models lista os modelos servidos agora pela rede, com o contexto disponível e o máximo de tokens de saída.
 ### Faça a chamada

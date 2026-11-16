@@ -178,7 +178,7 @@ mod kv_cache;
 mod lifecycle;
 mod lobby;
 mod membership;
-mod network;
+pub(crate) mod network;
 mod networks;
 mod params;
 mod routes;

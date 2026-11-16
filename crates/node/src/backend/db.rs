@@ -1323,12 +1323,7 @@ impl PomDb {
     /// Saves one session pin (`gateway::SessionPin`): the hop chain a session
     /// was planned on, so the planner brings the next turn back to it even
     /// after a restart. Written when the pin is born or replaced.
-    pub(crate) fn upsert_session_pin(
-        &self,
-        key: &str,
-        hops: &[String],
-        head: &str,
-    ) -> Result<()> {
+    pub(crate) fn upsert_session_pin(&self, key: &str, hops: &[String], head: &str) -> Result<()> {
         self.with_write("save a session pin", |connection| {
             connection.execute(
                 "INSERT INTO session_pins (pin_key, hops, head, used_at) VALUES (?, ?, ?, ?)
@@ -1347,22 +1342,17 @@ impl PomDb {
 
     pub(crate) fn delete_session_pin(&self, key: &str) -> Result<()> {
         self.with_write("drop a session pin", |connection| {
-            connection.execute(
-                "DELETE FROM session_pins WHERE pin_key = ?",
-                params![key],
-            )?;
+            connection.execute("DELETE FROM session_pins WHERE pin_key = ?", params![key])?;
             Ok(())
         })
     }
 
     /// The pins as saved, newest first, capped.
-    pub(crate) fn session_pins(
-        &self,
-        limit: i64,
-    ) -> Result<Vec<(String, Vec<String>, String)>> {
+    pub(crate) fn session_pins(&self, limit: i64) -> Result<Vec<(String, Vec<String>, String)>> {
         self.with_read("read the session pins", |connection| {
-            let mut statement =
-                connection.prepare("SELECT pin_key, hops, head FROM session_pins ORDER BY used_at DESC LIMIT ?")?;
+            let mut statement = connection.prepare(
+                "SELECT pin_key, hops, head FROM session_pins ORDER BY used_at DESC LIMIT ?",
+            )?;
             let rows = statement.query_map(params![limit], |row| {
                 let key: String = row.get(0)?;
                 let hops_json: String = row.get(1)?;
@@ -1381,7 +1371,10 @@ impl PomDb {
     pub(crate) fn prune_session_pins(&self, limit: i64) -> Result<()> {
         let cutoff = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
         self.with_write("prune the session pins", |connection| {
-            connection.execute("DELETE FROM session_pins WHERE used_at < ?", params![cutoff])?;
+            connection.execute(
+                "DELETE FROM session_pins WHERE used_at < ?",
+                params![cutoff],
+            )?;
             connection.execute(
                 "DELETE FROM session_pins WHERE pin_key NOT IN
                      (SELECT pin_key FROM session_pins ORDER BY used_at DESC LIMIT ?)",

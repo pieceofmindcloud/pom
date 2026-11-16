@@ -495,22 +495,26 @@ boundary.
   `node.rs::peer_of` finds the peer. `transfer::servable_path` serves a path outside the
   shard folder only when it is in the node's sidecar inventory, and a finished
   download invalidates the receiver's catalog.
-- `webui/membership.rs` - membership tokens at run time (the format is
-  `crate::membership`, `src/membership.rs`: a compact EdDSA JWT naming the
-  member's node and key, its role, the network and a 10 min expiry, checked
-  against the chain alone). `internal_token` issues one on any admin for an
-  approved admission; `spawn_token_keeper` renews this node's (none on an
-  admin) and sets it in the Announce. With no token it looks again every 2 s
-  while no admin is in sight, and backs off from 2 s to the 30 s tick after a
-  refused request; it keeps the last refusal for the interface. The token answer
-  also carries `relays` (`relay_passes`: each visitor's anonymous relay the
+- `webui/membership.rs` - membership at run time: the roster vouches
+  (`crate::membership`, `src/membership.rs`: an admin's signature of one
+  roster approval - the admitted role, `admitted_at` cut by the member's last
+  ban, renewed within the 4 h vouch window, checked against the chain alone)
+  and the relay passes a member keeps fresh from an admin.
+  `internal_relays` answers on any admin with the passes it signs for the
+  member that called (`relay_passes`: each visitor's anonymous relay the
   admin sees, with a fresh relay pass, only for a URL on a public host among
-  that visitor's own addresses, `relay_url_is_peers`), which the keeper stores in
-  `Network::set_anonymous_relays`; an admin issues its own every tick.
-  `GET /api/ui/connection` (`connection_status`, `LocalOnly`) reports this
+  that visitor's own addresses, `relay_url_is_peers`); `spawn_membership_keeper`
+  stores them in `Network::set_anonymous_relays`, an admin signing its own
+  every tick, a member asking `/api/internal/membership/relays` - it looks
+  again every 2 s while no admin is in sight, and backs off from 2 s to the
+  30 s tick after a refused request; it keeps the last refusal for the
+  interface. The membership token this used to carry was retired 2026-11-15
+  (spec 10.1, C3). `GET /api/ui/connection` (`connection_status`, `LocalOnly`)
+  reports this
   node's `ConnectionPhase` - `standalone` (an admin, or off the network),
   `discovering` (no admin heard yet), `authenticating` (an admin in sight, no
-  valid token yet), `connected` - with `since` (unix seconds, when the phase
+  vouch naming this node yet), `connected` (the roster vouches this node) -
+  with `since` (unix seconds, when the phase
   started), `last_error`, `peers` (other live peers in sight) and
   `admin_in_sight`. On a secondary admin,
   `spawn_roster_keeper` mirrors the principal's admission list
@@ -536,9 +540,11 @@ boundary.
   is what lets a dropped member age out) and trades lists with one admin
   per tick. Since phase C the role gates read that ledger where the local
   roster cannot name the member - `peer_role_is_attested`,
-  `gateway::peer_is_visitor`, `Network::is_member_key`, `roles_of` - and the
-  token stays accepted as the legacy form until the old versions retire with
-  it (spec 10.1, C3).
+  `gateway::peer_is_visitor`, `Network::is_member_key`, `roles_of` - and on a
+  network open to anyone with the anchor the admin signs the live peers'
+  announces as vouches too, the way it used to issue those peers tokens; the
+  token itself was retired 2026-11-15 (spec 10.1, C3: no compatibility
+  bridge).
 - `webui/gpu_metrics.rs` - the GPU energy and temperature feed of the logs
   plugin's Metrics screen: `spawn_gpu_metrics_sampler` (started with the
   gateway companions) runs once a minute and, only on a node that may see the

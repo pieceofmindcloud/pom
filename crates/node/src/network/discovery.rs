@@ -1267,7 +1267,6 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         trust_version,
         pom_version,
         pom_build,
-        membership,
         relay,
         anon_tunnel,
         ..
@@ -1299,7 +1298,6 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         trust_version,
         pom_version,
         pom_build,
-        membership,
         relay,
         anon_tunnel,
         // The gossip path has no source address to rewrite, and the announced

@@ -164,13 +164,13 @@ dedicated or member, with iroh's hole punching), are in
   UDP receive loop drops one that is unsigned, signed by another key or stale
   (`verify_udp_announce`); a `PeerList` never moves the addresses of a peer whose
   own announce arrived in the last 30 s (`firsthand`, `insert_announced_peer`).
-  `is_member_key` answers whether a node key is an admin of the chain or holds a
-  valid, unrevoked membership token, or is this node's own key (the peers table never
+  `is_member_key` answers whether a node key is an admin of the chain, a peer the
+  roster vouches, or this node's own key (the peers table never
   holds this node, and a worker that is the gateway of its own request dials its
   own address over TLS): what every node-to-node call authorized by the
   connection key is checked against (`auth::caller_is_member`). On a visitor, `admit_peer`
   refuses another visitor and `alive_peers` leaves one out (`hides`, role from
-  the verified token, else the announced profile): visitors never know each
+  the roster vouch, else the announced profile): visitors never know each
   other. A visitor's `announce` skips the LAN broadcast, and `discovery.rs`
   sends its sealed announce to each admin and worker over `AnnounceCodec`
   (`pom/announce-direct/1`) instead of the gossip topic. On a public network the
@@ -189,10 +189,10 @@ dedicated or member, with iroh's hole punching), are in
   and never proof; `pom_version`/`pom_build` are the release
   (`pom_core_update::RELEASE_VERSION`) and the build commit the node runs,
   copied into `PeerInfo` and `/admin/nodes` for the participants screen and
-  never used for a decision; `membership` is this node's membership token
-  (`set_membership`, renewed by `webui::spawn_token_keeper`), announced and
-  carried in `PeerInfo`, and only believed once `membership::peer_role`
-  checks it against the chain; `is_principal` / `peer_is_principal` tell the
+  never used for a decision; the `membership` announce field and this node's
+  token store were retired 2026-11-15 (admin-hub routing C3): membership is
+  what the roster vouch ledger says (`AdminTrust::vouched_role`), never
+  something a node carries; `is_principal` / `peer_is_principal` tell the
   principal from any admin (a secondary has the profile, not the principal's
   duties: chat relay, lobby, member list), by the key the local trust chain
   names; the admin capability does not come from the announcement but

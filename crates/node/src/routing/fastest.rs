@@ -782,7 +782,6 @@ mod tests {
             trust_version: None,
             pom_version: String::new(),
             pom_build: String::new(),
-            membership: None,
             relay: None,
             anon_tunnel: None,
             addr: "10.0.0.1:42777".into(),

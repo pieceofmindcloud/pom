@@ -714,7 +714,11 @@ impl AdminTrust {
 
     /// Every roster vouch this node holds.
     pub(crate) fn vouches(&self) -> Vec<crate::membership::Vouch> {
-        self.vouches.lock().expect("vouch lock poisoned").entries.clone()
+        self.vouches
+            .lock()
+            .expect("vouch lock poisoned")
+            .entries
+            .clone()
     }
 
     /// Takes the vouches that hold against the chain and keeps the newest
@@ -764,7 +768,11 @@ impl AdminTrust {
     /// The role the roster vouches give `node_id` now: a vouch that holds
     /// against the chain and is fresh, with the approval newer than the
     /// node's last ban. `None` when this node holds no vouch for it.
-    pub(crate) fn vouched_role(&self, node_id: &str, now: i64) -> Option<crate::config::EnrollmentRole> {
+    pub(crate) fn vouched_role(
+        &self,
+        node_id: &str,
+        now: i64,
+    ) -> Option<crate::config::EnrollmentRole> {
         let document = self.document();
         let ledger = self.vouches.lock().expect("vouch lock poisoned");
         let vouch = ledger.entries.iter().find(|entry| entry.sub == node_id)?;
@@ -2588,13 +2596,19 @@ mod tests {
             .unwrap()
         };
         trust.merge_vouches(vec![vouch_of(EnrollmentRole::Worker, now - 10, now)]);
-        assert_eq!(trust.vouched_role("worker", now), Some(EnrollmentRole::Worker));
+        assert_eq!(
+            trust.vouched_role("worker", now),
+            Some(EnrollmentRole::Worker)
+        );
         assert_eq!(trust.vouched_role("stranger", now), None);
         // An older approval does not replace the one the ledger holds.
         assert!(trust
             .merge_vouches(vec![vouch_of(EnrollmentRole::Visitor, now - 100, now)])
             .is_empty());
-        assert_eq!(trust.vouched_role("worker", now), Some(EnrollmentRole::Worker));
+        assert_eq!(
+            trust.vouched_role("worker", now),
+            Some(EnrollmentRole::Worker)
+        );
         // A newer approval does.
         trust.merge_vouches(vec![vouch_of(EnrollmentRole::Visitor, now + 1, now + 1)]);
         assert_eq!(

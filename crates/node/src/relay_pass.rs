@@ -19,18 +19,18 @@
 //! relay of a member's machine.
 
 use crate::admin_trust::{AdminTrustDocument, AuthorityPrincipal};
-use crate::membership::{open_compact, sign_compact, CLOCK_LEEWAY_SECS, TOKEN_TTL_SECS};
+use crate::membership::{open_compact, sign_compact, CLOCK_LEEWAY_SECS};
 use anyhow::{bail, Result};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// The header of a pass: a membership token's header names another type, so
-/// neither kind of token can be presented as the other.
+/// The header of a pass: no other compact token of the node carries it, so
+/// a pass cannot stand in for anything else and nothing else for it.
 const HEADER: &str = r#"{"alg":"EdDSA","typ":"pom-relay-pass"}"#;
 
 /// A pass lasts as long as a membership token, and is renewed with it.
-pub(crate) const PASS_TTL_SECS: i64 = TOKEN_TTL_SECS;
+pub(crate) const PASS_TTL_SECS: i64 = 10 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct RelayPassClaims {
@@ -205,24 +205,6 @@ mod tests {
         assert!(verify(&pass, &other_trust.document(), RELAY, NOW).is_err());
         // A non-admin cannot issue one.
         assert!(issue(&other_key, &other, &trust.document(), RELAY, NOW).is_err());
-    }
-
-    #[test]
-    fn a_pass_and_a_membership_token_cannot_stand_in_for_each_other() {
-        let (trust, key, principal) = admin();
-        let token = crate::membership::issue(
-            &key,
-            &principal,
-            &trust.document(),
-            "member",
-            "aa",
-            crate::config::EnrollmentRole::Visitor,
-            NOW,
-        )
-        .unwrap();
-        assert!(verify(&token, &trust.document(), RELAY, NOW).is_err());
-        let pass = issue(&key, &principal, &trust.document(), RELAY, NOW).unwrap();
-        assert!(crate::membership::verify(&pass, &trust.document(), NOW).is_err());
     }
 
     #[test]

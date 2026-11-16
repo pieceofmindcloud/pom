@@ -846,11 +846,6 @@ pub enum P2PMessage {
         pom_version: String,
         #[serde(default)]
         pom_build: String,
-        /// This node's membership token (`membership::MembershipToken`): its
-        /// role, signed by an admin of the chain. Bound to `pubkey`, so it
-        /// proves nothing when copied into another node's announce.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        membership: Option<String>,
         /// Present while this node relays for its cluster (or everyone).
         #[serde(default)]
         relay: Option<RelayOffer>,
@@ -903,10 +898,6 @@ pub struct PeerInfo {
     pub pom_version: String,
     #[serde(default)]
     pub pom_build: String,
-    /// The membership token the peer announces; verified where it is read
-    /// (`membership::verified_role`), never trusted as it came.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub membership: Option<String>,
     /// What the peer offers as a relay, when it does.
     #[serde(default)]
     pub relay: Option<RelayOffer>,
@@ -1582,7 +1573,6 @@ pub struct Network {
     policy_principal_pubkey: std::sync::RwLock<Option<String>>,
     /// The version of the local trust chain, announced to the peers.
     trust_version: std::sync::RwLock<Option<String>>,
-    membership: std::sync::RwLock<Option<String>>,
     /// The visitor relays this node may use anonymously, each with its pass
     /// (`crate::relay_pass`), as the last admin handed them out.
     anonymous_relays: std::sync::RwLock<Vec<AnonymousRelay>>,
@@ -2029,7 +2019,6 @@ impl Network {
             network_settings_sync_needed: AtomicBool::new(true),
             policy_principal_pubkey: std::sync::RwLock::new(None),
             trust_version: std::sync::RwLock::new(None),
-            membership: std::sync::RwLock::new(None),
             anonymous_relays: std::sync::RwLock::new(Vec::new()),
             anon_tunnel: std::sync::RwLock::new(None),
             announce_key: std::sync::RwLock::new(None),
@@ -2159,14 +2148,6 @@ impl Network {
         }
     }
 
-    /// The membership token this node announces, renewed from an admin
-    /// (`membership::spawn_token_keeper`). `None` clears it.
-    pub fn set_membership(&self, token: Option<String>) {
-        if let Ok(mut current) = self.membership.write() {
-            *current = token;
-        }
-    }
-
     /// Where this node answers anonymous tunnels now, for its announce.
     pub fn set_anon_tunnel(&self, addr: Option<crate::anon_tunnel::AnonTunnelAddr>) {
         if let Ok(mut current) = self.anon_tunnel.write() {
@@ -2226,13 +2207,6 @@ impl Network {
             .read()
             .map(|current| current.clone())
             .unwrap_or_default()
-    }
-
-    pub fn membership(&self) -> Option<String> {
-        self.membership
-            .read()
-            .ok()
-            .and_then(|current| current.clone())
     }
 
     /// The key that signs this node's announces: the node key.
@@ -2649,7 +2623,6 @@ impl Network {
             trust_version: self.trust_version(),
             pom_version: crate::pom_core_update::release_version().to_string(),
             pom_build: crate::build_commit(),
-            membership: self.membership(),
             relay: self.relay_gate.offer(),
             anon_tunnel: self.anon_tunnel(),
             addr,
@@ -3104,9 +3077,10 @@ impl Network {
     /// trust chain wired in, a peer is an admin only when the chain proves it
     /// (principal or a secondary grant in force, never an inference node).
     /// Only the `testkit`'s open mode, which has no chain, takes the announce.
-    /// Whether `peer` was banned and holds no token issued after the ban: it
-    /// still knows the connection key, so the admission probe alone would
-    /// let it back in.
+    /// Whether `peer` was banned and no newer decision names it: the roster
+    /// readmission or a vouch admitted after the ban. A banned peer still
+    /// knows the connection key, so the admission probe alone would let it
+    /// back in.
     fn is_revoked(&self, peer: &PeerInfo) -> bool {
         let Some(admission) = self.admission.as_ref() else {
             return false;
@@ -3125,30 +3099,24 @@ impl Network {
                 .trust
                 .vouched_role(&peer.node_id, chrono::Utc::now().timestamp())
                 .is_none()
-            && crate::membership::peer_role(peer, &admission.trust).is_none()
     }
 
     /// Whether `peer` is a visitor: the roster vouch decides when this node
     /// holds one for it (phase C of the admin-hub routing); with no vouch,
-    /// its token, checked against the chain; and with no token, that it
-    /// announces itself as one. The role is granted at admission, as
-    /// everywhere.
+    /// what it announces decides - a member admitted before the lists
+    /// existed, or one this node only knows by its announce. The role is
+    /// granted at admission, as everywhere.
     pub(crate) fn peer_is_visitor(&self, peer: &PeerInfo) -> bool {
         use crate::config::EnrollmentRole;
-        match self.admission.as_ref() {
-            Some(admission) => {
-                if let Some(role) =
-                    admission.trust.vouched_role(&peer.node_id, chrono::Utc::now().timestamp())
-                {
-                    return role == EnrollmentRole::Visitor;
-                }
-                match crate::membership::peer_role(peer, &admission.trust) {
-                    Some(role) => role == EnrollmentRole::Visitor,
-                    None => peer.profile == crate::profile::NodeProfile::Visitor,
-                }
+        if let Some(admission) = self.admission.as_ref() {
+            if let Some(role) = admission
+                .trust
+                .vouched_role(&peer.node_id, chrono::Utc::now().timestamp())
+            {
+                return role == EnrollmentRole::Visitor;
             }
-            None => peer.profile == crate::profile::NodeProfile::Visitor,
         }
+        peer.profile == crate::profile::NodeProfile::Visitor
     }
 
     /// Whether `peer` is an admin the chain proves, never one that only
@@ -3164,8 +3132,8 @@ impl Network {
         }
     }
 
-    /// Whether this node is a visitor: its profile, its roster vouch, or its
-    /// own token.
+    /// Whether this node is a visitor: its profile, or the roster vouch that
+    /// names it one.
     pub(crate) fn is_visitor(&self) -> bool {
         if self
             .profile
@@ -3177,19 +3145,10 @@ impl Network {
         let Some(admission) = self.admission.as_ref() else {
             return false;
         };
-        if admission
+        admission
             .trust
             .vouched_role(&self.node_id, chrono::Utc::now().timestamp())
             == Some(crate::config::EnrollmentRole::Visitor)
-        {
-            return true;
-        }
-        crate::membership::member_role(
-            &admission.trust,
-            self.membership().as_deref(),
-            &self.node_id,
-            &self.pubkey,
-        ) == Some(crate::config::EnrollmentRole::Visitor)
     }
 
     /// The shape a visitor may learn of this network (`set_visitor_view`):
@@ -3211,9 +3170,7 @@ impl Network {
     /// Whether the view installed here keeps visitors on admin entry nodes
     /// only (the shape `payments::runtime::install` sets).
     fn self_view_is_admins_only(&self) -> bool {
-        self.visitor_view
-            .load(std::sync::atomic::Ordering::Relaxed)
-            == 2
+        self.visitor_view.load(std::sync::atomic::Ordering::Relaxed) == 2
     }
 
     /// Whether `peer` is kept from visitors: not an entry node the view
@@ -3296,12 +3253,12 @@ impl Network {
         }
     }
 
-    /// Whether the node with `pubkey` is a member of this network now: an
-    /// admin of the chain, a peer the roster vouches (phase C of the
-    /// admin-hub routing), or a peer whose announced membership token holds
-    /// against the chain and its revocations - the legacy form, kept until
-    /// the old versions retire with it. A node without admission (a test
-    /// bench) does not judge, and answers yes.
+    /// Whether the node with `node_id`/`pubkey` is a member of this network now:
+    /// an admin of the chain, or a peer the roster vouches - the approval an
+    /// admin signed (phase C of the admin-hub routing). The membership token
+    /// this used to also accept was retired 2026-11-15 with the old versions
+    /// it bridged. A node without admission (a test bench) does not judge,
+    /// and answers yes.
     pub(crate) async fn is_member_key(&self, node_id: &str, pubkey: &str) -> bool {
         let Some(admission) = self.admission.as_ref() else {
             return true;
@@ -3320,10 +3277,11 @@ impl Network {
             .trust
             .vouched_role(node_id, chrono::Utc::now().timestamp())
             .is_some();
-        self.peers.read().await.get(node_id).is_some_and(|peer| {
-            peer.pubkey == pubkey
-                && (vouched || crate::membership::peer_role(peer, &admission.trust).is_some())
-        })
+        self.peers
+            .read()
+            .await
+            .get(node_id)
+            .is_some_and(|peer| peer.pubkey == pubkey && vouched)
     }
 
     pub async fn admin_peers(&self) -> Vec<(crate::p2p::EndpointId, Vec<String>)> {
@@ -3865,7 +3823,6 @@ impl Network {
                 trust_version,
                 pom_version,
                 pom_build,
-                membership,
                 relay,
                 anon_tunnel,
                 signature: _,
@@ -3893,7 +3850,6 @@ impl Network {
                     trust_version,
                     pom_version,
                     pom_build,
-                    membership,
                     relay,
                     anon_tunnel,
                     addr: peer_addr.clone(),
@@ -5604,7 +5560,6 @@ mod tests {
             trust_version: None,
             pom_version: String::new(),
             pom_build: String::new(),
-            membership: None,
             relay: None,
             anon_tunnel: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
@@ -5661,7 +5616,6 @@ mod tests {
             trust_version: None,
             pom_version: String::new(),
             pom_build: String::new(),
-            membership: None,
             relay: None,
             anon_tunnel: None,
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
@@ -5758,7 +5712,6 @@ mod tests {
             trust_version: None,
             pom_version: String::new(),
             pom_build: String::new(),
-            membership: None,
             relay: None,
             anon_tunnel: None,
             addr: "192.168.1.9:42777".into(),
@@ -5896,7 +5849,6 @@ mod tests {
                 trust_version: None,
                 pom_version: String::new(),
                 pom_build: String::new(),
-                membership: None,
                 relay: None,
                 anon_tunnel: None,
                 signature: None,
@@ -6222,7 +6174,6 @@ mod tests {
             trust_version: None,
             pom_version: String::new(),
             pom_build: String::new(),
-            membership: None,
             relay: None,
             anon_tunnel: None,
             addr: addr.into(),
@@ -6332,7 +6283,6 @@ mod tests {
             trust_version: None,
             pom_version: String::new(),
             pom_build: String::new(),
-            membership: None,
             relay: None,
             anon_tunnel: None,
             addr: "127.0.0.1:42777".into(),
@@ -6894,8 +6844,16 @@ mod tests {
             .unwrap();
         *visitor.profile.write().unwrap() = NodeProfile::Visitor;
         visitor.set_visitor_view(Some(true));
-        assert!(!visitor.admit_peer(&as_role("worker", NodeProfile::Worker, true)).await);
-        assert!(visitor.admit_peer(&as_role("admin", NodeProfile::Admin, true)).await);
+        assert!(
+            !visitor
+                .admit_peer(&as_role("worker", NodeProfile::Worker, true))
+                .await
+        );
+        assert!(
+            visitor
+                .admit_peer(&as_role("admin", NodeProfile::Admin, true))
+                .await
+        );
         for peer in [
             as_role("worker-plain", NodeProfile::Worker, false),
             as_role("admin-b", NodeProfile::Admin, true),
@@ -7035,8 +6993,8 @@ mod tests {
     }
 
     /// A visitor announces itself straight to the admins it knows and to the
-/// endpoints it dialed through pkarr. Workers, other visitors and itself are
-/// none of those in the default view.
+    /// endpoints it dialed through pkarr. Workers, other visitors and itself are
+    /// none of those in the default view.
     #[tokio::test]
     async fn a_visitor_announces_only_to_admins() {
         use crate::profile::NodeProfile;
@@ -7775,7 +7733,6 @@ mod tests {
             trust_version: None,
             pom_version: String::new(),
             pom_build: String::new(),
-            membership: None,
             relay: None,
             anon_tunnel: None,
             signature: None,
@@ -7961,66 +7918,6 @@ mod tests {
         );
     }
 
-    /// Who passes the transport check of a node-to-node call: an admin of
-    /// the chain, and a peer whose announced token holds - until it is
-    /// revoked. Anyone else, the connection key notwithstanding, does not.
-    #[tokio::test]
-    async fn only_admins_and_members_with_a_valid_token_are_members() {
-        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
-            "primary",
-            crate::identity::trust_peer_id(primary_key.verifying_key().as_bytes()),
-            &primary_key,
-        );
-        let trust = Arc::new(
-            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
-                "test-cluster",
-                primary.clone(),
-                &primary_key,
-            )
-            .unwrap(),
-        );
-        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None)
-            .await
-            .unwrap()
-            .with_admission(
-                admission_config("key", crate::config::NetworkVisibility::Private),
-                trust.clone(),
-            );
-        assert!(net.is_member_key(&primary.node_id, &primary.pubkey).await);
-
-        let now = chrono::Utc::now().timestamp();
-        let token = crate::membership::issue(
-            &primary_key,
-            &primary,
-            &trust.document(),
-            "worker",
-            "worker-key",
-            crate::config::EnrollmentRole::Worker,
-            now - 5,
-        )
-        .unwrap();
-        let mut worker = dummy_peer("worker", "127.0.0.1:9");
-        worker.pubkey = "worker-key".into();
-        worker.membership = Some(token);
-        let mut stranger = dummy_peer("stranger", "127.0.0.1:10");
-        stranger.pubkey = "stranger-key".into();
-        {
-            let mut peers = net.peers.write().await;
-            peers.insert("worker".into(), worker);
-            peers.insert("stranger".into(), stranger);
-        }
-        assert!(net.is_member_key("worker", "worker-key").await);
-        assert!(!net.is_member_key("worker", "another-key").await);
-        assert!(!net.is_member_key("stranger", "stranger-key").await);
-
-        let ban =
-            crate::membership::revoke(&primary_key, &primary, &trust.document(), "worker", now)
-                .unwrap();
-        trust.merge_revocations(vec![ban]);
-        assert!(!net.is_member_key("worker", "worker-key").await);
-    }
-
     /// Phase C of the admin-hub routing: the roster vouch makes a member a
     /// member with no token in its announce, binds to the announced key as
     /// a token does, and a ban cuts it - a re-admission after the ban vouches
@@ -8077,14 +7974,9 @@ mod tests {
         assert!(!net.is_member_key("worker", "another-key").await);
         assert!(!net.is_member_key("stranger", "stranger-key").await);
 
-        let ban = crate::membership::revoke(
-            &primary_key,
-            &primary,
-            &trust.document(),
-            "worker",
-            now + 1,
-        )
-        .unwrap();
+        let ban =
+            crate::membership::revoke(&primary_key, &primary, &trust.document(), "worker", now + 1)
+                .unwrap();
         trust.merge_revocations(vec![ban]);
         assert!(
             !net.is_member_key("worker", "worker-key").await,

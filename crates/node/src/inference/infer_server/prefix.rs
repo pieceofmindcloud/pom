@@ -1063,12 +1063,11 @@ pub(super) fn terminal_prefill_meta(
 }
 
 /// The inference port is a channel between peers. It accepts only a member of
-/// the network, as the transport proves it - an admin of the chain, a node
-/// the roster vouches, or, until the old versions retire with it, a node
-/// holding a valid membership token (`Network::is_member_key`) - with the
-/// internal request marker; on a private network the caller also presents the
-/// shared `connection_key`. API keys belong to the client's routes on the
-/// gateway and never reach a peer.
+/// the network, as the transport proves it - an admin of the chain, or a node
+/// the roster vouches (`Network::is_member_key`) - with the internal request
+/// marker; on a private network the caller also presents the shared
+/// `connection_key`. API keys belong to the client's routes on the gateway
+/// and never reach a peer.
 pub(super) async fn require_inference_auth(
     State(config): State<crate::auth::AuthState>,
     request: Request<axum::body::Body>,

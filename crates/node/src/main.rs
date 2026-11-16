@@ -1784,7 +1784,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::gateway::spawn_directory_publisher(gw_state.clone());
     crate::webui::spawn_admission_poller(gw_state.clone());
     crate::webui::spawn_member_list_keeper(gw_state.clone());
-    crate::webui::spawn_token_keeper(gw_state.clone());
+    crate::webui::spawn_membership_keeper(gw_state.clone());
     crate::home_statement::spawn_keeper(gw_state.clone());
     crate::webui::spawn_roster_keeper(gw_state.clone());
     crate::webui::spawn_revocation_keeper(gw_state.clone());

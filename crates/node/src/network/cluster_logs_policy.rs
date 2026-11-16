@@ -278,7 +278,6 @@ mod tests {
                 trust_version: None,
                 pom_version: String::new(),
                 pom_build: String::new(),
-                membership: None,
                 relay: None,
                 anon_tunnel: None,
                 addr: format!("[::1]:{gateway_port}"),

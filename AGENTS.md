@@ -26,7 +26,7 @@ place is there, not here.
 | `plugins-ui.md` | menus, screens, routes, profiles and i18n provided by plugins (`pom-plugin-ui/v1` manifest) |
 | `enterprise-licensing.md` | independent plugins, licenses, lease, process host, GitHub repositories |
 | `payments.md` | charging visitors: member gateway, home statements, prepaid credit gate, leases |
-| `security-model.md` | roles, trust chain, membership tokens, revocation, mutual TLS, route scopes, local API keys |
+| `security-model.md` | roles, trust chain, roster vouches, revocation, mutual TLS, route scopes, local API keys |
 
 **By folder** (`AGENTS.md`) - what each file does, function by function, and the
 links to other folders: `crates/`, `crates/node/`, and inside
@@ -238,10 +238,10 @@ breaks the whole product.
   by no other node at all. **The trust chain names the admins only**: a worker's
   or a visitor's role travels in the roster - the admission list the admins
   hold, and its entries signed as vouches that reach every node
-  (`AdminTrust::vouched_role`) - or, as the legacy form, a short lived
-  membership token an admin signed (`src/membership.rs`); every one of them is
-  checked against the chain alone, so admitting a member changes no trust
-  document. **A secondary admin deploys
+  (`AdminTrust::vouched_role`) - checked against the chain alone, so admitting
+  a member changes no trust document. The membership token that used to carry
+  a role was retired on 2026-11-15, phase C3 of the admin-hub line (its
+  decision 5, `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). **A secondary admin deploys
   models, decides admissions and removes workers and visitors, and nothing
   else**: settings, keys, admins and every change to the trust chain come from
   the principal, on the screen and between nodes. The role is granted at
@@ -277,7 +277,12 @@ breaks the whole product.
   the earlier form of a file and migrate it on load, and announce a new version of
   a contract beside the old one until the old one is retired on purpose. A break
   that cannot be avoided is a decision written in the release notes, never a side
-  effect. `frame/v1-batch` is the official inference contract; the v1/v2 frames
+  effect. **The admin-hub routing line is such a decision, dated 2026-11-15**:
+  the roster vouches, the retired membership token and the deleted
+  `inference_access`/`entry_nodes` knobs shipped with no compatibility bridge -
+  the machines of a network move onto it together, because an unmigrated build
+  cannot hold a role a vouch names. → `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`
+  (decision 5). `frame/v1-batch` is the official inference contract; the v1/v2 frames
   from before the launch never shipped and still get no compatibility code.
   → `inference.md`
 - **The deployment's `max_new_tokens` bounds one generation, not the request.**
@@ -350,8 +355,8 @@ breaks the whole product.
   `http://localhost` keeps working for the operator. Each node's certificate is
   derived from its `.pom-node.key`, verified by `SHA256(pubkey) == node_id`, and
   presented on both ends, so a call authorized by the connection key also needs
-  the caller to be a member today: an admin of the chain, or a node with a valid
-  membership token no admin revoked. Every UDP announce is signed by the node
+  the caller to be a member today: an admin of the chain, or a node the roster
+  vouches and no admin has banned. Every UDP announce is signed by the node
   key. A ban is a revocation any admin signs, so it holds while the principal is
   away. → `p2p-network.md` (2, 5), `http-api.md`
 - **Route tests use `gateway::testkit`**, never real UDP - the suite transmits on

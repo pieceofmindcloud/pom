@@ -46,8 +46,8 @@ pub const ROTATE_AFTER: Duration = Duration::from_secs(60 * 60);
 /// How long a replaced endpoint lives on for the calls it still carries.
 const RETIRE_AFTER: Duration = Duration::from_secs(10 * 60);
 /// When a relay's pass in the map is swapped for a newer one: two thirds
-/// into its life, as the membership token is renewed.
-const PASS_SWAP_AFTER: Duration = Duration::from_secs(crate::membership::RENEW_AFTER_SECS as u64);
+/// into the pass's ten-minute life.
+const PASS_SWAP_AFTER: Duration = Duration::from_secs(400);
 /// Bound of one binding frame.
 const MAX_BIND_BYTES: usize = 4 * 1024;
 

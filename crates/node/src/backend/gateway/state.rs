@@ -963,15 +963,14 @@ pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
     // its role only ever restricts it. The mirror of that list, read for
     // membership, counts only approvals, cut by the node's last ban
     // (`admitted_role`, `webui::membership`). A roster-named member is
-    // whatever the roster says, whatever its announce or an older token
-    // claims.
+    // whatever the roster says, whatever its announce claims.
     if let Some(record) = state.network_chat.admission_of(&peer.node_id) {
         return record.role == EnrollmentRole::Visitor;
     }
-    if let Some(role) = state
-        .network_chat
-        .admitted_role(&peer.node_id, state.admin_trust.revoked_node_at(&peer.node_id))
-    {
+    if let Some(role) = state.network_chat.admitted_role(
+        &peer.node_id,
+        state.admin_trust.revoked_node_at(&peer.node_id),
+    ) {
         return role == EnrollmentRole::Visitor;
     }
     // Then the roster's word carried to this node: the vouch ledger decides
@@ -983,12 +982,10 @@ pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
     {
         return role == EnrollmentRole::Visitor;
     }
-    // With neither the legacy sources decide, as before: the token
-    // the peer announces, checked against the chain and the revocations, and
-    // last its announce - a member admitted before the lists existed, or one
-    // this node only knows by its announce.
-    crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Visitor)
-        || peer.profile == crate::profile::NodeProfile::Visitor
+    // With no roster and no vouch naming the member, its announce decides -
+    // a member admitted before the lists existed, or one this node only
+    // knows by its announce.
+    peer.profile == crate::profile::NodeProfile::Visitor
 }
 
 /// What a node-to-node request may reach, by the caller's identity.
@@ -1000,7 +997,8 @@ pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
 /// - A route of a serving node (catalog, planning, transfers) takes a signed
 ///   request from an admin or from a worker an admin admitted as one
 ///   (`peer_role_is_attested` - the roster decides when it names the member,
-///   the membership token otherwise) - never on the strength of its announce.
+///   its vouch where no roster lives) - never on the strength of its
+///   announce.
 /// - A route of this machine's own operator (`LocalOnly`) is refused to
 ///   every other node, signed or not.
 /// - Everything else - inference, the node's own description, the internal
@@ -1055,24 +1053,19 @@ pub(crate) async fn caller_may_ask(
 /// the local roster cannot name is decided by the roster's word carried to
 /// this node: a **vouch** - an admin's signature of the roster entry, kept
 /// fresh for every member by `spawn_vouch_keeper` and persisted beside the
-/// chain (`AdminTrust::vouched_role`). The membership token stays accepted
-/// as the legacy form - a member admitted before the lists or vouches
-/// existed, a legacy network open to anyone with the anchor, a member whose
-/// vouch has not arrived yet - checked against the chain alone, until the
-/// old versions retire with it.
+/// chain (`AdminTrust::vouched_role`). On a network open to anyone with the
+/// anchor the announce is the admission, and it attests. The membership
+/// token this used to also accept was retired 2026-11-15 (phase C3).
 pub(crate) async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
-    state
-        .network_chat
-        .admitted_role(
-            &peer.node_id,
-            state.admin_trust.revoked_node_at(&peer.node_id),
-        ) == Some(EnrollmentRole::Worker)
+    state.network_chat.admitted_role(
+        &peer.node_id,
+        state.admin_trust.revoked_node_at(&peer.node_id),
+    ) == Some(EnrollmentRole::Worker)
         || state
             .admin_trust
             .vouched_role(&peer.node_id, chrono::Utc::now().timestamp())
             == Some(EnrollmentRole::Worker)
-        || crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Worker)
         || state.auth.read().await.network.open_admission()
 }
 
@@ -1118,7 +1111,10 @@ const SESSION_PIN_MAX: usize = 512;
 pub(crate) fn session_pin(state: &GatewayState, key: &str) -> Option<SessionPin> {
     let mut pins = state.session_pins.write().ok()?;
     let pin = pins.get(key).cloned();
-    if pin.as_ref().is_some_and(|pin| pin.used_at.elapsed() > SESSION_PIN_IDLE_TTL) {
+    if pin
+        .as_ref()
+        .is_some_and(|pin| pin.used_at.elapsed() > SESSION_PIN_IDLE_TTL)
+    {
         pins.remove(key);
         let _ = state.database.delete_session_pin(key);
         return None;
@@ -2021,7 +2017,6 @@ impl GatewayState {
                 trust_version: self.network.trust_version(),
                 pom_version: crate::pom_core_update::release_version().to_string(),
                 pom_build: crate::build_commit(),
-                membership: self.network.membership(),
                 relay: self.network.relay_gate().offer(),
                 anon_tunnel: None,
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
@@ -2372,9 +2367,11 @@ mod session_pin_tests {
         let a = range("alpha", 0, 1);
         let b = range("beta", 2, 3);
         let hops = vec!["alpha".to_string(), "beta".to_string()];
-        let chain =
-            crate::fastest::resolve_chain(&[&a, &b], &hops, 4, None).expect("both live");
-        assert_eq!(chain.iter().map(|p| p.node_id.as_str()).collect::<Vec<_>>(), vec!["alpha", "beta"]);
+        let chain = crate::fastest::resolve_chain(&[&a, &b], &hops, 4, None).expect("both live");
+        assert_eq!(
+            chain.iter().map(|p| p.node_id.as_str()).collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
         assert!(
             crate::fastest::resolve_chain(&[&a, &b], &hops, 4, Some("beta")).is_none(),
             "the head of the chain is beta's peer, not beta"
@@ -2394,9 +2391,13 @@ mod session_pin_tests {
         let state = crate::gateway::testkit::state_with("planner", vec![]).await;
         let a = range("alpha", 0, 1);
         let b = range("beta", 2, 3);
-        let chain =
-            crate::fastest::resolve_chain(&[&a, &b], &["alpha".to_string(), "beta".to_string()], 4, None)
-                .unwrap();
+        let chain = crate::fastest::resolve_chain(
+            &[&a, &b],
+            &["alpha".to_string(), "beta".to_string()],
+            4,
+            None,
+        )
+        .unwrap();
         let plan = crate::fastest::plan_for_chain(&chain).unwrap();
 
         pin_session(&state, "ornith-session", &plan);
@@ -2416,10 +2417,18 @@ mod session_pin_tests {
 
         // Re-planning replaces the pin, in memory and in the database.
         let c = range("gamma", 2, 3);
-        let other =
-            crate::fastest::resolve_chain(&[&a, &c], &["alpha".to_string(), "gamma".to_string()], 4, None)
-                .unwrap();
-        pin_session(&state, "ornith-session", &crate::fastest::plan_for_chain(&other).unwrap());
+        let other = crate::fastest::resolve_chain(
+            &[&a, &c],
+            &["alpha".to_string(), "gamma".to_string()],
+            4,
+            None,
+        )
+        .unwrap();
+        pin_session(
+            &state,
+            "ornith-session",
+            &crate::fastest::plan_for_chain(&other).unwrap(),
+        );
         assert_eq!(
             session_pin(&state, "ornith-session").unwrap().hops,
             vec!["alpha".to_string(), "gamma".to_string()]

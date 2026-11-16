@@ -281,8 +281,9 @@ troubled deployment.
   See `docs/subsystems/payments.md`.
 - `relay_pass.rs` - relay passes: the admin-signed token a visitor's relay
   admits by, naming the network, the relay URL and an expiry, never its
-  holder; its header differs from the membership token's (`membership.rs`
-  `sign_compact`/`open_compact`), so neither stands in for the other.
+  holder; it shares the compact-JWT helpers of `membership.rs`
+  (`sign_compact`/`open_compact`) under a header of its own, so no other
+  credential of the node can stand in for it.
   `PassLedger` binds a pass to the first endpoint that used it. Design:
   `docs/superpowers/specs/2026-10-23-anonymous-visitor-relays-design.md`.
 - `initial_ports.rs` - selection of available gateway, inference, P2P, QUIC

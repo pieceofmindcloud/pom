@@ -5313,8 +5313,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            split_error.contains("llama.future_layer_metadata")
-                && split_error.contains("length 3"),
+            split_error.contains("llama.future_layer_metadata") && split_error.contains("length 3"),
             "the split refuses with the same named reason: {split_error}"
         );
         let _ = std::fs::remove_dir_all(dir);

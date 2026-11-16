@@ -362,15 +362,23 @@ guides.
      announced and accepted as the legacy form, so a mixed-version cluster
      keeps working (compatibility policy): the new claim is only "the vouch
      decides when a current admin signed it".
-   - **C3 - retirement (a dated release-notes decision, a separate
-     release):** new nodes stop announcing and issuing tokens; `membership`
-     keeps reading old announces until the old version is retired on
-     purpose, and shrinks to the revocation entries between admins.
-     Pending: a release decision, and it is entangled with decision 5
-     recorded below (retiring the announce is the moment the old versions'
-     gates stop being fed, and it is also the moment the deprecated
-     `inference_access` values stop being honored anywhere, so the two
-     retirements ride on the same dated release).
+   - **C3 - retirement (delivered 2026-11-15).** The operator ruled for this
+     line: **no backward-compatibility bridge** - the dated release-notes
+     decision was taken the same day as the plumbing, not left to a future
+     release. New nodes stop issuing, storing, announcing and accepting
+     membership tokens outright: the `membership` field of the Announce and
+     `PeerInfo`, the node's own token store (`set_membership`), the
+     `POST /api/internal/membership/token` route and the token layer of
+     every gate are deleted; `membership.rs` shrank to revocations and
+     roster vouches (the compact-JWT helpers stay for `relay_pass`). The
+     relay passes a member needs travel on a route of their own,
+     `POST /api/internal/membership/relays`, answered by any admin, and a
+     network open to anyone with the anchor is vouched from the announce the
+     way it used to be tokened.
+     Consequence, accepted: a mixed-version cluster on this line does not
+     work - a node on a pre-C3 build cannot hold a vouch, and one updated
+     node cuts unmigrated peers out of the role gates. The machines of a
+     network move onto the roster together.
 5. Confirmed (2026-11-15): **deprecate now**. `direct` and `member_gateway`
    are deprecated: they keep parsing and writing for older nodes and are
    never honored by a new node; the node warns on load when a file carries

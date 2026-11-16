@@ -427,8 +427,8 @@ local-only notice. Routes:
   direct or relayed connection, latency and hardware, and a link to that
   candidate's thread, where an admin approves or declines after talking;
   once decided, the candidate's window hides the conversation; on the candidate it lists the answer, with "Join now" when approved.
-  After "Join now" the node restarts into the network and, until it holds a
-  membership token, has no models to show. The interface says so instead of
+  After "Join now" the node restarts into the network and, until the roster
+  vouches it, has no models to show. The interface says so instead of
   "the network serves no model": `GET /api/ui/connection` gives the phase
   (`discovering`, `authenticating`, `connected`, or `standalone` for an admin),
   a "Connecting…" badge sits in the top bar and on this machine's row here,

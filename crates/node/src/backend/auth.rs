@@ -568,9 +568,7 @@ pub(crate) fn set_member_oracle(network: std::sync::Arc<crate::network::Network>
 /// Whether the caller of an inference call is a visitor, which must go
 /// through an admin entry node instead (`crate::delegation`). Since phase A
 /// of the admin-hub routing this holds in every access mode.
-pub(crate) async fn visitor_must_delegate(
-    extensions: &axum::http::Extensions,
-) -> bool {
+pub(crate) async fn visitor_must_delegate(extensions: &axum::http::Extensions) -> bool {
     let (Some(network), Some(caller)) = (
         MEMBER_ORACLE.get(),
         extensions.get::<crate::serve::TransportPeer>(),

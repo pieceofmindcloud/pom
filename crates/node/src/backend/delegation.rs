@@ -120,7 +120,9 @@ pub(crate) async fn delegates_own_requests(state: &GatewayState) -> bool {
     if crate::webui::is_admin(state) {
         return false;
     }
-    crate::payments::runtime::settings(state).await.worker_delegation
+    crate::payments::runtime::settings(state)
+        .await
+        .worker_delegation
 }
 
 /// Entry nodes for this member: the admins the chain proves, announcing
@@ -470,13 +472,14 @@ pub(crate) async fn delegate_route(
     } else {
         None
     };
-    let role = if caller_is_visitor { "visitor" } else { "member" };
+    let role = if caller_is_visitor {
+        "visitor"
+    } else {
+        "member"
+    };
     let caller = crate::reqlog::Caller {
         key_id: format!("{role}:{caller_node}"),
-        key_label: format!(
-            "{role} {}",
-            &caller_node[..12.min(caller_node.len())]
-        ),
+        key_label: format!("{role} {}", &caller_node[..12.min(caller_node.len())]),
         key_node_id: Some(caller_node.clone()),
         ..crate::reqlog::Caller::anonymous()
     };
@@ -748,17 +751,17 @@ mod tests {
                 crate::config::EnrollmentRole::Worker,
             )
             .unwrap();
-        assert!(state
-            .network_chat
-            .decide_admission(&id_of(&worker), Some(crate::network_lobby::AdmissionStatus::Approved)));
+        assert!(state.network_chat.decide_admission(
+            &id_of(&worker),
+            Some(crate::network_lobby::AdmissionStatus::Approved)
+        ));
         state
             .database
             .save_network_settings(&crate::config::NetworkSettings::default())
             .unwrap();
-        let (status, body) = code_of(
-            delegate_route(signed(&worker), State(state), Json(ask("m", None))).await,
-        )
-        .await;
+        let (status, body) =
+            code_of(delegate_route(signed(&worker), State(state), Json(ask("m", None))).await)
+                .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
         assert_eq!(body["error"]["code"], "not_ready");
     }
@@ -868,7 +871,10 @@ mod tests {
 
         let app = |state: GatewayState| {
             axum::Router::new()
-                .route("/api/generate", axum::routing::post(|| async { StatusCode::IM_USED }))
+                .route(
+                    "/api/generate",
+                    axum::routing::post(|| async { StatusCode::IM_USED }),
+                )
                 .with_state(state.clone())
                 .layer(axum::middleware::from_fn_with_state(state, member_layer))
         };
@@ -905,7 +911,8 @@ mod tests {
     #[tokio::test]
     async fn a_direct_mode_visitor_delegates_and_never_plans_itself() {
         let mut entry = testkit::peer("worker-entry", "worker", 9);
-        entry.inference_frame_capabilities
+        entry
+            .inference_frame_capabilities
             .push(crate::pipeline::CAP_GATEWAY_DELEGATE.into());
         let state = testkit::state_with("visiting", vec![entry]).await;
         state
@@ -928,12 +935,12 @@ mod tests {
             })
             .unwrap();
         let app = axum::Router::new()
-            .route("/api/generate", axum::routing::post(|| async { StatusCode::OK }))
+            .route(
+                "/api/generate",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
             .with_state(state.clone())
-            .layer(axum::middleware::from_fn_with_state(
-                state,
-                member_layer,
-            ));
+            .layer(axum::middleware::from_fn_with_state(state, member_layer));
         let request = Request::builder()
             .method(Method::POST)
             .uri("/api/generate")

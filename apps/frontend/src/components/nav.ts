@@ -84,14 +84,9 @@ export const NAV: NavSection[] = [
   // A single entry: the deploy screen links to the history of what is
   // already deployed (/deployments) from a button beside Deploy.
   { labelKey: "nav.deployments", icon: Rocket, to: "/deploy" },
-  {
-    labelKey: "nav.logs",
-    icon: ListTree,
-    children: [
-      { labelKey: "nav.requestLogs", to: "/logs", icon: ListTree },
-      { labelKey: "nav.deploymentLogs", to: "/deployments/logs", icon: Terminal },
-    ],
-  },
+  // One entry: the request logs, with the deployment logs as a tab beside them
+  // (`components/LogsTabs.tsx`).
+  { labelKey: "nav.logs", icon: ListTree, to: "/logs" },
   { labelKey: "nav.statistics", icon: ChartNoAxesColumn, to: "/statistics" },
   // A signed-in person's own keys; only their session opens it (`lib/access.ts`).
   { labelKey: "nav.myKeys", icon: KeyRound, to: "/config/my-keys" },

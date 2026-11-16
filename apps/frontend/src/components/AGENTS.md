@@ -194,7 +194,8 @@ Per-file list:
   at the end of the `Topbar` and renders only inside the macOS app.
 ## App chrome
 
-- `nav.ts` - `NAV`: the menu as data. `DEV_ONLY_ROUTES` (Payments and Credit, features still in development) leave the menu unless `navForProfile` gets `devMode` (`pom_dev_mode`, from `POM_DEV_MODE`), and `App.tsx`'s `DevOnly` sends their addresses back to the Dashboard outside that mode. Deploy (`nav.deployments`) is a single entry to
+- `LogsTabs.tsx` - the Logs entry opens the logs plugin's request logs (`/logs`) with the deployment logs (`/deployments/logs`) as a tab beside them; no tabs without the plugin or for a demonstration visitor, whose `/deployments/logs` goes back to `/logs`.
+- `nav.ts` - `NAV`: the menu as data. Logs is one leaf (`/logs`). `DEV_ONLY_ROUTES` (Payments and Credit, features still in development) leave the menu unless `navForProfile` gets `devMode` (`pom_dev_mode`, from `POM_DEV_MODE`), and `App.tsx`'s `DevOnly` sends their addresses back to the Dashboard outside that mode. Deploy (`nav.deployments`) is a single entry to
   `/deploy` with `Rocket`; History (`/deployments`) has no menu entry and opens
   from the History button beside Deploy on that screen. Logs has separate
   leaves for requests and deployment; Network Chat is its own

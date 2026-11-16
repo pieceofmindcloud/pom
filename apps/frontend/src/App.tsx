@@ -13,6 +13,7 @@ import { ChatSessionProvider } from "./lib/chatStore";
 import { useAdminSurface, useNode, usePluginUi } from "./lib/queries";
 import { pluginUiSnapshot, resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
 import { PluginScreen } from "./components/PluginScreen";
+import { LogsTabs } from "./components/LogsTabs";
 import { PluginLoading } from "./components/PluginLoading";
 import { PluginBridge } from "./components/PluginBridge";
 import { syncPluginCatalogs } from "./lib/pluginI18n";
@@ -626,10 +627,19 @@ export default function App() {
                   <Navigate to="/statistics" replace />
                 ) : pluginRoute ? (
                   <div className={pluginRoute.route.full_bleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
-                    <PluginScreen
-                      key={`${pluginRoute.code}:${pluginRoute.route.path}`}
-                      resolved={pluginRoute}
-                    />
+                    {location.pathname === "/logs" ? (
+                      <LogsTabs>
+                        <PluginScreen
+                          key={`${pluginRoute.code}:${pluginRoute.route.path}`}
+                          resolved={pluginRoute}
+                        />
+                      </LogsTabs>
+                    ) : (
+                      <PluginScreen
+                        key={`${pluginRoute.code}:${pluginRoute.route.path}`}
+                        resolved={pluginRoute}
+                      />
+                    )}
                   </div>
                 ) : enterprisePath ? (
                   pluginUiPending ? (
@@ -654,7 +664,7 @@ export default function App() {
                         <Route path="/deploy" element={<Page><DeployModel /></Page>} />
                         <Route path="/deploy/image" element={<Navigate to="/deploy?mode=image" replace />} />
                         <Route path="/deployments" element={<Page><Deployments /></Page>} />
-                        <Route path="/deployments/logs" element={<Page><DeploymentLogs /></Page>} />
+                        <Route path="/deployments/logs" element={<Page>{isDemoUser() ? <Navigate to="/logs" replace /> : <LogsTabs><DeploymentLogs /></LogsTabs>}</Page>} />
                         {/* Keep the former deploy URL working for old bookmarks. */}
                         <Route path="/shards/deploy" element={<Navigate to="/deploy" replace />} />
                         <Route path="/transfers" element={<Page><Transfers /></Page>} />

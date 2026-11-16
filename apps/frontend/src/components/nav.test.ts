@@ -24,14 +24,11 @@ describe("navigation structure", () => {
     expect(NAV.some((section) => section.labelKey === "nav.deploy")).toBe(false);
   });
 
-  it("groups request and deployment logs under Logs", () => {
+  it("has one Logs entry, the request logs; the deployment logs are a tab of it", () => {
     const logs = NAV.find((section) => section.labelKey === "nav.logs");
 
-    expect(logs?.to).toBeUndefined();
-    expect(logs?.children?.map((child) => [child.labelKey, child.to])).toEqual([
-      ["nav.requestLogs", "/logs"],
-      ["nav.deploymentLogs", "/deployments/logs"],
-    ]);
+    expect(logs?.to).toBe("/logs");
+    expect(logs?.children).toBeUndefined();
   });
 
   it("gives statistics its own top-level destination after logs", () => {

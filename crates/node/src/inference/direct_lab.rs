@@ -8,7 +8,10 @@
 //! production functions in person
 //! ([`crate::infer_server::forward_direct`], [`crate::direct::deliver_result`]),
 //! and the fake gateway serves the production handler of `/v1/relay-result`. The
-//! only pretence is the engine: each hop sleeps instead of decoding.
+//! only pretence is the engine: each hop sleeps instead of decoding. The hops
+//! send through the shared client production hops use
+//! ([`crate::infer_server::http_client`]): a client built per frame costs ~55 ms in a
+//! debug build, which the bench used to count as an extra network leg.
 //!
 //! The network is emulated by *site*: each hop and the gateway live at a site, and every
 //! message between different sites costs [`LINK_MS`] of **one-way**
@@ -198,7 +201,7 @@ async fn bubble(
     base_meta["next_hops"] = json!(remaining);
 
     let sent = crate::relay::send_frame(
-        &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+        crate::infer_server::http_client(),
         &next.node_id,
         &next.inference_url,
         path,
@@ -306,7 +309,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
             result["hop_timings"] = json!(hop_timings);
             tokio::spawn(async move {
                 crate::direct::deliver_result(
-                    &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+                    crate::infer_server::http_client(),
                     &reply_to,
                     result,
                 )
@@ -401,7 +404,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
             result["hop_timings"] = json!(hop_timings);
             tokio::spawn(async move {
                 crate::direct::deliver_result(
-                    &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+                    crate::infer_server::http_client(),
                     &reply_to,
                     result,
                 )

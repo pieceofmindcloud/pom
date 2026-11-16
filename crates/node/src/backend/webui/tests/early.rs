@@ -281,7 +281,9 @@ mod cluster_logs_settings_tests {
         let response = save_cluster_logs(
             ConnectionAuth,
             State(state.clone()),
-            Json(SaveClusterLogsRequest { logs_enabled: false }),
+            Json(SaveClusterLogsRequest {
+                logs_enabled: false,
+            }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -326,9 +328,7 @@ mod network_chat_settings_tests {
     async fn secondary_admin_forwards_the_toggle_to_the_principal() {
         let app = Router::new().route(
             "/api/ui/network/chat",
-            axum_post(|| async {
-                Json(json!({ "network_chat_enabled": true }))
-            }),
+            axum_post(|| async { Json(json!({ "network_chat_enabled": true })) }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -339,8 +339,7 @@ mod network_chat_settings_tests {
         let primary_key = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         let mut primary = peer("primary", "primary", port);
         primary.endpoint_id = Some("peer-primary".into());
-        primary.pubkey =
-            hex::encode(primary_key.verifying_key().as_bytes());
+        primary.pubkey = hex::encode(primary_key.verifying_key().as_bytes());
         let state = state_with_secondary_admin("secondary", vec![primary]).await;
 
         let response = save_network_chat(
@@ -430,5 +429,127 @@ mod advertise_addr_tests {
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert_eq!(state.auth.read().await.advertise_addr, None);
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, state_with};
+
+    /// Turning iroh off is the direction every consumer of the mode follows
+    /// live: the gate holds, the announce round takes the direct path, the
+    /// record stops being republished. The switch saves and applies it in one
+    /// call, and the answer says so (spec 2026-11-15).
+    #[tokio::test]
+    async fn turning_iroh_off_saves_the_mode_and_holds_the_relays_at_once() {
+        let state = state_with("eu", vec![]).await;
+
+        let resp = save_transport(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveTransportRequest { no_iroh: true }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_of(resp).await;
+        assert_eq!(body["no_iroh"], true);
+        assert_eq!(body["live"], true);
+        assert_eq!(body["restart_needed"], false);
+
+        // Live: the network and the gate hold the mode now, without a restart.
+        assert!(state.network.is_direct_only());
+        assert!(state.network.relay_gate().status().direct_only);
+        // Persisted: the next start reads the same mode off the config file.
+        assert!(state.auth.read().await.no_iroh);
+    }
+
+    /// Turning iroh back on cannot be applied to a run whose endpoint was built
+    /// without the gossip subscription: the switch saves the intent and the
+    /// view says it waits for the restart, instead of leaving the node
+    /// announcing into silence.
+    #[tokio::test]
+    async fn saving_a_reenable_waits_for_the_restart_it_needs() {
+        let state = state_with("eu", vec![]).await;
+        state.network.set_direct_only(true);
+        state.network.relay_gate().set_direct_only(true);
+
+        let resp = save_transport(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveTransportRequest { no_iroh: false }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_of(resp).await;
+        assert_eq!(body["no_iroh"], false);
+        assert_eq!(body["live"], true);
+        assert_eq!(body["restart_needed"], true);
+
+        // The run keeps the mode it started with; only the file changed.
+        assert!(state.network.is_direct_only());
+        assert!(!state.auth.read().await.no_iroh);
+    }
+
+    /// The startup refuses the pair iroh-off + relaying for any network, so the
+    /// routes refuse saving it too: otherwise the screen would write a file the
+    /// next start cannot boot.
+    #[tokio::test]
+    async fn the_transport_and_relaying_for_any_network_refuse_each_other() {
+        let state = state_with("eu", vec![]).await;
+        {
+            let mut cfg = state.auth.write().await;
+            cfg.relay.everyone = true;
+            cfg.save().expect("save relay option");
+        }
+
+        let resp = save_transport(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveTransportRequest { no_iroh: true }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(!state.network.is_direct_only());
+        assert!(!state.auth.read().await.no_iroh);
+
+        // The other direction: with the mode live, the relay route refuses the
+        // option that contradicts it.
+        state.auth.write().await.relay.everyone = false;
+        let resp = save_transport(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveTransportRequest { no_iroh: true }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(state.network.is_direct_only());
+
+        let resp = save_relay(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(crate::config::RelayConfig {
+                everyone: true,
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(!state.auth.read().await.relay.everyone);
+    }
+
+    /// The read side answers what the switch shows: the saved value, what this
+    /// run is doing, and the divergence the command line leaves behind.
+    #[tokio::test]
+    async fn the_transport_view_separates_the_saved_mode_from_the_live_one() {
+        let mut state = state_with("eu", vec![]).await;
+        state.restart_needed = true;
+
+        let body = body_of(get_transport(ConnectionAuth, State(state.clone())).await).await;
+        assert_eq!(body["no_iroh"], false);
+        assert_eq!(body["live"], false);
+        // The flag holds iroh off while the file says on: the screen must say
+        // the saved value only takes effect once the flag is gone.
+        assert_eq!(body["restart_needed"], true);
     }
 }

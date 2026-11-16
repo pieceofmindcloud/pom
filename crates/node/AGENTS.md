@@ -97,7 +97,10 @@ public relay), `--no-cluster-relay`, `--no-relay-transfers` (the three are the
 `--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
 access), `--no-iroh` (iroh as a whole off: no gossip, no relay client or
 server, no tunnels, no pkarr publication - the node speaks and is reached on
-its announced addresses only, spec 2026-11-15; refuses `--serve-relay`),
+its announced addresses only, spec 2026-11-15; refuses `--serve-relay` and the
+saved `relay.everyone`. The My machine screen saves the same switch to
+`Config.no_iroh`; the flag or the file turns the mode on, never back off, and
+the mode of a run is decided when the node starts),
 `--no-tls` (remote HTTP for browser/client requests behind an HTTPS
 proxy; peer mTLS remains on).
 `--relay-peers` (relay URLs) adds to the `pom.json`'s `relay_peers` (`merged_relay_peers`,

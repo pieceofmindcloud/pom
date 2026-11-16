@@ -71,17 +71,28 @@ address, and an IP written into a document goes stale. Therefore:
 
 ### Direct-only nodes (`--no-iroh`, spec 2026-11-15)
 
-A machine can turn the iroh line off as a whole: `--no-iroh` / `POM_NO_IROH=1`
-fixes the mode for the run (`Network::is_direct_only`, held by `RelayGate` too
-so the relay screens and answers say "no" whatever is asked later). What such
+A machine can turn the iroh line off as a whole. The mode comes from
+`--no-iroh` / `POM_NO_IROH=1` or from the `no_iroh` saved in `pom.json` (the My
+machine screen's switch, `POST /api/ui/network/transport`, `LocalOnly` like the
+relay options: no other node turns iroh on or off here). Either source turns it
+on and the flag never turns it back off, and the mode of a run is decided when
+the node starts (`Network::is_direct_only`, held by `RelayGate` too so the relay
+screens and answers say "no" whatever is asked later). The screen's switch
+applies the "off" direction live - every consumer of the mode reads it fresh:
+the announce round takes the direct path, the policy round strips the relays off
+the endpoint, the gate refuses every relay connection, the republisher stops
+publishing the record and the tombstone goes out once; saving a re-enable waits
+for the restart its gossip subscription needs, and the view says so
+(`restart_needed`) instead of leaving the node announcing into silence. What such
 a node gives up: gossip (no subscribe, no publish - its announce round is the
 sealed direct announce to every peer it dialed, the visitor's path), any relay
 client (n0's, dedicated, member: nothing enters the endpoint's map and
-`apply_policy` never adds one), the embedded relay server (`--serve-relay`
-refuses to coexist with the flag), hole punching, both tunnels (the ephemeral
-endpoint of `anon_tunnel` is never started; `relay_passes` hands it no
-passes), and pkarr **publication** - the mode change empties the node's record
-once (`PkarrNode::retire_record`) so the machine stops being dialable by key.
+`apply_policy` never adds one), the embedded relay server (`--serve-relay` and
+the saved `relay.everyone` refuse to coexist with the mode, at startup and on
+the routes), hole punching, both tunnels (the ephemeral endpoint of `anon_tunnel`
+is never started; `relay_passes` hands it no passes), and pkarr **publication** -
+the mode change empties the node's record once (`PkarrNode::retire_record`) so
+the machine stops being dialable by key.
 pkarr **resolution** stays on: the node still cold-dials the principals and
 `--pkarr-peers` by key, learns their addresses into the endpoint, and speaks
 from there.

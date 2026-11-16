@@ -6276,6 +6276,7 @@ mod tests {
     ) -> crate::auth::AuthState {
         use crate::config::Config;
         Arc::new(RwLock::new(Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: None,

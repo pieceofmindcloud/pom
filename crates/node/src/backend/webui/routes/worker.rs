@@ -16,6 +16,10 @@ pub(super) fn routes() -> Router<GatewayState> {
         )
         .route("/api/ui/network/advertise-addr", post(save_advertise_addr))
         .route("/api/ui/network/node-name", post(save_node_name))
+        .route(
+            "/api/ui/network/transport",
+            get(get_transport).post(save_transport),
+        )
         .route("/api/ui/guide", get(get_guide).post(update_guide))
         .route("/api/ui/network/relay", get(get_relay).post(save_relay))
         .route("/api/ui/plan", post(plan_split_endpoint))

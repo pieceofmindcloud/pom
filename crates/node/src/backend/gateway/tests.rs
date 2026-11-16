@@ -4181,6 +4181,7 @@ pub(crate) mod testkit {
         let bench_dir = std::env::temp_dir().join(format!("pom-testkit-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&bench_dir).expect("testkit folder");
         let auth = Arc::new(RwLock::new(Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: Some(bench_dir.join("pom.json")),
@@ -4269,6 +4270,7 @@ pub(crate) mod testkit {
                 crate::huggingface::HuggingFaceProvider::new(),
             ))),
             pkarr_publisher: None,
+            restart_needed: false,
             session_pins: Default::default(),
         }
     }

@@ -353,7 +353,9 @@ Per-file list:
   a public address and none is configured, so behind a NAT the machine
   cannot relay for anyone and there is nothing to choose. An option the command line fixed for this run is
   shown locked, with the reason; file transfers are locked while the machine
-  does not relay for its network. `relayStateKey` turns the answer into one
+  does not relay for its network; with the node reporting `direct_only` (iroh
+  off on this machine, the saved `--no-iroh`) every option is locked and each
+  row says the mode is why, with `relayStateKey` naming it. `relayStateKey` turns the answer into one
   line (relaying for any network, for this network, not relaying, or not
   reachable from the internet). The panel stays out when the node does not
   answer. On a visitor a fourth card, "Relay anonymously for this network"

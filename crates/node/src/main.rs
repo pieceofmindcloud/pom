@@ -441,15 +441,17 @@ struct Args {
     #[arg(long)]
     no_pkarr: bool,
 
-    /// Turns iroh off as a whole: no endpoint on the p2p port, no gossip, no
-    /// relay client, no NAT traversal, no tunnel, no relay for others, no
-    /// pkarr record (`--no-pkarr` keeps the resolving side; this one keeps it
-    /// too). The node speaks only on the addresses it announces - direct
-    /// QUIC and HTTP - and is itself reached only there. For machines the hub
-    /// or the LAN can dial directly: the worker the outer world should never
-    /// see. It cannot start with a relay (`--serve-relay`) and cannot hide
-    /// behind NAT: the hub refuses it when the addresses stop answering
-    /// (spec 2026-11-15).
+    /// Turns iroh off as a whole: no gossip, no relay client, no relay server,
+    /// no NAT traversal, no tunnel, no pkarr record (the resolving side of
+    /// pkarr stays, as with `--no-pkarr` it is a lookup; the endpoint stays as
+    /// a pure direct dialer on the p2p port). The node speaks only on the
+    /// addresses it announces - direct QUIC and HTTP - and is itself reached
+    /// only there. For machines the hub or the LAN can dial directly: the
+    /// worker the outer world should never see. It cannot start with a relay
+    /// (`--serve-relay`) and cannot hide behind NAT: the hub refuses it when
+    /// the addresses stop answering (spec 2026-11-15). The My machine screen
+    /// saves the same switch to the config file; this flag turns it on but
+    /// never back off.
     #[arg(long)]
     no_iroh: bool,
 
@@ -1034,12 +1036,17 @@ async fn async_main(
     app_config.huggingface_token = database.huggingface_token()?;
     config::validate_gateway_port(app_config.gateway_port)?;
     info!("Profile: {}", app_config.profile);
+    // The effective mode is the saved switch or the flag: the flag turns iroh
+    // off but never back on, like the relay options the command line fixes
+    // for a run (spec 2026-11-15).
+    let no_iroh = args.no_iroh || app_config.no_iroh;
     // `--no-iroh` and relaying for others cannot coexist: the relay server is
-    // an iroh server, and the mode promises no iroh of any kind
-    // (spec 2026-11-15).
-    if args.no_iroh && (args.serve_relay || app_config.relay.everyone) {
+    // an iroh server, and the mode promises no iroh of any kind.
+    if no_iroh && (args.serve_relay || app_config.relay.everyone) {
         anyhow::bail!(
-            "--no-iroh refuses a relay: a node with iroh off serves no relay of any kind"
+            "iroh off refuses a relay: a node with iroh off serves no relay of any kind. \
+             Remove --serve-relay or the relay option, or turn the transport mode back off \
+             (--no-iroh / no_iroh)."
         );
     }
 
@@ -1076,7 +1083,7 @@ async fn async_main(
         args.no_tls,
         args.no_discovery,
         args.no_pkarr,
-        args.no_iroh,
+        no_iroh,
         args.no_default_relays,
         merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap),
         merged_relay_peers(&app_config.relay_peers, &args.relay_peers),
@@ -1197,6 +1204,10 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     use crate::config::Config;
     Config {
         validator: false,
+        // A new machine starts with iroh on: the hub line hides workers, but a
+        // fresh network still reaches NAT-hidden visitors through relays
+        // (spec 2026-11-15).
+        no_iroh: false,
         retired_tls_required: (),
         saved_at: None,
         profile: crate::profile::NodeProfile::Admin,
@@ -2135,6 +2146,7 @@ async fn start_node(
             hf_token_store,
         )),
         pkarr_publisher,
+        restart_needed: no_iroh && !app_config.no_iroh,
         session_pins: Default::default(),
     };
 

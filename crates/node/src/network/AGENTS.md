@@ -144,7 +144,7 @@ dedicated or member, with iroh's hole punching), are in
   membership proof. Every 5 s `apply_policy` refreshes the relay gate's members and
   URL, the member relays in use, the gossip membership, the published endpoint
   addresses and the reachability from the NAT report. On a direct-only node
-  (`--no-iroh`, `Network::is_direct_only`) the endpoint holds no gossip
+  (`--no-iroh` or the saved `no_iroh`, `Network::is_direct_only`) the endpoint holds no gossip
   subscription, no relay on its map, no relay server and no ephemeral anon
   endpoint, and its announce round takes the sealed direct path to every peer
   it dialed. A gossip join is asked
@@ -266,8 +266,10 @@ dedicated or member, with iroh's hole punching), are in
   TXT with the endpoint's public direct addresses and its relay URLs;
   `publish`/`resolve`/`resolve_dial_addr` (one `EndpointAddr` with both), and
   `retire_record` - the empty tombstone a direct-only node publishes once so
-  its old record stops resolving. The live publisher is
-  `gateway::PkarrPublishHandle`.
+  its old record stops resolving: at startup when the mode came up, and from
+  `POST /api/ui/network/transport` when the switch turns iroh off mid-run. The
+  live publisher is `gateway::PkarrPublishHandle`, whose `publish_if_changed`
+  skips a direct-only node the same way it skips a detached one.
 - `public_directory.rs` - the federated protocol of the public catalog. Complete
   records are signed by the network's principal, have a 16 bit proof of work, a
   monotonic sequence, a TTL of seven days and a deterministic merge. The local
@@ -557,8 +559,8 @@ dedicated or member, with iroh's hole punching), are in
   every connecting endpoint (`allows`): everyone with `relay.everyone`/`--serve-relay`;
   the admitted members of its cluster when the internet reaches it and
   `relay.cluster` is on (the default); nobody otherwise, and nobody when the server
-  did not come up (`set_available`). `set_direct_only` (`--no-iroh`) holds the
-  mode against all of it: `serving`, `everyone`, `anonymous_serving`, `offer`
+  did not come up (`set_available`). `set_direct_only` (the flag or the saved
+  `no_iroh`) holds the mode against all of it: `serving`, `everyone`, `anonymous_serving`, `offer`
   and `allows` all answer no, and `status().direct_only` shows it on the
   screens. An iroh relay cannot tell an endpoint that homes
   on it from one that only sends through it, so a member relay admits members only.

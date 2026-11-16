@@ -108,4 +108,39 @@ describe("MyMachine", () => {
 
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/leave"));
   });
+
+  it("shows the transport mode the node reports and saves the switch at once", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/api/ui/network/transport") return { no_iroh: false, live: false, restart_needed: false };
+      throw new Error("no relay status in this test");
+    });
+    vi.mocked(api.post).mockResolvedValueOnce({ no_iroh: true, live: true, restart_needed: false });
+    mount();
+
+    expect(await screen.findByText("Conexões")).toBeTruthy();
+    const box = screen.getByTestId("transport-direct-only").querySelector("input") as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(screen.getByTestId("transport-state").textContent).toBe("iroh ligado: descoberta, relays e furos de NAT");
+
+    fireEvent.click(box);
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith("/api/ui/network/transport", { no_iroh: true }));
+    // The node answered with the mode live: the card and the one line follow it.
+    await waitFor(() => expect(box.checked).toBe(true));
+    expect(screen.getByTestId("transport-state").textContent).toBe("iroh desligado: só endereços diretos");
+  });
+
+  it("says when the saved mode still waits for the restart it needs", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/api/ui/network/transport") return { no_iroh: true, live: false, restart_needed: true };
+      throw new Error("no relay status in this test");
+    });
+    mount();
+
+    await screen.findByTestId("transport-direct-only");
+    const box = screen.getByTestId("transport-direct-only").querySelector("input") as HTMLInputElement;
+    // The switch is what is saved, the line is what the node is doing now.
+    expect(box.checked).toBe(true);
+    expect(screen.getByTestId("transport-state").textContent).toBe("Salvo: iroh desligado vale na próxima iniciação");
+    expect(screen.getByText(/O transporte de uma execução é decidido quando o nó inicia/)).toBeTruthy();
+  });
 });

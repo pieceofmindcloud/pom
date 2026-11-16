@@ -1587,6 +1587,7 @@ mod tests {
     #[test]
     fn inference_accepts_only_an_active_api_key() {
         let cfg = crate::config::Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: None,
@@ -1663,6 +1664,7 @@ mod tests {
     #[test]
     fn internal_inference_token_uses_shared_connection_key() {
         let mut cfg = crate::config::Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: None,

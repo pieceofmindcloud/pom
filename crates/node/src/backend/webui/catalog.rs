@@ -1697,6 +1697,14 @@ pub(super) async fn save_relay(
     State(state): State<GatewayState>,
     Json(req): Json<crate::config::RelayConfig>,
 ) -> Response {
+    // Relaying for any network and iroh off cannot coexist: the startup refuses
+    // the pair, so the route refuses saving it too (spec 2026-11-15).
+    if req.everyone && (state.network.is_direct_only() || state.auth.read().await.no_iroh) {
+        return bad_request(
+            "a node with iroh off serves no relay: turn the transport mode back on first"
+                .to_string(),
+        );
+    }
     {
         let mut cfg = state.auth.write().await;
         cfg.relay = req;
@@ -1709,6 +1717,85 @@ pub(super) async fn save_relay(
     gate.set_anonymous(req.anonymous);
     info!("relay options updated from the interface: {req:?}");
     Json(relay_view(&state)).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SaveTransportRequest {
+    pub no_iroh: bool,
+}
+
+/// What this machine's transport mode is right now, and what is saved for
+/// the next start (`no_iroh`): they differ while the mode came from the
+/// command line (the screen cannot take a flag off) or while a re-enable
+/// waits for the restart its gossip subscription needs (spec 2026-11-15).
+fn transport_view(state: &GatewayState) -> serde_json::Value {
+    json!({
+        "no_iroh": state.auth.try_read().map(|cfg| cfg.no_iroh).unwrap_or(false),
+        "live": state.network.is_direct_only(),
+        "restart_needed": state.restart_needed || state.auth.try_read().map(|cfg| cfg.no_iroh).unwrap_or(false) != state.network.is_direct_only(),
+    })
+}
+
+pub(super) async fn get_transport(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    Json(transport_view(&state)).into_response()
+}
+
+/// Saves the transport mode and answers what applies now. Turning iroh off
+/// applies live: every consumer of the mode reads it fresh each round - the
+/// announce round takes the direct path, the policy round strips the relays
+/// off the endpoint, the relay gate refuses every connection whatever the
+/// options say, admins hand this node no relay passes, and the record is
+/// retired so the machine stops being dialable by key. Turning iroh back on
+/// is saved but applied on the restart: this run's endpoint was built with
+/// no gossip subscription, and an unjoined topic would leave the node
+/// announcing into silence.
+pub(super) async fn save_transport(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveTransportRequest>,
+) -> Response {
+    if req.no_iroh
+        && (state.auth.read().await.relay.everyone
+            || state.network.relay_gate().status().fixed.everyone)
+    {
+        return bad_request(
+            "a node with iroh off serves no relay: turn the relay option off first".to_string(),
+        );
+    }
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.no_iroh = req.no_iroh;
+        if let Err(error) = cfg.save() {
+            return bad_request(format!("could not write pom.json: {error}"));
+        }
+    }
+    // Off applies live; on waits for the restart, as the screen is told.
+    let live_now = req.no_iroh;
+    if live_now {
+        state.network.set_direct_only(true);
+        state.network.relay_gate().set_direct_only(true);
+        // The old record must not stay dialable: the republisher stops on its
+        // own (it checks the mode), the tombstone goes out once here.
+        if let Some(publisher) = state.pkarr_publisher.clone() {
+            tokio::spawn(async move {
+                match publisher.node().retire_record().await {
+                    Ok(()) => info!("pkarr: the record of the direct-only node was retired"),
+                    Err(error) => {
+                        warn!("pkarr: could not retire the record: {error:#}")
+                    }
+                }
+            });
+        }
+    }
+    info!(
+        "transport mode saved from the interface: no_iroh={} (live={live_now})",
+        req.no_iroh
+    );
+    let view = transport_view(&state);
+    Json(view).into_response()
 }
 
 #[derive(Deserialize)]

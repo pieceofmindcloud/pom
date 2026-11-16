@@ -497,6 +497,14 @@ pub struct Config {
     /// Whom this node relays for, and whether file transfers may cross it.
     #[serde(default, skip_serializing_if = "RelayConfig::is_default")]
     pub relay: RelayConfig,
+    /// iroh off on this machine (saved `--no-iroh`, spec 2026-11-15): no gossip,
+    /// no relay client or server, no tunnels, no pkarr publication - the node
+    /// speaks and is reached on the addresses it announces only. The command
+    /// line or `POM_NO_IROH` turns it on but never off; the My machine screen
+    /// saves it and applies it live when it can, or after a restart when the
+    /// mode was fixed at startup.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_iroh: bool,
     /// Address other nodes should keep for this one, e.g.
     /// `"[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777"` or just the bare IPv6.
     ///
@@ -1637,6 +1645,7 @@ mod tests {
     #[test]
     fn test_roundtrip_principal_config() {
         let cfg = Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: None,
@@ -1748,6 +1757,7 @@ mod tests {
     #[test]
     fn test_roundtrip_node_config() {
         let cfg = Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: None,
@@ -2010,6 +2020,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let mut cfg = Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: None,
@@ -2218,6 +2229,7 @@ mod tests {
     #[test]
     fn test_active_api_key() {
         let cfg = Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: None,

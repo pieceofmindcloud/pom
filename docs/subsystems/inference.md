@@ -3392,6 +3392,12 @@ with the ledger is the crate `crates/metering-core`; the node side is
   the same slack (15 s). `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`
   keeps its 1-leg tolerance because the tolerance is the measured law: it reads the real clock,
   passes alone, and still shows under a heavily loaded machine.
+- **Capability reads under load** (2026-11-16): the full parallel suite dropped
+  `webui::profile_network_tests::chat_capabilities_offer_thinking_on_a_plugin_engine_head`
+  and `webui::profile_network_tests::chat_capabilities_reads_mmproj_from_a_remote_sliced_head_config`
+  (`thinking`/mmproj answered `unavailable` where the test expects `supported`); the whole
+  module passes when run alone (10 green) and so does each of them. Same shape as the item
+  above: measured, not chased, no change of expectation.
 - **The forwarding hop's `network_ms` includes the next hop.** When the head is
   the gateway itself (`local` transport) and forwards to the next peer inside
   the same call, its `round_trip_ms` covers the next hop's whole round trip, and

@@ -262,8 +262,11 @@ impl PkarrPublishHandle {
     /// published.
     pub(crate) async fn publish_if_changed(&self) -> anyhow::Result<bool> {
         // A node off the network (discovery off, or taken off by its
-        // operator) must not be findable by key either.
-        if self.network.is_detached() {
+        // operator) must not be findable by key either. A direct-only node
+        // (`--no-iroh`, live or saved) publishes nothing either: its machine
+        // is dialled on its announced addresses, never by key
+        // (spec 2026-11-15).
+        if self.network.is_detached() || self.network.is_direct_only() {
             return Ok(false);
         }
         let desired = self.desired_record();
@@ -520,6 +523,11 @@ pub struct GatewayState {
     pub(crate) model_service: Arc<crate::model_provider_backend::ModelService>,
     /// Best-effort pkarr republisher used when network metadata changes.
     pub(crate) pkarr_publisher: Option<Arc<PkarrPublishHandle>>,
+    /// The direct-only mode of this run came from the command line or the
+    /// environment, not from the saved switch: the My machine screen saves the
+    /// intent, but the saved value applies on the next start, and the flag
+    /// keeps turning it on until it is removed (spec 2026-11-15).
+    pub(crate) restart_needed: bool,
     /// Sessions whose pipeline is pinned to a hop chain, per
     /// `SessionPin` below (admin-hub routing 3.3).
     pub(crate) session_pins: Arc<std::sync::RwLock<std::collections::HashMap<String, SessionPin>>>,

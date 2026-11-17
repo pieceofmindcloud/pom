@@ -165,7 +165,13 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned below 1.100: that cargo moved build-script output one level deeper
+      # (target/release/build/<pkg>/<hash>/out), and the engine's build.rs, which walks
+      # three levels up to find target/release, then hard-links the DLLs into a deps
+      # folder that does not exist ("The system cannot find the path specified").
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
 
       - uses: Swatinem/rust-cache@v2
         with:

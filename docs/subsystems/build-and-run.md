@@ -1166,6 +1166,11 @@ use `scripts/release-ksia.sh --variant windows-cpu --debug-symbols` (see
   `tools/mtmd` with MSVC without `_USE_MATH_DEFINES`, so the fork's audio code
   fails on `M_PI` (C2065). `release-windows.yml` works around it with
   `CL=/D_USE_MATH_DEFINES`; the define belongs in the engine's build.
+- DEFECT NOTED: the engine's `build.rs` finds `target/<profile>` as the third
+  ancestor of `OUT_DIR` (`get_cargo_target_dir`). Rust 1.100 moved `OUT_DIR`
+  one level deeper, so on Windows (shared libraries) the DLL hard links go to
+  `target/<profile>/build/deps` and fail with NotFound. `release-windows.yml`
+  pins Rust 1.99.1 until the engine stops guessing the path.
 - DEFECT NOTED: `routing-base::plan` (its only real logic) is called by nobody -
   the node's planner (`crates/node/src/routing/pipeline.rs::plan_pipeline`)
   makes its own greedy plan. `routing-base` is dead code kept alive only by its

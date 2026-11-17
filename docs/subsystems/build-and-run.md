@@ -947,12 +947,13 @@ builder's environment cannot narrow it.
 | Toolkit | Release list |
 |---|---|
 | CUDA 12.9 (Linux) | `50-virtual;61-virtual;70-virtual;75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real` |
-| CUDA 13.x (Windows) | `75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real` |
+| CUDA 13.x (Windows, and Linux when the runner's nvcc is 13+) | `75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real` |
 
 CUDA 13 dropped the three oldest. A `-virtual` entry ships PTX, which the driver
 compiles on first use, so a card of that generation pays for it once, and a card
 newer than the list can still run. A `-real` entry is ready machine code. Moving
-a release to another toolkit means updating its list. The local Docker build's
+a release to another toolkit means updating its list; the Linux workflow
+already switches to the CUDA 13 list on its own when the runner's `nvcc` reports 13 or newer. The local Docker build's
 `86;120` is a development value; the published image comes from the Linux AppImage.
 
 Note the `a` suffix of `120a`/`121a` in llama.cpp's list: it enables

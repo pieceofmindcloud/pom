@@ -168,7 +168,8 @@ jobs:
         # llama.cpp's wide list under CUDA 12.9 written out, because a release goes to machines
         # that are not this one. An empty value would not do: CMake takes it as unset and picks
         # this same list, but POM's MoE kernels then get only nvcc's default target (sm_52).
-        # A newer toolkit drops the first three (see "GPU architectures").
+        # CUDA 13 drops the first three (see "GPU architectures"), so the run step
+        # trims them when the runner's nvcc is 13 or newer.
         #
         # The line also protects this **self-hosted** runner: the machine is a development
         # one and may have `CUDAARCHS` in the environment to shorten the local build
@@ -182,6 +183,14 @@ jobs:
           # of llama.cpp's CMake, the second the one of POM's MoE kernels (`llama-engine`'s
           # build.rs). C and C++ keep the cache.
           unset CMAKE_CUDA_COMPILER_LAUNCHER CCACHE
+          # CUDA 13 no longer builds compute_50/61/70 ("Unsupported gpu architecture").
+          if command -v nvcc >/dev/null; then
+            cuda_major=$(nvcc --version | sed -n 's/.*release \([0-9]*\)\..*/\1/p')
+            if [ "${cuda_major:-0}" -ge 13 ]; then
+              export CUDAARCHS='75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real'
+            fi
+            echo "nvcc ${cuda_major:-?}: CUDAARCHS=$CUDAARCHS"
+          fi
           # Every nvcc of the llama.cpp build takes gigabytes; with all 16 cores the kernel
           # ran out of memory on ksia (exit 137) and killed a process of the running node.
           # cargo passes this count to the CMake build as well.

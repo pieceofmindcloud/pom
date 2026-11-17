@@ -5,7 +5,7 @@ name: Release · Windows
 # Actions".
 #
 # Two variants, chosen in the `variantes` input:
-#   gpu  CUDA 13.4 + Vulkan in the same pom.exe (ggml loads both backends),
+#   gpu  CUDA 13.5 + Vulkan in the same pom.exe (ggml loads both backends),
 #        with the llama.cpp from the release of the fork pieceofmindcloud/llama.cpp.
 #        CUDA for NVIDIA; Vulkan covers NVIDIA, AMD (e.g. RX 7800 XT) and Intel.
 #   cpu  CPU only, light package.
@@ -29,7 +29,7 @@ on:
         default: true
         type: boolean
       llama_tag:
-        description: 'Release of the fork pieceofmindcloud/llama.cpp (empty = the newest one of its pom branch with the CUDA 13.4 + Vulkan package)'
+        description: 'Release of the fork pieceofmindcloud/llama.cpp (empty = the newest one of its pom branch built from the llama-cpp.lock commit of the engine, with the CUDA 13.5 + Vulkan package)'
         required: false
         default: ''
         type: string
@@ -44,10 +44,10 @@ env:
   # 75 Turing, 80 A100, 86 Ampere, 89 Ada, 90 Hopper, 120/121 Blackwell; "virtual" is PTX,
   # compiled by the driver on first use, which also reaches later cards.
   POM_WINDOWS_CUDAARCHS: '75-virtual;80-virtual;86-real;89-real;90-virtual;120a-real;121a-real'
-  # The same one as the fork's package (cuda-13.4) and the Docker image: the CUDA here
+  # The same one as the fork's package (cuda-13.5) and the Docker image: the CUDA here
   # only compiles POM's own MoE kernels, and they have to match the
   # ggml-cuda.dll that arrives ready.
-  CUDA_VERSION: '13.4.1'
+  CUDA_VERSION: '13.5.0'
   VULKAN_VERSION: '1.4.313.2'
   LLAMA_REPOSITORY: pieceofmindcloud/llama.cpp
   # The release the binary says it is; the update check compares it with the published ones.
@@ -99,7 +99,7 @@ jobs:
       # already compiled (and tested) there. POM links the import libraries of the
       # package and takes the DLLs beside pom.exe; the source code of the same tag
       # is only for the headers (bindgen, mtmd and the MoE kernels).
-      #   gpu  llama-<tag>-bin-win-cuda-13.4-vulkan-x64.zip (CUDA + Vulkan)
+      #   gpu  llama-<tag>-bin-win-cuda-13.5-vulkan-x64.zip (CUDA + Vulkan)
       #   cpu  llama-<tag>-bin-win-cpu-x64.zip
       - name: Download llama.cpp from the fork
         id: llama
@@ -107,24 +107,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           LLAMA_TAG: ${{ inputs.llama_tag }}
+          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
         run: |
           set -euo pipefail
           tag="$LLAMA_TAG"
           if [ -z "$tag" ]; then
-            # Only the fork's pom branch, the one the engine compiles against: the headers of a
-            # release from another branch fail much later, inside the engine's wrapper.
+            # The fork commit the pinned engine compiles against (its llama-cpp.lock). A release
+            # is taken only when it was built from that commit, or from a later one that
+            # changed nothing but CI files: an older one fails inside the engine's wrapper
+            # (a llama.cpp function it calls changed its arguments).
+            engine_rev="$(sed -n 's/^llama-cpp-sys-2 = .*rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml)"
+            want="$(GH_TOKEN="$ENGINE_TOKEN" gh api "repos/pieceofmindcloud/pom-plugin-llama.cpp/contents/llama-cpp.lock?ref=$engine_rev" -q .content \
+              | base64 -d | sed -n 's/^LLAMA_CPP_COMMIT=//p')"
+            test -n "$want" || { echo "could not read llama-cpp.lock of the engine at $engine_rev" >&2; exit 1; }
+            echo "engine $engine_rev wants fork commit $want"
             for candidate in $(gh release list -R "$LLAMA_REPOSITORY" -L 20 --json tagName -q '.[].tagName' | grep -E '^pom-b[0-9]+-' || true); do
-              if gh release view "$candidate" -R "$LLAMA_REPOSITORY" --json assets -q '.assets[].name' \
-                  | grep -qx "llama-${candidate}-bin-win-cuda-13.4-vulkan-x64.zip"; then
+              gh release view "$candidate" -R "$LLAMA_REPOSITORY" --json assets -q '.assets[].name' \
+                | grep -qx "llama-${candidate}-bin-win-cuda-13.5-vulkan-x64.zip" || continue
+              sha="$(gh api "repos/$LLAMA_REPOSITORY/commits/$candidate" -q .sha)"
+              if [ "$sha" = "$want" ] || {
+                  [ "$(gh api "repos/$LLAMA_REPOSITORY/compare/$want...$sha" -q .status)" = ahead ] &&
+                  ! gh api "repos/$LLAMA_REPOSITORY/compare/$want...$sha" -q '.files[].filename' | grep -qv '^\.github/'
+                }; then
                 tag="$candidate"
                 break
               fi
+              echo "skipping $candidate ($sha): not the engine's llama.cpp"
             done
           fi
-          test -n "$tag" || { echo "no release of the fork's pom branch has the CUDA 13.4 + Vulkan package" >&2; exit 1; }
+          test -n "$tag" || { echo "no release of the fork's pom branch has the CUDA 13.5 + Vulkan package for the engine's llama.cpp commit; run the fork's Release on its pom branch" >&2; exit 1; }
           echo "fork release: $tag"
           if [ "${{ matrix.variante }}" = gpu ]; then
-            package="llama-${tag}-bin-win-cuda-13.4-vulkan-x64.zip"
+            package="llama-${tag}-bin-win-cuda-13.5-vulkan-x64.zip"
           else
             package="llama-${tag}-bin-win-cpu-x64.zip"
           fi
@@ -135,9 +149,9 @@ jobs:
           gh release download "$tag" -R "$LLAMA_REPOSITORY" -p "$package" -D "$root"
           unzip -q "$root/$package" -d "$root/prebuilt"
           if [ "${{ matrix.variante }}" = gpu ]; then
-            gh release download "$tag" -R "$LLAMA_REPOSITORY" -p 'cudart-llama-bin-win-cuda-13.4-x64.zip' -D "$root"
+            gh release download "$tag" -R "$LLAMA_REPOSITORY" -p 'cudart-llama-bin-win-cuda-13.5-x64.zip' -D "$root"
             mkdir -p "$root/cudart"
-            unzip -q "$root/cudart-llama-bin-win-cuda-13.4-x64.zip" -d "$root/cudart"
+            unzip -q "$root/cudart-llama-bin-win-cuda-13.5-x64.zip" -d "$root/cudart"
           fi
           curl -fsSL -o "$root/source.tar.gz" "https://github.com/$LLAMA_REPOSITORY/archive/refs/tags/$tag.tar.gz"
           tar --force-local -xzf "$root/source.tar.gz" --strip-components=1 -C "$root/source"

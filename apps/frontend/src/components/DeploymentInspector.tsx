@@ -1043,7 +1043,11 @@ export function DeploymentInspector({
           </InspectorRow>
         )}
         {showHiddenStateDtype && hiddenStateField()}
-        {/* What visitors of a charging network pay (`docs/subsystems/payments.md`). */}
+        {/* <BetaGroup>{...settings still being measured}</BetaGroup> */}
+      </Section>
+
+      {pomDevMode && <Section title={t("inspector.sectionPomDev")} tone="amber">
+        {/* What visitors of a charging network pay, still in development (`docs/subsystems/payments.md`). */}
         {(["in_micro_per_1k", "out_micro_per_1k"] as const).map((side) => {
           const micro = value.pricing?.[side];
           const label = t(side === "in_micro_per_1k" ? "inspector.priceIn" : "inspector.priceOut");
@@ -1081,10 +1085,6 @@ export function DeploymentInspector({
             </InspectorRow>
           );
         })}
-        {/* <BetaGroup>{...settings still being measured}</BetaGroup> */}
-      </Section>
-
-      {pomDevMode && <Section title={t("inspector.sectionPomDev")} tone="amber">
         {toggle({
           key: "unload_if_idle",
           label: t("deploy.unloadIfIdle"),

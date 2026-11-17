@@ -412,8 +412,12 @@ Per-file list:
   from `NodeInfo.network_name` and linking to `/config/network`; then
   `ConnectionBadge` on a member; then hostname,
   the `NatBadge`, peer count, coverage; a machine alone in a network named
-  after it shows only the network badge; below `md`, a phone or the macOS
-  menu-bar panel, those badges fold into one Info icon, `NodeChipButton`,
+  after it shows only the network badge; the peer count with the coverage is
+  the operator's summary and is not drawn for a `visitor`, whose cluster view
+  the node narrows on purpose (`Network::hides`), so it would read as a network
+  of one machine - what that member has there is `ConnectionBadge`; below `md`,
+  a phone or the macOS menu-bar panel, those badges fold into one Info icon,
+  `NodeChipButton`,
   that opens them in a popover like the bell's), the i18n badge of the node's
   persisted profile (not drawn for a visitor, and inside that popover below `md`), the macOS button of
   the larger window, `UsageButton` (a gauge icon drawn only when

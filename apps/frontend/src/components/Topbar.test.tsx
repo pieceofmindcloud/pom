@@ -13,12 +13,13 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { ProfileProvider } from "../lib/profile";
-import { fakeNode } from "../test/fixtures";
-import type { NodeInfo } from "../lib/types";
+import { fakeNode, fakePeer } from "../test/fixtures";
+import type { NodeInfo, PeerView } from "../lib/types";
 
 let nodeData: NodeInfo | undefined;
 let natStatus: "unknown" | "public" | "private" | undefined;
 let relayedPeers: { node_id: string; hostname: string; relay_kind: "public" | "dedicated" | "member" | null }[] = [];
+let clusterPeers: PeerView[] = [];
 let quotaData: { available: boolean; configured?: boolean; pending?: boolean } | undefined;
 
 vi.mock("../lib/queries", async (original) => ({
@@ -27,7 +28,7 @@ vi.mock("../lib/queries", async (original) => ({
   useMyQuota: () => ({ data: quotaData }),
   useCluster: () => ({
     data: {
-      peers: [],
+      peers: clusterPeers,
       complete: false,
       traversal: natStatus && {
         nat: natStatus,
@@ -103,7 +104,10 @@ describe("TlsChip", () => {
 });
 
 describe("profile in the toolbar", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    clusterPeers = [];
+  });
 
   it("shows the network this machine is in, linking to its settings", () => {
     nodeData = { ...fakeNode(), network_name: "POM-SALEM" };
@@ -183,6 +187,24 @@ describe("profile in the toolbar", () => {
 
     expect(screen.queryByTestId("tls-indicator")).toBeNull();
     expect(screen.queryByText("abc123")).toBeNull();
+  });
+
+  it("keeps the machine count out of a visitor's toolbar", () => {
+    // The count is the network's operator summary. Admin-hub routing keeps a
+    // visitor off the rest of the network on purpose, so the badge would say
+    // "1 node" where there is nothing for the visitor to act on.
+    nodeData = { ...fakeNode(), hostname: "lab", network_name: "POM-SALEM" };
+    clusterPeers = [fakePeer({ node_id: "lab" })];
+
+    mountTopbar("worker");
+    expect(screen.getByText("1 nó")).toBeTruthy();
+    cleanup();
+
+    mountTopbar("visitor");
+    expect(screen.queryByText("1 nó")).toBeNull();
+    // What the visitor keeps is its own machine and the network it is in.
+    expect(screen.getByTestId("topbar-machine").textContent).toBe("lab");
+    expect(screen.getByTestId("topbar-network").textContent).toBe("POM-SALEM");
   });
 });
 

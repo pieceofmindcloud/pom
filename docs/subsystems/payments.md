@@ -10,12 +10,20 @@ Code: `crates/node/src/payments/` (the x402 prepaid credit core and
 
 `NetworkSettings` (saved and fanned out like every network setting):
 
-- `inference_access`: `direct` (default, as before), `member_gateway`,
-  `member_gateway_only`.
-- `entry_nodes`: `admins` (default) or `admins_and_workers`.
+- Retired knobs (phase C3, 2026-11-15): `inference_access` and `entry_nodes`
+  are deleted from `NetworkSettings` - the admin entry node is the only entry
+  the product has. A `pom.json` that still carries them loads (serde ignores
+  keys the node no longer has) and a new node never writes them; the deletion
+  carries no compatibility bridge, by decision 5 of
+  `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`.
+- `worker_delegation` (default true): whether a **worker** hands its own
+  generation requests to an admin entry node, like a visitor does (phase B of
+  `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). Set false
+  (the escape hatch of its refinement 8.4) for a network whose workers
+  measurably need to keep planning directly; visitors still always delegate.
+  Absent (an older principal) reads as the default.
 - `payments`: `{enabled, prices: {<model>: {in_micro_per_1k, out_micro_per_1k}}}`.
-  `enabled` requires `member_gateway_only` (`validate_network_settings`). A
-  model without a price is free. Amounts are micro-credits (`1 = 1e-6`).
+  A model without a price is free. Amounts are micro-credits (`1 = 1e-6`).
 
 ## Prices
 
@@ -31,18 +39,29 @@ reads, can also be edited on the Payments screen.
 
 ## The member gateway
 
-Under `member_gateway*`, a visitor hands `/v1/chat/completions`,
+Every member that is not an admin hands `/v1/chat/completions`,
 `/v1/completions`, `/v1/messages` and `/api/generate` (after its own API key
-check, `visitor_layer`) to an entry node with `POST /v1/gateway/delegate`, a
-signed peer call. The entry node accepts only a visitor caller (`409
-plan_locally` otherwise), runs the request through its own router marked
-`Delegated`, and streams the answer back. Members announce
-`gateway/delegate-v1`. Under `member_gateway_only` the inference port refuses
-a visitor (`403 visitor_must_use_gateway`), and visitors learn only the entry
-nodes the policy allows (`Network::set_visitor_view`, kept from the settings
-every 5 s): a `PeerList` to a visitor leaves the others out, and a node that
-is not an allowed entry node neither announces to visitors nor answers their
-`PeerRequest`.
+check, `member_layer`) to an admin entry node with `POST /v1/gateway/delegate`,
+a signed peer call: a visitor always; a worker unless the network opened the
+escape hatch `worker_delegation = false`. An admin never delegates - it is
+itself an entry
+node. Entry nodes are the admins the trust chain proves that announce
+`gateway/delegate-v1`, nearest by measured RTT; with none in sight the caller
+gets `503 no_entry_node`, it does not plan for itself (except a worker under
+the escape hatch). The entry node accepts only a signed caller the roster or
+its vouch (`AdminTrust::vouched_role`)
+attests - a visitor or a worker; an admin caller is refused
+`409 plan_locally` - runs the request through its own router marked
+`Delegated`, and streams the answer back. The caller's identity in the audit
+is `visitor:<node>` or `member:<node>`; the fee of a charging network falls on
+visitors only - a worker delegates as a member and is not charged, exactly as
+when it planned its own requests.
+The inference port refuses a visitor
+(`403 visitor_must_use_gateway`), and visitors learn only the admin entry
+nodes (`Network::set_visitor_view`, the default shape `payments::runtime::install`
+sets once at startup): a `PeerList` to a visitor leaves the others out, a node
+that is not an admin entry node neither announces to visitors nor answers their
+`PeerRequest`, and a visitor's own table never holds a worker.
 
 ## Accounts
 
@@ -71,7 +90,9 @@ records.
 ## The gate
 
 Before generation the entry node holds the worst case (prompt plus the
-request's output limit at the model's price). Refusals answer in the vocabulary
+request's output limit at the model's price) - only when the caller's roster
+says **visitor**: a worker delegates as a member and keeps being charged at
+home, never through this gate. Refusals answer in the vocabulary
 of the route the client called (`delegation::speak`: OpenAI `error{message,type,code}`,
 Anthropic `{type:"error",error:{type,message}}`, `/api/generate` `{error,code}`),
 with the x402 `accepts` envelope (scheme `pom-credit`, `payTo` the principal)
@@ -121,7 +142,7 @@ declines it on the Payments screen.
 - `POST /api/ui/payments/grant` (principal): `{account, amount_micro, note?}`.
 - `POST /api/ui/payments/decide` (principal): `{id, decision: approve|decline, amount_micro?}`.
 - `GET /api/ui/payments/balance`, `POST /api/ui/payments/request` (local, a visitor's own).
-- Between nodes: `/v1/gateway/{delegate,balance,credit-request}` (a visitor to
+- Between nodes: `/v1/gateway/{delegate,balance,credit-request}` (a member to
   an entry node), `/api/internal/payments/{lease,settle,balance,price,credit-request}`
   (a member to the principal; also `return`), `/api/internal/home-statement` (a member to its
   home principal).
@@ -131,13 +152,22 @@ The admin screen is `/config/payments` (`apps/frontend/src/routes/Payments.tsx`)
 ## Compatibility (for the release notes)
 
 - Visitors announce `gateway/client-v1`. A visitor of an earlier release does
-  not delegate, so a network running `member_gateway_only` (required to
-  charge) cuts it off; the Payments screen lists such visitors in sight and
-  asks twice before turning charging on.
+  not delegate, and since phase A of the admin-hub routing nothing lets it
+  plan for itself: it is cut off in every access mode; the Payments screen
+  lists such visitors in sight and asks twice before turning charging on.
 - Everything else is additive: optional fields on network settings, the
   admission request and record, `RuntimeParams.pricing`, `GenSummary` and
-  `/v1/models` (`pricing`); new tables and routes. A network that does not
-  charge behaves as before.
+  `/v1/models` (`pricing`); new tables and routes. The flip of the visitor
+  default to the admin-hub shape is the dated behavior change of this release
+  (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`, section 9):
+  the old `direct`-mode visitor-to-worker path is gone, so an older visitor
+  that cannot delegate no longer gets remote inference on a newer network.
+- Phase B of the same design: **workers delegate to an admin entry node by
+  default** (`worker_delegation`, absent reads as the default). A worker of an
+  older release does not delegate and keeps planning locally, which still
+  works beside delegating members; a network that needs the old shape sets
+  `worker_delegation = false` (refinement 8.4). The charging gate is unchanged:
+  it only ever held visitors.
 
 ## Income beside payouts
 

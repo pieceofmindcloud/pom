@@ -810,26 +810,26 @@ async fn validators_of(state: &GatewayState) -> Vec<Value> {
 async fn roles_of(state: &GatewayState, ids: &[String]) -> HashMap<String, &'static str> {
     let document = state.admin_trust.document();
     let peers = state.network.alive_peers().await;
-    ids.iter()
-        .map(|id| {
-            let role = if crate::admin_trust::is_admin_node(&document, id) {
-                "admin"
-            } else if let Some(peer) = peers.iter().find(|p| p.node_id == *id) {
-                if crate::gateway::peer_is_visitor(state, peer) {
-                    "visitor"
-                } else if crate::membership::peer_role(peer, &state.admin_trust).is_some() {
-                    "worker"
-                } else {
-                    "unknown"
-                }
-            } else if *id == state.network.node_id {
+    let mut roles = HashMap::new();
+    for id in ids {
+        let role = if crate::admin_trust::is_admin_node(&document, id) {
+            "admin"
+        } else if let Some(peer) = peers.iter().find(|p| p.node_id == *id) {
+            if crate::gateway::peer_is_visitor(state, peer) {
+                "visitor"
+            } else if crate::gateway::peer_role_is_attested(state, peer).await {
                 "worker"
             } else {
                 "unknown"
-            };
-            (id.clone(), role)
-        })
-        .collect()
+            }
+        } else if *id == state.network.node_id {
+            "worker"
+        } else {
+            "unknown"
+        };
+        roles.insert(id.clone(), role);
+    }
+    roles
 }
 
 /// The metering context is process-global: tests that set it hold this.

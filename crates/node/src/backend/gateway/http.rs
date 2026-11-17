@@ -130,11 +130,13 @@ pub(crate) async fn start_gateway_with_ready(
         // cares most about the former. Peer-to-peer tensor frames never pass
         // through this router (see inference/infer_server.rs), so there is
         // no risk of compressing binary inference frames here.
-        // A visitor hands its inference requests to an entry node of the
-        // network when the network says so (`crate::delegation`).
+        // A visitor's - and, since phase B of the admin-hub routing, a worker's -
+        // inference request hands itself to an admin entry node of the network
+        // (`crate::delegation`), unless the network opened the worker escape
+        // hatch.
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            crate::delegation::visitor_layer,
+            crate::delegation::member_layer,
         ))
         .layer(middleware::from_fn_with_state(
             state.clone(),

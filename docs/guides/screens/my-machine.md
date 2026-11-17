@@ -1,14 +1,14 @@
 ---
 id: screen-my-machine
 label: My machine
-summary: This machine's identity, name and advertised address
+summary: This machine's identity, name, advertised address and how it connects
 title: My machine
 route: /config/my-machine
 order: 200
 ---
 
 :::lead
-My machine shows who this machine is in the network - its key, its ports, its profile and its authority - and lets you change the two things about it that are yours to change: its name and the address it advertises.
+My machine shows who this machine is in the network - its key, its ports, its profile and its authority - and lets you change the three things about it that are yours to change: its name, the address it advertises, and how it connects.
 :::
 
 ![My machine: the identity panel at the top, then the machine name and the advertised address.](../images/en/my-machine.webp)
@@ -24,6 +24,8 @@ Administrator, worker, validator or visitor, and whether this machine is the pri
 Only a label for the others. Left empty, the system's hostname is used.
 ### Advertised address
 An optional address or DNS name the others try first. Empty, the node finds its own addresses: the public one the relays observed, else the local network one. It is a hint, never the identity.
+### Connections
+How this machine reaches the network. With iroh on, it uses discovery, relays and hole punching. With iroh off, it keeps none of that: it speaks and is reached on its announced addresses only - the worker the outside world never sees, for a machine the hub or the local network dials directly. Turning iroh off applies at once; turning it back on takes effect on the next start, and a mode the command line turned on stays until the flag is removed. A machine behind a NAT cannot have iroh off: with no hole punching its addresses stop answering and the hub refuses it.
 :::
 
 :::warn Leave network

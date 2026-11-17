@@ -32,6 +32,9 @@ export interface RelayStatus {
   anonymous_serving: boolean;
   /** The visitors' anonymous relays this node holds passes for. */
   anonymous_relays: number;
+  /** iroh is off on this machine (the saved `--no-iroh`): it serves no relay
+   * of any kind, whatever the options say (spec 2026-11-15). */
+  direct_only: boolean;
 }
 
 export type RelayOption = "everyone" | "cluster" | "transfers" | "anonymous";
@@ -41,6 +44,7 @@ type Translate = (key: string, values?: Record<string, string | number>) => stri
 
 /** What the node is doing with the options, in one line. */
 export function relayStateKey(status: RelayStatus): string {
+  if (status.direct_only) return "network.relayStateDirectOnly";
   if (status.everyone) return "network.relayStateEveryone";
   if (!status.cluster) return "network.relayStateOff";
   return status.reachable ? "network.relayStateCluster" : "network.relayStateUnreachable";
@@ -99,14 +103,16 @@ export function RelayChoices({ value, status, onChange, disabled = false, anonym
     <div className="space-y-2" data-testid="relay-choices">
       {rows.map((row) => {
         const checked = value[row.option];
-        const locked = disabled || row.fixed || row.off;
+        // The mode holds every relay option: a node with iroh off serves no
+        // relay of any kind, whatever the saved choices say (spec 2026-11-15).
+        const locked = disabled || row.fixed || row.off || status.direct_only;
         return (
           <label key={row.option} className={`flex items-start gap-3 rounded-lg border px-3 py-3 transition-colors ${row.option === "transfers" ? "sm:ml-8" : ""} ${checked ? "border-iris/50 bg-iris/[0.08]" : "border-line"} ${locked ? "opacity-60" : "cursor-pointer hover:border-line-strong"}`}>
             <input type="checkbox" className="sr-only" data-testid={`relay-${row.option}`} checked={checked} disabled={locked} onChange={(event) => onChange(row.option, event.target.checked)} />
             <span className={`mt-0.5 shrink-0 ${checked ? "text-iris" : "text-faint"}`}>{row.icon}</span>
             <span className="min-w-0 flex-1">
               <span className="flex flex-wrap items-center gap-2 text-sm font-medium text-fg">{row.label}{row.badge && <span className="rounded-full border border-lime/40 px-1.5 py-px text-[0.62rem] font-normal text-lime">{row.badge}</span>}</span>
-              <span className="mt-0.5 block text-xs leading-relaxed text-muted">{row.fixed ? t("network.relayFixed") : row.hint}</span>
+              <span className="mt-0.5 block text-xs leading-relaxed text-muted">{status.direct_only ? t("network.relayDirectOnly") : row.fixed ? t("network.relayFixed") : row.hint}</span>
             </span>
             <span className={`mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded border ${checked ? "border-iris bg-iris text-white" : "border-line"}`}>{checked && <Check className="h-3 w-3" />}</span>
           </label>

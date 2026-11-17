@@ -2546,7 +2546,21 @@ complete paths; this greedy planner is the fallback.
   per session, and switching addresses midway is worse than the slow route.
 - The plan is built per request; `PipelinePlan::hop_chain` gives
   "abc123→def456", the proof of distributed execution the gateway puts in
-  `source`.
+  `source`. A request that names its conversation (the request's `session`,
+  or the `auto-` name hashed from the first user turn) is the exception: the
+  planner pins that session's hop chain in `GatewayState.session_pins` and
+  brings the next turns back to it, so the pinned peers keep the session's KV
+  and prefix caches warm (phase B of
+  `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`, 3.3). A
+  pin names only the `node_id`s in hop order, is revalidated against the live
+  peers every turn (`fastest::resolve_chain`), and releases when a peer dies
+  or is quarantined, when a hop moved its range, engine or left, when the idle
+  wake of the pinned plan fails, or after 30 min without use. It lives on the
+  planner alone, never visible to peers, persisted in `pom.db`'s
+  `session_pins` so a restart does not re-plan live sessions cold. The head
+  affinity of `auto_head` is a property of the pin: `auto_head` runs only when
+  no pin resolves. There is no proactive re-balance - a pin lasts until a peer
+  dies or the session ages out (the spec's optional margin re-plan stays off).
 
 ## 7. Fallbacks on the gateway
 
@@ -3370,6 +3384,27 @@ with the ledger is the crate `crates/metering-core`; the node side is
   and check the forward arrived. The cause was not investigated here; what is
   measured is that the flakiness does not depend on the persistent channel - it
   shows up the same on the tree without it.
+- **Lab watchdogs under load** (2026-11-15): `prefix_reuse_lab::unknown_session_recovery_is_bounded`
+  and `mid_prefill_transport_failure_does_not_corrupt_recurrent_session` failed in full parallel
+  runs on the 5 s timeout. They watch for a hang; the properties - the cold attempt limit and
+  the absence of partial removals - are in the assertions, so the watchdogs are now 30 s. The
+  QUIC client timeout in `serve::integration::quic_starts_without_a_tcp_tls_configuration` got
+  the same slack (15 s). `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`
+  keeps its 1-leg tolerance because the tolerance is the measured law: it reads the real clock,
+  passes alone, and still shows under a heavily loaded machine.
+- **Capability reads under load** (2026-11-16): the full parallel suite dropped
+  `webui::profile_network_tests::chat_capabilities_offer_thinking_on_a_plugin_engine_head`
+  and `webui::profile_network_tests::chat_capabilities_reads_mmproj_from_a_remote_sliced_head_config`
+  (`thinking`/mmproj answered `unavailable` where the test expects `supported`); the whole
+  module passes when run alone (10 green) and so does each of them. Same shape as the item
+  above: measured, not chased, no change of expectation. A member of this family that fails
+  **alone** is not this flake - that is how the selector mismatch recorded in
+  `crates/node/src/backend/AGENTS.md` showed up. The same shape reached
+  `webui::network_chat_settings_tests::secondary_admin_forwards_the_toggle_to_the_principal`
+  (2026-11-16): the secondary's forward to the principal (`forward_network_chat_to_primary`,
+  since 2026-09-09) answers `Err => bad_request`, so a `PEER_TIMEOUT` on the local hop reads
+  as `400 the principal node is unreachable` and the test sees 400 where it expects 200; it
+  passes alone and in the module.
 - **The forwarding hop's `network_ms` includes the next hop.** When the head is
   the gateway itself (`local` transport) and forwards to the next peer inside
   the same call, its `round_trip_ms` covers the next hop's whole round trip, and

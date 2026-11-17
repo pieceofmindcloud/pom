@@ -178,7 +178,10 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
             post(internal_complete_transfer),
         )
         .route("/api/internal/reload_model", post(internal_reload_model))
-        .route(crate::webui::TOKEN_PATH, post(crate::webui::internal_token))
+        .route(
+            crate::webui::RELAYS_PATH,
+            post(crate::webui::internal_relays),
+        )
         .route(
             crate::webui::ROSTER_PATH,
             post(crate::webui::internal_roster),
@@ -190,6 +193,10 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
         .route(
             crate::webui::REVOCATIONS_PATH,
             post(crate::webui::internal_revocations),
+        )
+        .route(
+            crate::webui::VOUCHES_PATH,
+            post(crate::webui::internal_vouches),
         )
         .route(
             "/api/internal/enterprise/fingerprint",

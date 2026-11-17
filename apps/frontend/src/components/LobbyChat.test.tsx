@@ -150,13 +150,9 @@ describe("LobbyChat", () => {
     expect(screen.getByText(/Você já pode pedir de novo/)).toBeTruthy();
   });
 
-  it("asks to join as a validator only for the worker role", async () => {
+  it("hides the validator option while it is in development", async () => {
     mount();
-    fireEvent.click(await screen.findByTestId("lobby-as-validator"));
-    fireEvent.click(screen.getByRole("button", { name: "Pedir admissão" }));
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith(
-      "/api/ui/network-chat/lobby/admission",
-      expect.objectContaining({ key: "pk:curitiba", role: "worker", validator: true }),
-    ));
+    await screen.findByRole("button", { name: "Pedir admissão" });
+    expect(screen.queryByTestId("lobby-as-validator")).toBeNull();
   });
 });

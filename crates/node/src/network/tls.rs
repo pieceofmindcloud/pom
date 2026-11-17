@@ -14,7 +14,7 @@
 //! The same certificate is the client certificate of every peer connection
 //! (mutual TLS), so the server knows which node is calling as well. What
 //! that node may do is decided from its key per request, against the trust
-//! chain and the membership tokens (`auth::validate_internal_node_headers`).
+//! chain and the roster vouches (`auth::validate_internal_node_headers`).
 
 use anyhow::{anyhow, Context, Result};
 use ed25519_dalek::pkcs8::EncodePrivateKey;

@@ -17,6 +17,7 @@ const base: RelayStatus = {
   anonymous: false,
   anonymous_serving: false,
   anonymous_relays: 0,
+  direct_only: false,
 };
 
 vi.mock("../lib/api", () => ({ api: { get: vi.fn(), post: vi.fn() } }));
@@ -45,6 +46,20 @@ describe("RelayOptions", () => {
     expect(relayStateKey({ ...base, reachable: false })).toBe("network.relayStateUnreachable");
     expect(relayStateKey({ ...base, cluster: false })).toBe("network.relayStateOff");
     expect(relayStateKey({ ...base, everyone: true, reachable: false })).toBe("network.relayStateEveryone");
+    expect(relayStateKey({ ...base, direct_only: true })).toBe("network.relayStateDirectOnly");
+  });
+
+  it("holds every relay option when iroh is off on this machine", async () => {
+    vi.mocked(api.get).mockResolvedValue({ ...base, direct_only: true, serving: false });
+    mount();
+
+    for (const option of ["everyone", "cluster", "transfers"] as const) {
+      const box = (await screen.findByTestId(`relay-${option}`)) as HTMLInputElement;
+      expect(box.disabled).toBe(true);
+    }
+    expect(screen.getByTestId("relay-state").textContent).toBe("iroh off: this machine serves no relay");
+    // Every row says why it is held, not just the first one.
+    expect(screen.getAllByText("iroh is off on this machine: it serves no relay of any kind")).toHaveLength(3);
   });
 
   it("saves one option at a time and shows what the node answered", async () => {

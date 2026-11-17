@@ -312,7 +312,15 @@ Per-file list:
   it shows the effective address the peers use). Between the two sits "Machine
   name" (`POST /api/ui/network/node-name`): the field holds the configured
   `node_name` and, while empty, shows the hostname in use as its placeholder.
-  The relay options moved to `NetworkSettings.tsx`. `Sair da rede` ("Leave the network") here is different
+  The relay options moved to `NetworkSettings.tsx`. "Connections" (`GET/POST
+/api/ui/network/transport`) is the machine's transport mode: one saved card
+(like the relay choices, no Save button) for iroh off, the "Now" line saying
+what the run is doing (iroh on, iroh off, or the saved mode waiting for its
+restart), and a footnote when the saved value and the run diverge - the flag
+turns the mode on but the screen cannot take it off. Turning iroh off applies
+live; a re-enable is saved and lands on the next start. The panel stays out
+while the node does not answer.
+`Sair da rede` ("Leave the network") here is different
   from `Esquecer rede` ("Forget network") in `NetworkSettings.tsx`: one disconnects the machine from the cluster,
   the other erases the local configuration and restarts in the setup.
 

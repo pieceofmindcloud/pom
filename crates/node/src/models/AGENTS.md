@@ -314,12 +314,11 @@ when MTP was not requested).
 - `ModelSource::Folder` is labelled `"Pasta"` (`catalog.rs`, the source label
   the catalog sends), so the Models screen shows a Portuguese word in the
   English interface. The label should be a code the UI translates.
-- The engine's `gguf::read_layout` (pom-plugin-llama.cpp, pinned `rev`) refuses
-  in Portuguese ("dtype GGML 99 desconhecido no tensor ...", "tem comprimento
-  3"), so `splitter::tests::preview_refuses_an_unknown_dtype_by_name` and
-  `unknown_architecture_array_length_is_refused_by_name`, which expect the
-  English text, fail. The fix belongs to the engine repository, then a `rev`
-  bump here.
+- The engine's `gguf::read_layout` (pom-plugin-llama.cpp, pinned `rev`) and its
+  split path now word these refusals in English alike (`143311b`), which is what
+  the splitter tests `preview_refuses_an_unknown_dtype_by_name` and
+  `unknown_architecture_array_length_is_refused_by_name` assert. They read the
+  engine's wording, so a change there breaks them by name.
 
 ## Maintaining this file
 

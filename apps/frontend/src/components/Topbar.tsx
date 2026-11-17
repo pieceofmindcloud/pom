@@ -27,6 +27,7 @@ function NodeChipItems() {
   const { t } = useI18n();
   const node = useNode();
   const cluster = useCluster();
+  const { profile } = useProfile();
 
   if (node.isLoading) return <Skeleton className="h-8 w-56" />;
   if (node.isError)
@@ -75,7 +76,12 @@ function NodeChipItems() {
         </Badge>
       )}
       <NatBadge />
-      {!alone && c && c.peers.length > 0 && (
+      {/* The machine count and the layer coverage are the network's operator
+          summary. A visitor is not shown a network: admin-hub routing keeps it
+          on the admin entry nodes and itself, so this count says something the
+          visitor neither sees nor acts on - "1 node" reads as a network of one.
+          What a member of any profile needs is the `ConnectionBadge` above. */}
+      {profile !== "visitor" && !alone && c && c.peers.length > 0 && (
         <Badge tone={complete ? "aqua" : "amber"}>
           {t("topbar.nodeCount", { count: c.peers.length })}
           {c.total_layers > 0 && (

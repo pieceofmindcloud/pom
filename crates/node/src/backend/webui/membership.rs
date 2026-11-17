@@ -1,7 +1,10 @@
-//! Membership tokens at run time (`crate::membership`): admins issue them,
-//! members keep theirs fresh and announce it, and the secondary admins keep
-//! a copy of the principal's admission list so they can issue and decide
-//! too.
+//! Membership at run time (`crate::membership`): the secondary admins keep
+//! a copy of the principal's admission list so they can decide and vouch
+//! too, every admin signs the admitted roles as **vouches** and the keepers
+//! carry them to every node, and the members keep their relay passes fresh
+//! by asking an admin. The membership token was retired 2026-11-15
+//! (phase C3 of the admin-hub routing, decision 5: no compatibility
+//! bridge): the roster and its vouches are what prove a member.
 //!
 //! The admission list stays the principal's: the lobby is the principal's,
 //! and so is rotating the connection key when a member leaves. A secondary
@@ -21,17 +24,19 @@ use axum::extract::State;
 use serde_json::Value;
 use tracing::{debug, warn};
 
-pub(crate) const TOKEN_PATH: &str = "/api/internal/membership/token";
+pub(crate) const RELAYS_PATH: &str = "/api/internal/membership/relays";
 pub(crate) const ROSTER_PATH: &str = "/api/internal/membership/roster";
 pub(crate) const DECIDE_PATH: &str = "/api/internal/membership/decide";
 pub(crate) const REVOCATIONS_PATH: &str = "/api/internal/membership/revocations";
-/// How often a member checks its token and a secondary rereads the list.
+pub(crate) const VOUCHES_PATH: &str = "/api/internal/membership/vouches";
+/// How often a member renews its relay passes and a secondary rereads the
+/// list.
 const KEEPER_TICK: Duration = Duration::from_secs(30);
-/// How soon a member with no token looks again: for an admin to show up, and
-/// after a refused request, doubling up to `KEEPER_TICK`. Right after a join
-/// or a boot no admin has been heard yet; waiting the whole tick there left a
-/// visitor with no models for up to 30 s.
-const TOKEN_RETRY_MIN: Duration = Duration::from_secs(2);
+/// How soon a member with no passes looks again: for an admin to show up,
+/// and after a refused request, doubling up to `KEEPER_TICK`. Right after a
+/// join or a boot no admin has been heard yet; waiting the whole tick there
+/// left a visitor with no models for up to 30 s.
+const RELAY_RETRY_MIN: Duration = Duration::from_secs(2);
 const MEMBERSHIP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Whether this node is an admin of its own chain.
@@ -62,10 +67,10 @@ fn admin_caller(state: &GatewayState, auth: &InternalNodeAuth) -> bool {
     })
 }
 
-/// The role a member gets in its token: the one it was admitted with. A
-/// legacy network open to anyone with the anchor has no admissions, and
+/// The role this admin can pass for `caller` with: the one its admission
+/// gave it. A network open to anyone with the anchor has no admissions, and
 /// keeps what the node announces.
-async fn role_to_issue(
+async fn role_to_admit(
     state: &GatewayState,
     caller: &crate::admin_trust::AuthorityPrincipal,
 ) -> Option<crate::config::EnrollmentRole> {
@@ -93,10 +98,12 @@ async fn role_to_issue(
     })
 }
 
-/// `POST /api/internal/membership/token` - on an admin: a fresh token for
-/// the member that signed the request, with the role it was admitted with.
-/// An admin needs none, and a machine nobody admitted gets none.
-pub(crate) async fn internal_token(
+/// `POST /api/internal/membership/relays` - on an admin: the relay passes it
+/// signs for the member that signed the request, for this network's visitor
+/// relays. An admin signs its own passes and asks for none; a machine nobody
+/// admitted gets none. The membership token this route used to answer with
+/// was retired 2026-11-15 (phase C3): the vouches prove membership now.
+pub(crate) async fn internal_relays(
     auth: InternalNodeAuth,
     State(state): State<GatewayState>,
 ) -> Response {
@@ -108,31 +115,15 @@ pub(crate) async fn internal_token(
     }
     let document = state.admin_trust.document();
     if crate::admin_trust::control_issuer_is_admin(&document, &caller) {
-        return refused("admins_need_no_token");
+        return refused("admins_sign_their_own_passes");
     }
-    let Some(role) = role_to_issue(&state, &caller).await else {
+    if role_to_admit(&state, &caller).await.is_none() {
         return refused("not_admitted");
-    };
-    match crate::membership::issue(
-        &state.authority_signing_key,
-        &state.authority_principal,
-        &document,
-        &caller.node_id,
-        &caller.pubkey,
-        role,
-        chrono::Utc::now().timestamp(),
-    ) {
-        Ok(token) => Json(json!({
-            "token": token,
-            "relays": relay_passes(&state, &caller.node_id).await,
-        }))
-        .into_response(),
-        Err(error) => (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": format!("could not issue the token: {error:#}") })),
-        )
-            .into_response(),
     }
+    Json(json!({
+        "relays": relay_passes(&state, &caller.node_id).await,
+    }))
+    .into_response()
 }
 
 /// The visitors' anonymous relays this admin sees, each with a fresh pass,
@@ -142,6 +133,13 @@ pub(crate) async fn relay_passes(
     state: &GatewayState,
     member: &str,
 ) -> Vec<crate::network::AnonymousRelay> {
+    // A direct-only member (`--no-iroh`) holds no ephemeral endpoint and dials
+    // no visitor relay: passes for it would go nowhere (spec 2026-11-15).
+    if member == state.network.node_id && state.network.is_direct_only()
+        || state.network.peer_direct_only(member).await
+    {
+        return Vec::new();
+    }
     let now = chrono::Utc::now().timestamp();
     let document = state.admin_trust.document();
     let mut relays = Vec::new();
@@ -329,6 +327,12 @@ pub(crate) async fn apply_decision(state: &GatewayState, decision: AdmissionDeci
                 node_id,
             );
         }
+        // Phase C of the admin-hub routing: the approval is vouched to the
+        // network at once, beside the ban's push of the removal.
+        let publisher = state.clone();
+        tokio::spawn(async move {
+            publish_vouches(&publisher).await;
+        });
     }
     Json(state.network_chat.admissions()).into_response()
 }
@@ -426,6 +430,203 @@ pub(crate) async fn internal_revocations(
     Json(state.admin_trust.revocations()).into_response()
 }
 
+/// Signs this admin's vouches for every approved admission it sees - its
+/// own list and the mirror of the principal's (phase C of the admin-hub
+/// routing, spec 10.1). A vouch repeats the approval: same member, same
+/// role, same decision time, this admin's signature. Decisions older than
+/// the member's last ban are not vouched: the ban already undoes them.
+pub(crate) async fn sign_vouches(state: &GatewayState) -> Vec<crate::membership::Vouch> {
+    if !is_admin(&state) {
+        return Vec::new();
+    }
+    let document = state.admin_trust.document();
+    let now = chrono::Utc::now().timestamp();
+    let mut newest: std::collections::HashMap<String, (i64, crate::config::EnrollmentRole)> =
+        std::collections::HashMap::new();
+    for record in state
+        .network_chat
+        .admissions()
+        .into_iter()
+        .chain(state.network_chat.roster_mirror())
+    {
+        if record.status != AdmissionStatus::Approved {
+            continue;
+        }
+        let Some(admitted_at) = record
+            .decided_at
+            .as_deref()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .map(|at| at.timestamp())
+        else {
+            continue;
+        };
+        if state
+            .admin_trust
+            .revoked_node_at(&record.node_id)
+            .is_some_and(|revoked| admitted_at <= revoked)
+        {
+            continue;
+        }
+        match newest.get(&record.node_id) {
+            Some((known_at, _)) if *known_at >= admitted_at => {}
+            _ => {
+                newest.insert(record.node_id.clone(), (admitted_at, record.role));
+            }
+        }
+    }
+    // A network open to anyone with the anchor admits by the key, not by a
+    // list: the admin vouches what a live peer announces, the way it used to
+    // issue those peers tokens. A ban is final for such a peer, as it was in
+    // the token answer: an admin signs a peer the chain holds any revocation
+    // for no vouch, and a peer that goes quiet stops being signed, so its
+    // vouch ages out within the vouch window.
+    if state.auth.read().await.network.open_admission() {
+        for peer in state.network.alive_peers().await {
+            if peer.node_id == state.network.node_id || newest.contains_key(&peer.node_id) {
+                continue;
+            }
+            if crate::admin_trust::is_admin_key(&document, &peer.node_id, &peer.pubkey) {
+                continue;
+            }
+            if state.admin_trust.revoked_node_at(&peer.node_id).is_some() {
+                continue;
+            }
+            let role = if peer.profile == crate::profile::NodeProfile::Visitor {
+                crate::config::EnrollmentRole::Visitor
+            } else {
+                crate::config::EnrollmentRole::Worker
+            };
+            newest.insert(peer.node_id.clone(), (now, role));
+        }
+    }
+    let mut out = Vec::new();
+    for (node_id, (admitted_at, role)) in newest {
+        match crate::membership::sign_vouch(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &document,
+            &node_id,
+            role,
+            admitted_at,
+            now,
+        ) {
+            Ok(vouch) => out.push(vouch),
+            Err(error) => debug!("could not vouch {node_id}: {error:#}"),
+        }
+    }
+    out
+}
+
+/// Re-signs this admin's vouches into its ledger and carries them to every
+/// live peer with a gateway, so an approval reaches the whole network at
+/// once - the push beside `push_revocations`, same trust: every entry is
+/// checked on signature wherever it lands. Non-admins keep their copy fresh
+/// through the keeper exchange instead (`spawn_vouch_keeper`).
+pub(crate) async fn publish_vouches(state: &GatewayState) {
+    let signed = sign_vouches(state).await;
+    state.admin_trust.merge_vouches(signed);
+    let entries = state.admin_trust.vouches();
+    if entries.is_empty() {
+        return;
+    }
+    for peer in state.network.alive_peers().await {
+        if peer.node_id == state.network.node_id || peer.gateway_port.is_none() {
+            continue;
+        }
+        if let Err(error) = crate::admin::post_internal_json(
+            state,
+            &peer,
+            VOUCHES_PATH,
+            &entries,
+            MEMBERSHIP_TIMEOUT,
+        )
+        .await
+        {
+            debug!("could not push vouches to {}: {error:#}", peer.node_id);
+        }
+    }
+}
+
+/// `POST /api/internal/membership/vouches` - takes the caller's vouches and
+/// answers with this node's. Each entry carries an admin's signature and is
+/// checked on its own, so whoever sends them does not matter; this is how a
+/// node that never met the principal still holds the roster's word for its
+/// own decisions (phase C).
+pub(crate) async fn internal_vouches(
+    _auth: InternalNodeAuth,
+    State(state): State<GatewayState>,
+    Json(entries): Json<Vec<crate::membership::Vouch>>,
+) -> Response {
+    state.admin_trust.merge_vouches(entries);
+    Json(state.admin_trust.vouches()).into_response()
+}
+
+/// Keeps the roster vouches fresh on every node (phase C). An admin
+/// re-signs the vouches of its admissions every tick - the renewal is what
+/// lets a member dropped from the roster age out when its ban never
+/// arrived. Every node then trades lists with one admin per tick, a
+/// different one each time, so a node that missed a push holds the
+/// roster's word within a tick or two.
+pub(crate) fn spawn_vouch_keeper(state: GatewayState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(KEEPER_TICK);
+        let mut turn = 0usize;
+        loop {
+            ticker.tick().await;
+            if state.network.is_detached() {
+                continue;
+            }
+            if is_admin(&state) {
+                let signed = sign_vouches(&state).await;
+                if !signed.is_empty() {
+                    state.admin_trust.merge_vouches(signed);
+                }
+            }
+            let document = state.admin_trust.document();
+            let admins: Vec<_> = state
+                .network
+                .alive_peers()
+                .await
+                .into_iter()
+                .filter(|peer| {
+                    peer.node_id != state.network.node_id
+                        && peer.gateway_port.is_some()
+                        && crate::admin_trust::is_admin_key(&document, &peer.node_id, &peer.pubkey)
+                })
+                .collect();
+            if admins.is_empty() {
+                continue;
+            }
+            turn = turn.wrapping_add(1);
+            let peer = &admins[turn % admins.len()];
+            let sent = crate::admin::post_internal_json(
+                &state,
+                peer,
+                VOUCHES_PATH,
+                &state.admin_trust.vouches(),
+                MEMBERSHIP_TIMEOUT,
+            )
+            .await;
+            match sent {
+                Ok(response) if response.status().is_success() => {
+                    match response.json::<Vec<crate::membership::Vouch>>().await {
+                        Ok(entries) => {
+                            state.admin_trust.merge_vouches(entries);
+                        }
+                        Err(error) => debug!("unreadable roster vouches: {error:#}"),
+                    }
+                }
+                Ok(response) => debug!(
+                    "{} answered {} to the vouch exchange",
+                    peer.node_id,
+                    response.status()
+                ),
+                Err(error) => debug!("vouch exchange failed: {error:#}"),
+            }
+        }
+    });
+}
+
 /// Trades revocation lists with one admin per tick, a different one each
 /// time, so a node that missed a push learns the ban within a tick or two.
 pub(crate) fn spawn_revocation_keeper(state: GatewayState) {
@@ -494,7 +695,41 @@ pub(crate) async fn refresh_roster(state: &GatewayState) -> anyhow::Result<Vec<A
     }
     let records: Vec<AdmissionRecord> = response.json().await?;
     state.network_chat.set_roster_mirror(records.clone());
+    persist_roster_mirror(state, &records);
     Ok(records)
+}
+
+/// `local_settings` key of the secondary's persisted mirror.
+const ROSTER_SETTING: &str = "roster_mirror";
+
+/// Writes the mirror last read from the principal, so a secondary admin that
+/// restarts while the principal is offline still knows who the network
+/// admitted (admin-hub design, con 3:
+/// `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). A failure
+/// is only logged: the in-memory mirror already serves this turn.
+fn persist_roster_mirror(state: &GatewayState, records: &[AdmissionRecord]) {
+    if let Err(error) = state.database.save_local_setting(ROSTER_SETTING, records) {
+        debug!("could not persist the roster mirror: {error:#}");
+    }
+}
+
+/// Brings back the last mirror persisted on this machine. The revocation guard
+/// still applies on read: `admitted_role` ignores an approval not newer than
+/// the node's last ban, and revocations are durable in the trust chain.
+fn restore_roster_mirror(state: &GatewayState) {
+    let Ok(Some(raw)) = state.database.local_setting_json(ROSTER_SETTING) else {
+        return;
+    };
+    match serde_json::from_str::<Vec<AdmissionRecord>>(&raw) {
+        Ok(records) if !records.is_empty() => {
+            state.network_chat.set_roster_mirror(records);
+        }
+        Ok(_) => {}
+        Err(error) => {
+            debug!("the persisted roster mirror is unreadable: {error:#}");
+            let _ = state.database.delete_local_setting(ROSTER_SETTING);
+        }
+    }
 }
 
 /// Sends a secondary's decision to the principal and returns the list as
@@ -521,6 +756,7 @@ pub(crate) async fn forward_decision(
             match response.json::<Vec<AdmissionRecord>>().await {
                 Ok(records) => {
                     state.network_chat.set_roster_mirror(records.clone());
+                    persist_roster_mirror(state, &records);
                     Json(records).into_response()
                 }
                 Err(error) => (
@@ -551,10 +787,11 @@ async fn principal_peer(state: &GatewayState) -> anyhow::Result<crate::network::
         .ok_or_else(|| anyhow::anyhow!("the principal is not reachable"))
 }
 
-/// Asks the admins in turn for a new token, until one gives it.
-async fn request_token(
+/// Ask admins in order until one hands over the relay passes it signs
+/// for this node.
+async fn request_membership(
     state: &GatewayState,
-) -> anyhow::Result<(String, Vec<crate::network::AnonymousRelay>)> {
+) -> anyhow::Result<Vec<crate::network::AnonymousRelay>> {
     let document = state.admin_trust.document();
     let mut admins: Vec<_> = state
         .network
@@ -574,7 +811,7 @@ async fn request_token(
         let sent = crate::admin::post_internal_json(
             state,
             &peer,
-            TOKEN_PATH,
+            RELAYS_PATH,
             &json!({}),
             MEMBERSHIP_TIMEOUT,
         )
@@ -587,21 +824,7 @@ async fn request_token(
                     .cloned()
                     .and_then(|relays| serde_json::from_value(relays).ok())
                     .unwrap_or_default();
-                let token = answer
-                    .get("token")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .ok_or_else(|| anyhow::anyhow!("the admin answered without a token"))?;
-                // A token this node cannot verify itself would be refused
-                // everywhere else as well.
-                crate::membership::member_role(
-                    &state.admin_trust,
-                    Some(&token),
-                    &state.network.node_id,
-                    &state.network.pubkey,
-                )
-                .ok_or_else(|| anyhow::anyhow!("the admin's token does not hold"))?;
-                return Ok((token, relays));
+                return Ok(relays);
             }
             Ok(response) => {
                 last = anyhow::anyhow!("{} answered {}", peer.node_id, response.status())
@@ -612,71 +835,48 @@ async fn request_token(
     Err(last)
 }
 
-/// Keeps this node's token fresh and announced. An admin carries none. A
-/// token that stopped holding - its issuer was demoted, the chain moved on -
-/// is replaced at once; one that expires without a renewal is dropped, and
-/// the node is then refused what only a worker may ask.
-pub(crate) fn spawn_token_keeper(state: GatewayState) {
+/// Keeps this node's relay passes fresh, and its standing in the network
+/// visible to the interface. An admin signs its own passes every tick. A
+/// member asks an admin for them every tick; the passes are what let it dial
+/// the network's visitor relays through the anonymous tunnel. Membership
+/// itself is no longer carried by the node: the roster vouches, pushed and
+/// exchanged by the other keepers, decide it on every node.
+pub(crate) fn spawn_membership_keeper(state: GatewayState) {
     tokio::spawn(async move {
         let mut wait = Duration::ZERO;
-        let mut backoff = TOKEN_RETRY_MIN;
+        let mut backoff = RELAY_RETRY_MIN;
         loop {
             tokio::time::sleep(wait).await;
             wait = KEEPER_TICK;
-            if !state.network.is_detached() && is_admin(&state) {
-                // An admin signs its own passes, renewed every tick.
-                let relays = relay_passes(&state, &state.network.node_id).await;
-                state.network.set_anonymous_relays(relays);
-            }
             if state.network.is_detached() || is_admin(&state) {
-                state.network.set_membership(None);
-                note_token_error(None);
-                refresh_connection_phase(&state).await;
-                continue;
-            }
-            let now = chrono::Utc::now().timestamp();
-            let current = state.network.membership();
-            let holds = crate::membership::member_role(
-                &state.admin_trust,
-                current.as_deref(),
-                &state.network.node_id,
-                &state.network.pubkey,
-            )
-            .is_some();
-            let due = current
-                .as_deref()
-                .and_then(crate::membership::expires_at)
-                .is_none_or(|exp| {
-                    now >= exp - crate::membership::TOKEN_TTL_SECS
-                        + crate::membership::RENEW_AFTER_SECS
-                });
-            if holds && !due {
+                if !state.network.is_detached() {
+                    // An admin signs its own passes, renewed every tick.
+                    let relays = relay_passes(&state, &state.network.node_id).await;
+                    state.network.set_anonymous_relays(relays);
+                }
+                note_membership_error(None);
                 refresh_connection_phase(&state).await;
                 continue;
             }
             // No admin heard yet: nobody to ask, so only look again soon.
-            if !holds && !admin_in_sight(&state).await {
-                note_token_error(None);
+            if !admin_in_sight(&state).await {
+                note_membership_error(None);
                 refresh_connection_phase(&state).await;
-                wait = TOKEN_RETRY_MIN;
+                wait = RELAY_RETRY_MIN;
                 continue;
             }
-            match request_token(&state).await {
-                Ok((token, relays)) => {
-                    state.network.set_membership(Some(token));
+            match request_membership(&state).await {
+                Ok(relays) => {
                     state.network.set_anonymous_relays(relays);
-                    note_token_error(None);
-                    backoff = TOKEN_RETRY_MIN;
-                    debug!("membership token renewed");
+                    note_membership_error(None);
+                    backoff = RELAY_RETRY_MIN;
+                    debug!("relay passes renewed");
                 }
                 Err(error) => {
-                    if !holds {
-                        state.network.set_membership(None);
-                        note_token_error(Some(format!("{error:#}")));
-                        wait = backoff;
-                        backoff = (backoff * 2).min(KEEPER_TICK);
-                    }
-                    debug!("could not renew the membership token: {error:#}");
+                    note_membership_error(Some(format!("{error:#}")));
+                    wait = backoff;
+                    backoff = (backoff * 2).min(KEEPER_TICK);
+                    debug!("could not renew the relay passes: {error:#}");
                 }
             }
             refresh_connection_phase(&state).await;
@@ -690,13 +890,13 @@ pub(crate) fn spawn_token_keeper(state: GatewayState) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ConnectionPhase {
-    /// An admin of its own chain, or off the network: it needs no token.
+    /// An admin of its own chain, or off the network: it needs nothing.
     Standalone,
     /// A member that has heard no admin of its network yet.
     Discovering,
-    /// An admin is in sight, but this node holds no valid token yet.
+    /// An admin is in sight, but no roster vouch names this node yet.
     Authenticating,
-    /// A member with a valid membership token.
+    /// A member the roster vouches.
     Connected,
 }
 
@@ -718,8 +918,8 @@ fn connection_track() -> &'static std::sync::Mutex<ConnectionTrack> {
     })
 }
 
-/// The last refused token request, kept while this node holds no token.
-fn note_token_error(error: Option<String>) {
+/// The last refused membership request, kept to explain a wait.
+fn note_membership_error(error: Option<String>) {
     if let Ok(mut track) = connection_track().lock() {
         track.last_error = error;
     }
@@ -740,13 +940,10 @@ async fn admin_in_sight(state: &GatewayState) -> bool {
 async fn refresh_connection_phase(state: &GatewayState) -> (ConnectionPhase, i64, Option<String>) {
     let phase = if state.network.is_detached() || is_admin(state) {
         ConnectionPhase::Standalone
-    } else if crate::membership::member_role(
-        &state.admin_trust,
-        state.network.membership().as_deref(),
-        &state.network.node_id,
-        &state.network.pubkey,
-    )
-    .is_some()
+    } else if state
+        .admin_trust
+        .vouched_role(&state.network.node_id, chrono::Utc::now().timestamp())
+        .is_some()
     {
         ConnectionPhase::Connected
     } else if admin_in_sight(state).await {
@@ -765,9 +962,9 @@ async fn refresh_connection_phase(state: &GatewayState) -> (ConnectionPhase, i64
 }
 
 /// `GET /api/ui/connection` - this node's phase on the way into its network
-/// (`ConnectionPhase`), since when (unix seconds), the last refused token
-/// request while it has none, and how much of the cluster it sees now: the
-/// other live peers and whether an admin is among them.
+/// (`ConnectionPhase`), since when (unix seconds), the last refused
+/// membership request, and how much of the cluster it sees now: the other
+/// live peers and whether an admin is among them.
 pub(super) async fn connection_status(State(state): State<GatewayState>) -> Json<Value> {
     let (phase, since, last_error) = refresh_connection_phase(&state).await;
     let peers = state
@@ -787,14 +984,20 @@ pub(super) async fn connection_status(State(state): State<GatewayState>) -> Json
 }
 
 /// On a secondary admin: keeps the mirror of the principal's admission
-/// list. Off a secondary the mirror is empty.
+/// list. Off a secondary the mirror is empty. The mirror is restored from
+/// `pom.db` at the start and written back on every read, so a secondary that
+/// restarts while the principal is offline keeps knowing the member list.
 pub(crate) fn spawn_roster_keeper(state: GatewayState) {
     tokio::spawn(async move {
+        if is_admin(&state) && !is_principal(&state) {
+            restore_roster_mirror(&state);
+        }
         let mut ticker = tokio::time::interval(KEEPER_TICK);
         loop {
             ticker.tick().await;
             if !is_admin(&state) || is_principal(&state) {
                 state.network_chat.set_roster_mirror(Vec::new());
+                let _ = state.database.delete_local_setting(ROSTER_SETTING);
                 continue;
             }
             if let Err(error) = refresh_roster(&state).await {
@@ -810,7 +1013,7 @@ mod connection_tests {
     use crate::admin_trust::AuthorityPrincipal;
 
     /// A visitor of a principal's network walks the three phases as it hears
-    /// the admin and then holds a token; an admin needs none of them.
+    /// the admin and then holds its vouch; an admin needs none of them.
     #[tokio::test]
     async fn a_member_goes_from_discovering_to_connected() {
         let principal_key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
@@ -859,17 +1062,20 @@ mod connection_tests {
             ConnectionPhase::Authenticating
         );
 
-        let token = crate::membership::issue(
+        // The vouch keeper has carried the admin's signature of this node's
+        // approval: it is a member of the roster now.
+        let now = chrono::Utc::now().timestamp();
+        let vouch = crate::membership::sign_vouch(
             &principal_key,
             &principal,
             &trust.document(),
             &visitor.network.node_id,
-            &visitor.network.pubkey,
             crate::config::EnrollmentRole::Visitor,
-            chrono::Utc::now().timestamp(),
+            now - 5,
+            now,
         )
         .unwrap();
-        visitor.network.set_membership(Some(token));
+        visitor.admin_trust.merge_vouches(vec![vouch]);
         assert_eq!(
             refresh_connection_phase(&visitor).await.0,
             ConnectionPhase::Connected
@@ -966,5 +1172,302 @@ mod relay_pass_tests {
             now
         )
         .is_ok());
+
+        // A peer whose announce said it runs with iroh off (`--no-iroh`) is
+        // handed no passes: it holds no ephemeral endpoint and dials no
+        // visitor relay (spec 2026-11-15).
+        admin
+            .network
+            .peers
+            .write()
+            .await
+            .get_mut("asker")
+            .expect("asker is on the table")
+            .direct_only = true;
+        assert!(relay_passes(&admin, "asker").await.is_empty());
+
+        // The same node asking for itself while direct-only: the same answer.
+        let mut self_direct = crate::gateway::testkit::state_with("self-direct", vec![]).await;
+        self_direct.admin_trust = std::sync::Arc::new(
+            crate::admin_trust::AdminTrust::in_memory(trust.document()).unwrap(),
+        );
+        self_direct.network.set_direct_only(true);
+        let own = self_direct.network.node_id.clone();
+        assert!(relay_passes(&self_direct, &own).await.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod roster_mirror_tests {
+    use super::*;
+
+    /// The mirror survives the process: a secondary admin that restarts while
+    /// the principal is offline reads the member list back from `pom.db`
+    /// (admin-hub design, con 3:
+    /// `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`).
+    #[tokio::test]
+    async fn the_roster_mirror_comes_back_from_the_database() {
+        let state = crate::gateway::testkit::state_with_secondary_admin("secondary", vec![]).await;
+        let records = vec![AdmissionRecord {
+            node_id: "worker-1".into(),
+            card: Default::default(),
+            role: crate::config::EnrollmentRole::Worker,
+            status: AdmissionStatus::Approved,
+            requested_at: "2026-11-14T00:00:00Z".into(),
+            decided_at: Some("2026-11-14T00:01:00Z".into()),
+            account: None,
+            validator: false,
+        }];
+        persist_roster_mirror(&state, &records);
+
+        // A restart empties the in-memory mirror before the first read of a
+        // principal that is not reachable yet.
+        state.network_chat.set_roster_mirror(Vec::new());
+        assert!(state.network_chat.roster_mirror().is_empty());
+
+        restore_roster_mirror(&state);
+        let mirror = state.network_chat.roster_mirror();
+        assert_eq!(mirror.len(), 1);
+        assert_eq!(mirror[0].node_id, "worker-1");
+        // The restored mirror is the roster a serving gate consults.
+        assert_eq!(
+            state.network_chat.admitted_role("worker-1", None),
+            Some(crate::config::EnrollmentRole::Worker)
+        );
+    }
+
+    /// An unreadable persisted mirror is erased, not trusted: the next read of
+    /// the principal replaces it.
+    #[tokio::test]
+    async fn an_unreadable_mirror_is_erased_and_not_restored() {
+        let state = crate::gateway::testkit::state_with_secondary_admin("secondary", vec![]).await;
+        state
+            .database
+            .save_local_setting(ROSTER_SETTING, &"not a list")
+            .unwrap();
+        restore_roster_mirror(&state);
+        assert!(state.network_chat.roster_mirror().is_empty());
+        assert!(state
+            .database
+            .local_setting_json(ROSTER_SETTING)
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[cfg(test)]
+mod vouch_tests {
+    use super::*;
+    use crate::gateway::testkit;
+
+    /// Phase C of the admin-hub routing (spec 10.1): the approval on the
+    /// admin's list is signed as a vouch of the admitted role; a request
+    /// that was not decided and an approval a ban cut are not signed.
+    #[tokio::test]
+    async fn an_approval_is_signed_as_a_vouch_on_the_admin_that_holds_it() {
+        let state = testkit::state_with("principal", vec![]).await;
+        state
+            .network_chat
+            .request_admission(
+                "member",
+                Default::default(),
+                crate::config::EnrollmentRole::Worker,
+            )
+            .unwrap();
+        assert!(state
+            .network_chat
+            .decide_admission("member", Some(AdmissionStatus::Approved)));
+        let vouches = sign_vouches(&state).await;
+        assert_eq!(vouches.len(), 1);
+        assert_eq!(vouches[0].sub, "member");
+        assert_eq!(vouches[0].role, crate::config::EnrollmentRole::Worker);
+        crate::membership::verify_vouch(
+            &vouches[0],
+            &state.admin_trust.document(),
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+
+        // A request no one decided is not an admission, and is not vouched.
+        state
+            .network_chat
+            .request_admission(
+                "candidate",
+                Default::default(),
+                crate::config::EnrollmentRole::Visitor,
+            )
+            .unwrap();
+        assert!(sign_vouches(&state)
+            .await
+            .iter()
+            .all(|v| v.sub != "candidate"));
+
+        // A ban cuts the approval: the admin stops vouching the member.
+        let revocation = crate::membership::revoke(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            "member",
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+        state.admin_trust.merge_revocations(vec![revocation]);
+        assert!(sign_vouches(&state).await.iter().all(|v| v.sub != "member"));
+    }
+
+    /// The exchange merges by signature, never by sender: what no admin
+    /// signed holds nothing, whoever carried it.
+    #[tokio::test]
+    async fn the_vouch_exchange_merges_by_signature_not_by_sender() {
+        let state = testkit::state_with("entry", vec![]).await;
+        let now = chrono::Utc::now().timestamp();
+        let real = crate::membership::sign_vouch(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            "member",
+            crate::config::EnrollmentRole::Worker,
+            now - 10,
+            now,
+        )
+        .unwrap();
+        let mut forged = real.clone();
+        forged.sub = "impostor".into();
+        forged.signature = "00".repeat(64);
+        let response = internal_vouches(
+            InternalNodeAuth { principal: None },
+            State(state.clone()),
+            Json(vec![forged, real]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            state.admin_trust.vouched_role("member", now),
+            Some(crate::config::EnrollmentRole::Worker)
+        );
+        assert_eq!(state.admin_trust.vouched_role("impostor", now), None);
+    }
+
+    /// The approval route vouches the network at once, the way a ban pushes
+    /// its revocation: the principal's own ledger holds the new member.
+    #[tokio::test]
+    async fn deciding_an_approval_publishes_the_vouch_into_the_admin_ledger() {
+        let state = testkit::state_with("principal", vec![]).await;
+        state
+            .network_chat
+            .request_admission(
+                "member",
+                Default::default(),
+                crate::config::EnrollmentRole::Worker,
+            )
+            .unwrap();
+        let response = apply_decision(
+            &state,
+            AdmissionDecision {
+                node_id: "member".into(),
+                decision: "approve".into(),
+                grant_micro: None,
+            },
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        // The publish runs on its own task, as the ban's push does; wait for
+        // its effect on this node's ledger.
+        for _ in 0..50 {
+            if state
+                .admin_trust
+                .vouched_role("member", chrono::Utc::now().timestamp())
+                .is_some()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the approval did not vouch the member");
+    }
+
+    /// `POST /api/internal/membership/relays` - the route that carries the
+    /// passes a member needs to dial the network's visitor relays. It
+    /// answers only a member the admin's roster admits, an admin signs its
+    /// own passes, and a machine nobody admitted gets nothing.
+    #[tokio::test]
+    async fn the_relay_route_answers_only_members_the_roster_admits() {
+        let state = testkit::state_with("principal", vec![]).await;
+        let member = crate::admin_trust::AuthorityPrincipal {
+            node_id: "member-1".into(),
+            peer_id: String::new(),
+            pubkey: "ab".repeat(32),
+        };
+
+        // Not admitted: nothing.
+        let response = internal_relays(
+            InternalNodeAuth {
+                principal: Some(member.clone()),
+            },
+            State(state.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(testkit::body_of(response).await["reason"], "not_admitted");
+
+        // Approved on the list: the passes it signs for it, with it. No
+        // visitor relays are in sight here, so the list is empty - what a
+        // member behind NAT reaches through the tunnel's allow list
+        // (`infer_tunnel`).
+        state
+            .network_chat
+            .request_admission(
+                "member-1",
+                Default::default(),
+                crate::config::EnrollmentRole::Worker,
+            )
+            .unwrap();
+        assert!(state
+            .network_chat
+            .decide_admission("member-1", Some(AdmissionStatus::Approved)));
+        let response = internal_relays(
+            InternalNodeAuth {
+                principal: Some(member.clone()),
+            },
+            State(state.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(testkit::body_of(response).await["relays"], json!([]));
+
+        // A ban is final for this answer, as it was in the token route it
+        // replaces: the admin asks for none and gets none.
+        let revocation = crate::membership::revoke(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            "member-1",
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+        state.admin_trust.merge_revocations(vec![revocation]);
+        let response = internal_relays(
+            InternalNodeAuth {
+                principal: Some(member),
+            },
+            State(state.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(testkit::body_of(response).await["reason"], "not_admitted");
+
+        // An admin signs its own passes every keeper tick: it asks for none.
+        let response = internal_relays(
+            InternalNodeAuth {
+                principal: Some(state.authority_principal.clone()),
+            },
+            State(state.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            testkit::body_of(response).await["reason"],
+            "admins_sign_their_own_passes"
+        );
     }
 }

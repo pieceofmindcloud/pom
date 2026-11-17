@@ -23,7 +23,7 @@ Take the fingerprint to the other machine by a channel you trust - read it out, 
 :::
 
 :::note The connection key
-The same string on every machine of the network: it authenticates the administration routes and the synchronization between nodes, but alone it opens nothing, since every call between machines is also mutual TLS from an admin or a member with a valid token. This screen shows it with the bootstrap address and the API base URL; **Generate another** rotates it on this machine only, and the others stop accepting this one until they get the new key. Only whoever has authority sees the button.
+The same string on every machine of the network: it authenticates the administration routes and the synchronization between nodes, but alone it opens nothing, since every call between machines is also mutual TLS, and the caller has to be a member today: an admin of the chain, or a machine the roster vouches and no admin has banned. This screen shows it with the bootstrap address and the API base URL; **Generate another** rotates it on this machine only, and the others stop accepting this one until they get the new key. Only whoever has authority sees the button.
 :::
 
 :::note Trust root, the older address

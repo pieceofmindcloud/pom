@@ -262,8 +262,11 @@ impl PkarrPublishHandle {
     /// published.
     pub(crate) async fn publish_if_changed(&self) -> anyhow::Result<bool> {
         // A node off the network (discovery off, or taken off by its
-        // operator) must not be findable by key either.
-        if self.network.is_detached() {
+        // operator) must not be findable by key either. A direct-only node
+        // (`--no-iroh`, live or saved) publishes nothing either: its machine
+        // is dialled on its announced addresses, never by key
+        // (spec 2026-11-15).
+        if self.network.is_detached() || self.network.is_direct_only() {
             return Ok(false);
         }
         let desired = self.desired_record();
@@ -520,6 +523,14 @@ pub struct GatewayState {
     pub(crate) model_service: Arc<crate::model_provider_backend::ModelService>,
     /// Best-effort pkarr republisher used when network metadata changes.
     pub(crate) pkarr_publisher: Option<Arc<PkarrPublishHandle>>,
+    /// The direct-only mode of this run came from the command line or the
+    /// environment, not from the saved switch: the My machine screen saves the
+    /// intent, but the saved value applies on the next start, and the flag
+    /// keeps turning it on until it is removed (spec 2026-11-15).
+    pub(crate) restart_needed: bool,
+    /// Sessions whose pipeline is pinned to a hop chain, per
+    /// `SessionPin` below (admin-hub routing 3.3).
+    pub(crate) session_pins: Arc<std::sync::RwLock<std::collections::HashMap<String, SessionPin>>>,
 }
 
 impl GatewayState {
@@ -932,9 +943,10 @@ pub(super) fn is_public_ui_static_path(path: &str) -> bool {
 
 /// Whether `peer` is a visitor. The role is granted at admission and an
 /// announce is only what a node says about itself, so a machine admitted as
-/// one stays one whatever it announces: on every node its membership token
-/// says so (`crate::membership`), and on the admins their admission list
-/// as well. Everywhere, a node that announces itself as a visitor is one.
+/// one stays one whatever it announces: on the admins the admission list
+/// decides, on every node the roster vouch that reached it
+/// (`AdminTrust::vouched_role`), and only with neither does the announce
+/// itself decide.
 impl GatewayState {
     /// Whether this node runs as a visitor (`crate::profile::NodeProfile`).
     pub(crate) fn local_profile_is_visitor(&self) -> bool {
@@ -952,13 +964,36 @@ pub(crate) fn peer_is_validator(peer: &PeerInfo) -> bool {
 
 pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
+    // Phase B of the admin-hub routing: the **roster** decides when it names
+    // the member. The principal's own list names every candidate by the role
+    // it carries - asked in with or decided - because a candidate is the
+    // principal's direct responsibility and the candidate's own word about
+    // its role only ever restricts it. The mirror of that list, read for
+    // membership, counts only approvals, cut by the node's last ban
+    // (`admitted_role`, `webui::membership`). A roster-named member is
+    // whatever the roster says, whatever its announce claims.
+    if let Some(record) = state.network_chat.admission_of(&peer.node_id) {
+        return record.role == EnrollmentRole::Visitor;
+    }
+    if let Some(role) = state.network_chat.admitted_role(
+        &peer.node_id,
+        state.admin_trust.revoked_node_at(&peer.node_id),
+    ) {
+        return role == EnrollmentRole::Visitor;
+    }
+    // Then the roster's word carried to this node: the vouch ledger decides
+    // on a node that holds no roster entry of its own (phase C of the
+    // admin-hub routing).
+    if let Some(role) = state
+        .admin_trust
+        .vouched_role(&peer.node_id, chrono::Utc::now().timestamp())
+    {
+        return role == EnrollmentRole::Visitor;
+    }
+    // With no roster and no vouch naming the member, its announce decides -
+    // a member admitted before the lists existed, or one this node only
+    // knows by its announce.
     peer.profile == crate::profile::NodeProfile::Visitor
-        || crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Visitor)
-        || state
-            .network_chat
-            .admission_of(&peer.node_id)
-            .is_some_and(|record| record.role == EnrollmentRole::Visitor)
-        || state.network_chat.admitted_role(&peer.node_id, None) == Some(EnrollmentRole::Visitor)
 }
 
 /// What a node-to-node request may reach, by the caller's identity.
@@ -968,8 +1003,10 @@ pub(crate) fn peer_is_visitor(state: &GatewayState, peer: &PeerInfo) -> bool {
 /// - A deploy route (deploy, load, unload, stop) takes a request signed by
 ///   any admin of the trust chain, principal or secondary.
 /// - A route of a serving node (catalog, planning, transfers) takes a signed
-///   request from an admin or from a worker whose membership token says so
-///   (`peer_role_is_attested`) - never on the strength of its announce.
+///   request from an admin or from a worker an admin admitted as one
+///   (`peer_role_is_attested` - the roster decides when it names the member,
+///   its vouch where no roster lives) - never on the strength of its
+///   announce.
 /// - A route of this machine's own operator (`LocalOnly`) is refused to
 ///   every other node, signed or not.
 /// - Everything else - inference, the node's own description, the internal
@@ -1017,17 +1054,26 @@ pub(crate) async fn caller_may_ask(
 }
 
 /// Whether an admin vouched that `peer` was admitted as a worker, rather
-/// than taking the peer's word for it: the membership token it announces
-/// says so, checked against the chain alone. On an admin its own admission
-/// list does too. A legacy network open to anyone with the anchor has no
-/// admissions, and keeps the announce.
-async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
+/// than taking the peer's word for it. Since phase B the **roster** decides
+/// when it names the member: an approval on the admission list - the
+/// principal's own, or its mirror on a secondary (`spawn_roster_keeper`,
+/// persisted since B1) - newer than the node's last ban. Since phase C what
+/// the local roster cannot name is decided by the roster's word carried to
+/// this node: a **vouch** - an admin's signature of the roster entry, kept
+/// fresh for every member by `spawn_vouch_keeper` and persisted beside the
+/// chain (`AdminTrust::vouched_role`). On a network open to anyone with the
+/// anchor the announce is the admission, and it attests. The membership
+/// token this used to also accept was retired 2026-11-15 (phase C3).
+pub(crate) async fn peer_role_is_attested(state: &GatewayState, peer: &PeerInfo) -> bool {
     use crate::config::EnrollmentRole;
-    crate::membership::peer_role(peer, &state.admin_trust) == Some(EnrollmentRole::Worker)
-        || state.network_chat.admitted_role(
-            &peer.node_id,
-            state.admin_trust.revoked_node_at(&peer.node_id),
-        ) == Some(EnrollmentRole::Worker)
+    state.network_chat.admitted_role(
+        &peer.node_id,
+        state.admin_trust.revoked_node_at(&peer.node_id),
+    ) == Some(EnrollmentRole::Worker)
+        || state
+            .admin_trust
+            .vouched_role(&peer.node_id, chrono::Utc::now().timestamp())
+            == Some(EnrollmentRole::Worker)
         || state.auth.read().await.network.open_admission()
 }
 
@@ -1038,6 +1084,126 @@ pub(crate) fn issuer_is_principal(
 ) -> bool {
     let document = state.admin_trust.document();
     issuer == &document.primary && crate::admin_trust::control_issuer_is_admin(&document, issuer)
+}
+
+/// A session's pinned hop chain (phase B of the admin-hub routing,
+/// `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md` 3.3): the
+/// planner reuses its own previous plan for the same session, so the pinned
+/// peers keep that session's KV and prefix caches warm, and the head
+/// affinity of `auto_head` becomes a property of the pin instead of a guess.
+///
+/// It names only the `node_id`s in hop order, head first. Who executes each
+/// hop is read from the live peers on every turn (`fastest::resolve_chain`),
+/// so a peer that moved its range, its engine or left the cluster releases
+/// the pin instead of running a stale plan. The pin lives on the planner
+/// alone - no peer ever sees it - and is persisted in `pom.db` beside the
+/// planner's other local state, so a restart does not re-plan every live
+/// session cold.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SessionPin {
+    pub(crate) hops: Vec<String>,
+    /// When this pin was last used. An unused pin ages out: the session's KV
+    /// is gone by then, and the pin would only force a cold restart of a plan
+    /// nobody asked for again.
+    pub(crate) used_at: std::time::Instant,
+}
+
+/// An unused pin is released after this. Longer than any session's natural
+/// gap (the prefix cache's own life), shorter than a day.
+const SESSION_PIN_IDLE_TTL: Duration = Duration::from_secs(30 * 60);
+/// The planner's working set of pinned sessions.
+const SESSION_PIN_MAX: usize = 512;
+
+/// The pin of `key`, when it exists and is not stale. A stale pin is taken
+/// off the table right here: the next planning replaces it.
+pub(crate) fn session_pin(state: &GatewayState, key: &str) -> Option<SessionPin> {
+    let mut pins = state.session_pins.write().ok()?;
+    let pin = pins.get(key).cloned();
+    if pin
+        .as_ref()
+        .is_some_and(|pin| pin.used_at.elapsed() > SESSION_PIN_IDLE_TTL)
+    {
+        pins.remove(key);
+        let _ = state.database.delete_session_pin(key);
+        return None;
+    }
+    pin
+}
+
+/// Pins `key` to `plan`'s hop chain (or replaces the pin with the plan the
+/// request actually ran on). The write to `pom.db` sits behind this call: one
+/// upsert per turn that (re)plans, on the WAL connection.
+pub(crate) fn pin_session(state: &GatewayState, key: &str, plan: &PipelinePlan) {
+    let hops: Vec<String> = plan.steps.iter().map(|s| s.node_id.clone()).collect();
+    let head = match hops.first() {
+        Some(head) => head.clone(),
+        None => return,
+    };
+    if let Ok(mut pins) = state.session_pins.write() {
+        if pins.len() >= SESSION_PIN_MAX && !pins.contains_key(key) {
+            if let Some(stale) = pins
+                .iter()
+                .min_by_key(|(_, pin)| pin.used_at.elapsed())
+                .map(|(key, _)| key.clone())
+            {
+                pins.remove(&stale);
+                let _ = state.database.delete_session_pin(&stale);
+            }
+        }
+        pins.insert(
+            key.to_string(),
+            SessionPin {
+                hops: hops.clone(),
+                used_at: std::time::Instant::now(),
+            },
+        );
+    }
+    if let Err(error) = state.database.upsert_session_pin(key, &hops, &head) {
+        debug!("could not persist the pin of session {key}: {error:#}");
+    }
+}
+
+/// Releases a pin whose plan could not run (the idle wake failed on it): the
+/// next request plans freely.
+pub(crate) fn release_session_pin(state: &GatewayState, key: &str) {
+    if let Ok(mut pins) = state.session_pins.write() {
+        pins.remove(key);
+    }
+    let _ = state.database.delete_session_pin(key);
+}
+
+/// Brings the pins back after a restart: the newest `SESSION_PIN_MAX`, each
+/// with a fresh `used_at` - the saved one is a wall-clock time, and an old
+/// row is already cut by the database's own day cutoff. A pin is only a
+/// candidate until `fastest::resolve_chain` confirms it against the live
+/// peers on the turn that uses it.
+pub(crate) fn restore_session_pins(state: &GatewayState) {
+    match state.database.session_pins(SESSION_PIN_MAX as i64) {
+        Ok(rows) => {
+            let restored = rows.len();
+            if restored > 0 {
+                if let Ok(mut pins) = state.session_pins.write() {
+                    for (key, hops, _) in rows {
+                        if hops.is_empty() {
+                            continue;
+                        }
+                        pins.insert(
+                            key,
+                            SessionPin {
+                                hops,
+                                used_at: std::time::Instant::now(),
+                            },
+                        );
+                    }
+                }
+                info!("restored {restored} pinned session(s)");
+            }
+        }
+        Err(error) => warn!("could not read the session pins: {error:#}"),
+    }
+    if let Err(error) = state.database.prune_session_pins(SESSION_PIN_MAX as i64) {
+        warn!("could not prune the session pins: {error:#}");
+    }
 }
 
 pub(crate) async fn require_admin_for_surface(
@@ -1859,7 +2025,6 @@ impl GatewayState {
                 trust_version: self.network.trust_version(),
                 pom_version: crate::pom_core_update::release_version().to_string(),
                 pom_build: crate::build_commit(),
-                membership: self.network.membership(),
                 relay: self.network.relay_gate().offer(),
                 anon_tunnel: None,
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
@@ -1935,6 +2100,7 @@ impl GatewayState {
                 tp: self.network.tp_identity(),
                 runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
                 idle: self.network.is_idle(),
+                direct_only: self.network.is_direct_only(),
             });
         }
         peers
@@ -2182,5 +2348,103 @@ mod network_model_tests {
         ];
         assert_eq!(network_model(&peers), "Ornith");
         assert_eq!(network_model(&[]), "");
+    }
+}
+
+#[cfg(test)]
+mod session_pin_tests {
+    use super::*;
+
+    fn range(id: &str, start: u32, end: u32) -> crate::network::PeerInfo {
+        let mut peer = crate::gateway::testkit::peer(id, id, 8080);
+        peer.model = "Ornith".into();
+        peer.total_layers = 4;
+        peer.start_layer = start;
+        peer.end_layer = end;
+        peer.inference_port = Some(8181);
+        // Announced coverage with capacity pending reads as idle-warm here:
+        // the pin test does not load a runtime.
+        peer.idle = true;
+        peer
+    }
+
+    /// The pinned chain resolves only against the live candidates: a peer gone,
+    /// a chain that no longer covers the model, and the head of the chain when
+    /// a preferred head is named.
+    #[test]
+    fn a_pinned_chain_resolves_only_while_it_lives() {
+        let a = range("alpha", 0, 1);
+        let b = range("beta", 2, 3);
+        let hops = vec!["alpha".to_string(), "beta".to_string()];
+        let chain = crate::fastest::resolve_chain(&[&a, &b], &hops, 4, None).expect("both live");
+        assert_eq!(
+            chain.iter().map(|p| p.node_id.as_str()).collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+        assert!(
+            crate::fastest::resolve_chain(&[&a, &b], &hops, 4, Some("beta")).is_none(),
+            "the head of the chain is beta's peer, not beta"
+        );
+        assert!(
+            crate::fastest::resolve_chain(&[&a], &hops, 4, None).is_none(),
+            "beta is gone: the pin is released, not truncated"
+        );
+        assert!(
+            crate::fastest::resolve_chain(&[&a, &b], &hops, 6, None).is_none(),
+            "the model grew past the chain"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pinned_session_survives_the_database_and_a_release() {
+        let state = crate::gateway::testkit::state_with("planner", vec![]).await;
+        let a = range("alpha", 0, 1);
+        let b = range("beta", 2, 3);
+        let chain = crate::fastest::resolve_chain(
+            &[&a, &b],
+            &["alpha".to_string(), "beta".to_string()],
+            4,
+            None,
+        )
+        .unwrap();
+        let plan = crate::fastest::plan_for_chain(&chain).unwrap();
+
+        pin_session(&state, "ornith-session", &plan);
+        let pin = session_pin(&state, "ornith-session").expect("pinned");
+        assert_eq!(pin.hops, vec!["alpha".to_string(), "beta".to_string()]);
+
+        // What a restart reads: the same table `restore_session_pins` loads.
+        let saved = state.database.session_pins(10).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].0, "ornith-session");
+        assert_eq!(saved[0].1, vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(saved[0].2, "alpha");
+        state.session_pins.write().unwrap().clear();
+        restore_session_pins(&state);
+        let restored = session_pin(&state, "ornith-session").expect("the pin came back");
+        assert_eq!(restored.hops, pin.hops);
+
+        // Re-planning replaces the pin, in memory and in the database.
+        let c = range("gamma", 2, 3);
+        let other = crate::fastest::resolve_chain(
+            &[&a, &c],
+            &["alpha".to_string(), "gamma".to_string()],
+            4,
+            None,
+        )
+        .unwrap();
+        pin_session(
+            &state,
+            "ornith-session",
+            &crate::fastest::plan_for_chain(&other).unwrap(),
+        );
+        assert_eq!(
+            session_pin(&state, "ornith-session").unwrap().hops,
+            vec!["alpha".to_string(), "gamma".to_string()]
+        );
+
+        release_session_pin(&state, "ornith-session");
+        assert!(session_pin(&state, "ornith-session").is_none());
+        assert!(state.database.session_pins(10).unwrap().is_empty());
     }
 }

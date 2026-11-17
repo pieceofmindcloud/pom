@@ -565,18 +565,10 @@ pub(crate) fn set_member_oracle(network: std::sync::Arc<crate::network::Network>
     let _ = MEMBER_ORACLE.set(network);
 }
 
-/// Under `inference_access = member_gateway_only`, whether the caller of an
-/// inference call is a visitor, which must go through an entry node instead
-/// (`crate::delegation`).
-pub(crate) async fn visitor_must_delegate(
-    config: &AuthState,
-    extensions: &axum::http::Extensions,
-) -> bool {
-    if config.read().await.network.inference_access
-        != crate::config::InferenceAccess::MemberGatewayOnly
-    {
-        return false;
-    }
+/// Whether the caller of an inference call is a visitor, which must go
+/// through an admin entry node instead (`crate::delegation`). Since phase A
+/// of the admin-hub routing this holds in every access mode.
+pub(crate) async fn visitor_must_delegate(extensions: &axum::http::Extensions) -> bool {
     let (Some(network), Some(caller)) = (
         MEMBER_ORACLE.get(),
         extensions.get::<crate::serve::TransportPeer>(),
@@ -682,7 +674,7 @@ pub(crate) async fn validate_internal_node_headers(
             caller,
             route,
             origin,
-            "node-to-node call refused: the caller is not a member (no admin key, no valid membership token)"
+            "node-to-node call refused: the caller is not a member (no admin key, no roster vouch)"
         );
         return Err(AuthRejection::InvalidKey);
     }
@@ -1595,6 +1587,7 @@ mod tests {
     #[test]
     fn inference_accepts_only_an_active_api_key() {
         let cfg = crate::config::Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: None,
@@ -1671,6 +1664,7 @@ mod tests {
     #[test]
     fn internal_inference_token_uses_shared_connection_key() {
         let mut cfg = crate::config::Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: None,

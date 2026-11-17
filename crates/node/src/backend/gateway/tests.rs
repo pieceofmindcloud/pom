@@ -488,12 +488,12 @@ mod tests {
             Ok(())
         );
         // Its announce alone does not make it one: an admin has to have
-        // signed it a worker's membership token.
+        // vouched it as a worker.
         assert_eq!(
             caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
             Err("role_unattested")
         );
-        announce_token(&state, "worker", crate::config::EnrollmentRole::Worker).await;
+        vouch_role(&state, "worker", crate::config::EnrollmentRole::Worker).await;
         assert_eq!(
             caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
             Ok(())
@@ -540,26 +540,190 @@ mod tests {
         }
     }
 
-    /// Has this node's admin key sign `node_id` a token with `role`, and
-    /// puts it in that peer's announce.
-    async fn announce_token(
+    /// Has this node's admin key vouch `node_id` with `role`, admitted now, in
+    /// this node's ledger.
+    async fn vouch_role(state: &GatewayState, node_id: &str, role: crate::config::EnrollmentRole) {
+        let now = chrono::Utc::now().timestamp();
+        let vouch = crate::membership::sign_vouch(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            node_id,
+            role,
+            now - 5,
+            now,
+        )
+        .unwrap();
+        state.admin_trust.merge_vouches(vec![vouch]);
+    }
+
+    /// Like `vouch_role`, but fixing the approval's date: the ban cut
+    /// (`admitted_at <= revoked_at`) is measured against it.
+    async fn vouch_at(
         state: &GatewayState,
         node_id: &str,
         role: crate::config::EnrollmentRole,
+        admitted_at: i64,
     ) {
-        let mut peers = state.network.peers.write().await;
-        let peer = peers.get_mut(node_id).expect("the peer is in the table");
-        peer.membership = Some(
-            crate::membership::issue(
+        let vouch = crate::membership::sign_vouch(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            node_id,
+            role,
+            admitted_at,
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+        state.admin_trust.merge_vouches(vec![vouch]);
+    }
+
+    /// Phase B of the admin-hub routing: the roster decides the role at the
+    /// serving gate when it names the member. A machine approved as a worker
+    /// does not become a visitor by announcing itself one - the announce
+    /// claims a role it was not given - and a ban cuts both lists: an old
+    /// approval and a vouch repeating it attest nothing after it, the newer
+    /// decision decides.
+    #[tokio::test]
+    async fn the_roster_decides_the_role_at_the_serving_gate() {
+        use crate::webui::RouteScope::ServingMember;
+        let mut worker = testkit::peer("worker", "worker", 8090);
+        worker.profile = crate::profile::NodeProfile::Worker;
+        let state = testkit::state_with("principal", vec![worker]).await;
+        let principal_of = |node_id: &str| crate::admin_trust::AuthorityPrincipal {
+            node_id: node_id.into(),
+            peer_id: String::new(),
+            pubkey: format!("pubkey-of-{node_id}"),
+        };
+
+        // A worker approved on the roster is one whatever it announces.
+        state
+            .network_chat
+            .request_admission(
+                "worker",
+                Default::default(),
+                crate::config::EnrollmentRole::Worker,
+            )
+            .unwrap();
+        assert!(state.network_chat.decide_admission(
+            "worker",
+            Some(crate::network_lobby::AdmissionStatus::Approved)
+        ));
+        {
+            let mut peers = state.network.peers.write().await;
+            peers
+                .get_mut("worker")
+                .expect("the peer is in the table")
+                .profile = crate::profile::NodeProfile::Visitor;
+        }
+        assert_eq!(
+            caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
+            Ok(()),
+            "the roster names it a worker; the visitor announce is not its role"
+        );
+
+        // The ban cuts the approval: the roster no longer names the worker,
+        // and a vouch repeating the approval at the ban's minute attests
+        // nothing.
+        let now = chrono::Utc::now().timestamp();
+        state
+            .admin_trust
+            .merge_revocations(vec![crate::membership::revoke(
                 &state.authority_signing_key,
                 &state.authority_principal,
                 &state.admin_trust.document(),
-                &peer.node_id,
-                &peer.pubkey,
-                role,
-                chrono::Utc::now().timestamp(),
+                "worker",
+                now,
             )
-            .unwrap(),
+            .unwrap()]);
+        vouch_at(&state, "worker", crate::config::EnrollmentRole::Worker, now).await;
+        assert_eq!(
+            caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
+            Err("role_unattested")
+        );
+
+        // Re-admitted as a visitor after the ban - the removal erased the old
+        // record first, as the member-removal flow does - the roster decides it
+        // is a visitor for the serving routes: the machine's announce no
+        // longer changes the answer.
+        assert!(state.network_chat.decide_admission("worker", None));
+        state
+            .network_chat
+            .request_admission(
+                "worker",
+                Default::default(),
+                crate::config::EnrollmentRole::Visitor,
+            )
+            .unwrap();
+        assert!(state.network_chat.decide_admission(
+            "worker",
+            Some(crate::network_lobby::AdmissionStatus::Approved)
+        ));
+        assert_eq!(
+            caller_may_ask(&state, ServingMember, Some(&principal_of("worker"))).await,
+            Err("visitor_caller")
+        );
+    }
+
+    /// Phase C of the admin-hub routing: on a node that holds no roster - a
+    /// plain worker judging its own callers - the vouches the keepers carried
+    /// decide. A vouched worker announcing a visitor's profile passes; a
+    /// vouched visitor announcing a worker's is refused; an announce with no
+    /// vouch behind it still decides a visitor, the legacy form kept for old
+    /// members.
+    #[tokio::test]
+    async fn the_vouch_decides_the_role_where_no_roster_lives() {
+        use crate::webui::RouteScope::ServingMember;
+        let principal = testkit::state_with("principal", vec![]).await;
+        let mut vouched_worker = testkit::peer("vworker", "vworker", 8092);
+        vouched_worker.profile = crate::profile::NodeProfile::Visitor;
+        let mut vouched_visitor = testkit::peer("vvisitor", "vvisitor", 8093);
+        vouched_visitor.profile = crate::profile::NodeProfile::Worker;
+        let mut legacy = testkit::peer("legacy", "legacy", 8094);
+        legacy.profile = crate::profile::NodeProfile::Visitor;
+        let member =
+            testkit::state_with("member", vec![vouched_worker, vouched_visitor, legacy]).await;
+        let mut member = member;
+        member.admin_trust = Arc::new(
+            crate::admin_trust::AdminTrust::in_memory(principal.admin_trust.document()).unwrap(),
+        );
+        let now = chrono::Utc::now().timestamp();
+        let document = principal.admin_trust.document();
+        for (node_id, role) in [
+            ("vworker", crate::config::EnrollmentRole::Worker),
+            ("vvisitor", crate::config::EnrollmentRole::Visitor),
+        ] {
+            let vouch = crate::membership::sign_vouch(
+                &principal.authority_signing_key,
+                &principal.authority_principal,
+                &document,
+                node_id,
+                role,
+                now - 5,
+                now,
+            )
+            .unwrap();
+            member.admin_trust.merge_vouches(vec![vouch]);
+        }
+        let principal_of = |node_id: &str| crate::admin_trust::AuthorityPrincipal {
+            node_id: node_id.into(),
+            peer_id: String::new(),
+            pubkey: format!("pubkey-of-{node_id}"),
+        };
+        assert_eq!(
+            caller_may_ask(&member, ServingMember, Some(&principal_of("vworker"))).await,
+            Ok(()),
+            "the roster's word vouches it a worker; the visitor announce is not its role"
+        );
+        assert_eq!(
+            caller_may_ask(&member, ServingMember, Some(&principal_of("vvisitor"))).await,
+            Err("visitor_caller"),
+            "the roster's word is a visitor's; the worker announce does not lift it"
+        );
+        assert_eq!(
+            caller_may_ask(&member, ServingMember, Some(&principal_of("legacy"))).await,
+            Err("visitor_caller"),
+            "with no roster and no vouch the announce still decides, as before"
         );
     }
 
@@ -736,12 +900,13 @@ mod tests {
         }
     }
 
-    /// A visitor's role travels in its membership token, so a member other
-    /// than the admins treats it as one even when it announces `worker`, and
-    /// needs to know nothing about it: the token is checked against the
-    /// chain alone, which admitting it did not change.
+    /// A visitor's role travels in the roster and in the **vouch** an admin
+    /// signs of that approval, so a member other than the admins treats it
+    /// as one even when it announces `worker`, and needs to know nothing
+    /// about it: the vouch is checked against the chain alone, which
+    /// admitting it did not change.
     #[tokio::test]
-    async fn a_visitor_token_holds_on_every_member_without_touching_the_chain() {
+    async fn a_vouched_visitor_is_a_visitor_on_every_member_without_touching_the_chain() {
         use crate::webui::RouteScope::ServingMember;
         let principal = testkit::state_with("principal", vec![]).await;
         let mut disguised = testkit::peer("visitor", "visitor", 8091);
@@ -777,46 +942,42 @@ mod tests {
         );
         assert_eq!(principal.admin_trust.chain_version(), before);
 
-        let mut member_as_issuer = member.clone();
-        member_as_issuer.authority_signing_key = principal.authority_signing_key.clone();
-        member_as_issuer.authority_principal = principal.authority_principal.clone();
-        announce_token(
-            &member_as_issuer,
+        // The vouch keeper carries the principal's signature of that
+        // approval to the member node. The vouch decides there even though
+        // the machine announced itself a worker.
+        let now = chrono::Utc::now().timestamp();
+        let vouch = crate::membership::sign_vouch(
+            &principal.authority_signing_key,
+            &principal.authority_principal,
+            &member.admin_trust.document(),
             "visitor",
             crate::config::EnrollmentRole::Visitor,
+            now - 5,
+            now,
         )
-        .await;
+        .unwrap();
+        member.admin_trust.merge_vouches(vec![vouch]);
         assert_eq!(
             caller_may_ask(&member, ServingMember, Some(&visitor)).await,
             Err("visitor_caller")
         );
 
-        // A worker's token copied into another node's announce is nothing.
-        announce_token(
-            &member_as_issuer,
-            "visitor",
-            crate::config::EnrollmentRole::Worker,
-        )
-        .await;
-        member
-            .network
-            .peers
-            .write()
-            .await
-            .get_mut("visitor")
-            .unwrap()
-            .pubkey = "another-key".into();
+        // The vouch names its member by `node_id`, and announce ingest
+        // enforces `node_id == hash(pubkey)` (`verify_udp_announce`): a
+        // different key is a different machine, unknown to this node and
+        // with no vouch of its own.
         assert_eq!(
             caller_may_ask(
                 &member,
                 ServingMember,
                 Some(&crate::admin_trust::AuthorityPrincipal {
+                    node_id: "another-node".into(),
+                    peer_id: String::new(),
                     pubkey: "another-key".into(),
-                    ..visitor
                 })
             )
             .await,
-            Err("role_unattested")
+            Err("unknown_caller")
         );
     }
 
@@ -2998,7 +3159,6 @@ mod peer_visibility_tests {
             trust_version: None,
             pom_version: String::new(),
             pom_build: String::new(),
-            membership: None,
             relay: None,
             anon_tunnel: None,
             addr: "127.0.0.1:42777".into(),
@@ -3026,6 +3186,7 @@ mod peer_visibility_tests {
             tp: None,
             runtime_capacity: None,
             idle: false,
+            direct_only: false,
         }
     }
 
@@ -3877,7 +4038,6 @@ pub(crate) mod testkit {
             trust_version: None,
             pom_version: String::new(),
             pom_build: String::new(),
-            membership: None,
             relay: None,
             anon_tunnel: None,
             addr: format!("127.0.0.1:{gateway_port}"),
@@ -3908,6 +4068,7 @@ pub(crate) mod testkit {
                 max_new_tokens: 256,
             }),
             idle: false,
+            direct_only: false,
         }
     }
 
@@ -4020,6 +4181,7 @@ pub(crate) mod testkit {
         let bench_dir = std::env::temp_dir().join(format!("pom-testkit-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&bench_dir).expect("testkit folder");
         let auth = Arc::new(RwLock::new(Config {
+            no_iroh: false,
             validator: false,
             retired_tls_required: (),
             saved_at: Some(bench_dir.join("pom.json")),
@@ -4108,6 +4270,8 @@ pub(crate) mod testkit {
                 crate::huggingface::HuggingFaceProvider::new(),
             ))),
             pkarr_publisher: None,
+            restart_needed: false,
+            session_pins: Default::default(),
         }
     }
 

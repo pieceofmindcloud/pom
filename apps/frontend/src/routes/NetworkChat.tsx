@@ -183,6 +183,9 @@ function LobbyThreadList({ candidates, guests, pending, selected, onSelect, node
  * its admission request, taken here after talking. Either decision erases the
  * thread for every admin.
  */
+// Credit on approval is still in development: hidden from the screen for now.
+const SHOW_ADMISSION_CREDIT = false;
+
 function LobbyThreadHeader({ candidate, request, nodeName, deciding, onDecide }: { candidate: string; request: AdmissionRecord | undefined; nodeName: (id: string) => string; deciding: boolean; onDecide: (decision: "approve" | "reject", grantMicro?: number) => void }) {
   const { t } = useI18n();
   // A visitor that named its home network can be approved with credit.
@@ -200,7 +203,7 @@ function LobbyThreadHeader({ candidate, request, nodeName, deciding, onDecide }:
       </div>
       {request && (
         <div className="flex shrink-0 items-center gap-2">
-          {request.account && (
+          {SHOW_ADMISSION_CREDIT && request.account && (
             <Input
               compact
               name="admission-credit"

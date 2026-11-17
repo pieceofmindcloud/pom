@@ -23,7 +23,7 @@ Leve a impressão digital até a outra máquina por um canal em que você confia
 :::
 
 :::note A chave de conexão
-A mesma string em todas as máquinas da rede: ela autentica as rotas de administração e a sincronização entre os nós, mas sozinha não abre nada, porque toda chamada entre máquinas também é TLS mútuo de um admin ou de um membro com token válido. Esta tela a mostra com o endereço de bootstrap e a URL base da API; **Gerar outra** a troca só nesta máquina, e as outras deixam de aceitar esta até receberem a chave nova. Só quem tem autoridade vê o botão.
+A mesma string em todas as máquinas da rede: ela autentica as rotas de administração e a sincronização entre os nós, mas sozinha não abre nada, porque toda chamada entre máquinas também é TLS mútuo, e quem chama precisa ser membro hoje: um admin da cadeia, ou uma máquina que o roster atesta e que nenhum admin baniu. Esta tela a mostra com o endereço de bootstrap e a URL base da API; **Gerar outra** a troca só nesta máquina, e as outras deixam de aceitar esta até receberem a chave nova. Só quem tem autoridade vê o botão.
 :::
 
 :::note Raiz de confiança, o endereço antigo

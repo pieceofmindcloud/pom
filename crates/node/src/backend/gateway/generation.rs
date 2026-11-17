@@ -883,8 +883,15 @@ async fn generate_measured_stream(
     // announces no runtime capabilities, so that plan would run degraded.
     // the conversation a plugin engine keeps in a batch slot, for the head that ran its last turn
     let conversation = crate::plugin_session::session_of(&request_details);
+    // Session pin (admin-hub routing 3.3): a session goes back to the plan this
+    // gateway laid out for it, while that chain lives. The Chat's explicit head
+    // pin (`inference_head`) keeps its own rule: a head chosen by a person is a
+    // stronger pin than the last plan.
+    let pin_key = conversation
+        .as_ref()
+        .map(|session| format!("{prefix_model}\u{1}{session}"));
     let mut woke_idle = false;
-    let (mut plan, planned_return) = loop {
+    let (mut plan, planned_return, plan_pinned) = loop {
         let orchestration_started = Instant::now();
         let orchestration_wall = wall_clock_ms();
         // The P2P announcement may arrive after the local load. The admission returns the
@@ -927,25 +934,88 @@ async fn generate_measured_stream(
             .collect::<std::collections::HashMap<_, _>>();
         let selection_started = Instant::now();
         let selection_wall = wall_clock_ms();
-        let head = auto_head(
-            &state,
-            &peers,
-            model,
-            deploy_id,
-            preferred_head.as_deref(),
-            (&prefix_model, &cache_prompt, images.is_empty()),
-            conversation.as_ref().map(|key| (model, key.as_str())),
-            &prompt,
-        )
-        .await;
+        // The session's pinned chain first: if it resolves against the live
+        // candidates it is the plan, unchanged - no re-planning, the pinned
+        // peers keep this session's KV and prefix caches. The head of the pin
+        // is the head of the chain; `auto_head` runs only when there is no pin.
+        let pinned_chain = pin_key
+            .as_deref()
+            .and_then(|key| crate::gateway::session_pin(&state, key))
+            .and_then(|pin| {
+                let candidates = crate::fastest::candidates(&peers, &model, deploy_id);
+                crate::fastest::resolve_chain(&candidates, &pin.hops, total_layers, None).map(
+                    |chain| {
+                        chain
+                            .into_iter()
+                            .map(|peer| peer.node_id.clone())
+                            .collect::<Vec<_>>()
+                    },
+                )
+            });
+        let mut head = if let Some(hops) = pinned_chain.as_deref() {
+            hops.first().cloned()
+        } else {
+            auto_head(
+                &state,
+                &peers,
+                model,
+                deploy_id,
+                preferred_head.as_deref(),
+                (&prefix_model, &cache_prompt, images.is_empty()),
+                conversation.as_ref().map(|key| (model, key.as_str())),
+                &prompt,
+            )
+            .await
+        };
+        // One engine per pipeline: a peer of another engine is not a hop of it.
+        // A pinned chain belongs to its head's engine; if it no longer resolves
+        // inside it (a peer moved engine, range or left) the pin is released and
+        // the request plans fresh, with `auto_head` again.
+        let mut planned = None;
+        let mut planned_return = None;
+        let mut planned_pinned = false;
+        if let Some(hops) = pinned_chain.as_deref() {
+            for engine in crate::plugin_engine::pipeline_engines(&peers, head.as_deref()) {
+                let group = crate::plugin_engine::peers_of_engine(&peers, engine.as_deref());
+                let group_candidates = crate::fastest::candidates(&group, &model, deploy_id);
+                if let Some(chain) =
+                    crate::fastest::resolve_chain(&group_candidates, hops, total_layers, None)
+                {
+                    if let Some(plan) = crate::fastest::plan_for_chain(&chain) {
+                        info!("pipeline pinned to the session: {}", plan.hop_chain());
+                        planned = Some(plan);
+                        planned_pinned = true;
+                        break;
+                    }
+                }
+            }
+            if !planned_pinned {
+                if let Some(key) = pin_key.as_deref() {
+                    info!("session {key} releases its pinned chain: it no longer resolves on the live peers");
+                    crate::gateway::release_session_pin(&state, key);
+                }
+                head = auto_head(
+                    &state,
+                    &peers,
+                    model,
+                    deploy_id,
+                    preferred_head.as_deref(),
+                    (&prefix_model, &cache_prompt, images.is_empty()),
+                    conversation.as_ref().map(|key| (model, key.as_str())),
+                    &prompt,
+                )
+                .await;
+            }
+        }
         // Planning by delivery time (`fastest`): measured speed of each
         // peer, queue of the whole network, RTT of each edge and the prefix already retained.
         // With no viable path through it, the earlier greedy planner decides.
-        // One engine per pipeline: a peer of another engine is not a hop of it. The planner tries the head's engine (or
-        // each engine, llama.cpp first) and keeps the first one that plans a path.
-        let mut planned = None;
-        let mut planned_return = None;
-        for engine in crate::plugin_engine::pipeline_engines(&peers, head.as_deref()) {
+        // The planner tries the head's engine (or each engine, llama.cpp first)
+        // and keeps the first one that plans a path. A pinned plan already won.
+        for engine in crate::plugin_engine::pipeline_engines(&peers, head.as_deref())
+            .into_iter()
+            .filter(|_| !planned_pinned)
+        {
             let group = crate::plugin_engine::peers_of_engine(&peers, engine.as_deref());
             let fastest = plan_by_delivery_time(
                 &state,
@@ -997,7 +1067,7 @@ async fn generate_measured_stream(
             "pipeline_selection",
         );
         if woke_idle {
-            break (plan, planned_return);
+            break (plan, planned_return, planned_pinned);
         }
         let wake_started = Instant::now();
         let wake_wall = wall_clock_ms();
@@ -1006,7 +1076,7 @@ async fn generate_measured_stream(
             .map(|peer| peer.node_id.clone())
             .collect();
         match reload_idle_pipeline(&state, &plan, &peers).await {
-            Ok(false) => break (plan, planned_return),
+            Ok(false) => break (plan, planned_return, planned_pinned),
             Ok(true) => {
                 wait_for_woken_announcements(&state, &woken).await;
                 record_gateway_span(
@@ -1026,12 +1096,40 @@ async fn generate_measured_stream(
                 woke_idle = true;
             }
             Err(error) => {
+                if planned_pinned {
+                    // The pinned plan was chosen and could not be woken: the
+                    // session gets a fresh plan on the next request.
+                    if let Some(key) = pin_key.as_deref() {
+                        crate::gateway::release_session_pin(&state, key);
+                    }
+                }
                 log_early_outcome("reload_model", &error.to_string());
                 let _ = tx.send(GenEvent::Failed(error.to_string())).await;
                 return;
             }
         }
     };
+    // Record the session's chain: a pinned session that kept its plan only
+    // refreshes its pin, a re-planned session pins the chain it will run on.
+    // (The Chat's explicit head pin rides along inside the plan that honored
+    // it - the pin table records what actually ran.)
+    if let Some(key) = pin_key.as_deref() {
+        if plan_pinned {
+            if let Some(pin) = crate::gateway::session_pin(&state, key) {
+                info!(
+                    "session {} stays pinned to {}",
+                    key.chars().take(40).collect::<String>(),
+                    pin.hops
+                        .iter()
+                        .map(|h| &h[..h.len().min(8)])
+                        .collect::<Vec<_>>()
+                        .join("→")
+                );
+            }
+        } else {
+            crate::gateway::pin_session(&state, key, &plan);
+        }
+    }
     // The window read before the wake came from peers with no loaded runtime.
     let session_window = if woke_idle {
         match state

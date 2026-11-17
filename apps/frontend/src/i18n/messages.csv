@@ -1923,6 +1923,19 @@ myMachine.nameSubtitle,How this machine appears to the others in the network.,Co
 myMachine.nameTitle,Machine name,Nome da máquina
 myMachine.subtitle,This machine's identity in the cluster and the address it advertises to peers.,A identidade desta máquina no cluster e o endereço que ela anuncia aos peers.
 myMachine.title,My machine,Minha máquina
+myMachine.transportHint,"iroh off: the node keeps no relay client, no gossip, no tunnels and publishes no pkarr record. It speaks and is reached only on the addresses it announces. For a worker the hub or the local network dials directly; it is also what a machine behind a NAT cannot be: with no hole punching, the hub refuses it when its addresses stop answering.","iroh desligado: o nó não mantém cliente de relay, nem gossip, nem túneis, e não publica registro pkarr. Ele fala e é alcançado só nos endereços que anuncia. É para um worker que o hub ou a rede local discam direto; e não é o que uma máquina atrás de NAT pode ser: sem furar o NAT, o hub a recusa quando seus endereços param de responder."
+myMachine.transportLabel,Direct only (iroh off),Somente direto (iroh desligado)
+myMachine.transportNow,Now,Agora
+myMachine.transportRestartNeeded,"Saved. The transport of a run is decided when the node starts: it applies on the next start. When the mode came from the command line, removing the flag is what lets the saved value back off.","Salvo. O transporte de uma execução é decidido quando o nó inicia: vale na próxima iniciação. Quando o modo veio da linha de comando, é tirar a flag que devolve o valor salvo a desligado."
+myMachine.transportSaveFailed,Could not save the transport mode,Não foi possível salvar o modo de conexão
+myMachine.transportSaved,Transport mode saved,Modo de conexão salvo
+myMachine.transportSavedLive,It applies now: the relays came off the connections and the announce went direct.,Vale a partir de agora: os relays saíram das conexões e o anúncio ficou direto.
+myMachine.transportSavedRestart,"Saved. It applies on the next start: this run was built with iroh on, and turning it back on needs a fresh start.","Salvo. Vale na próxima iniciação: esta execução foi montada com iroh ligado, e religar exige uma iniciação nova."
+myMachine.transportStateDirect,iroh off: direct addresses only,iroh desligado: só endereços diretos
+myMachine.transportStateIroh,"iroh on: discovery, relays and hole punching","iroh ligado: descoberta, relays e furos de NAT"
+myMachine.transportStatePending,"Saved: iroh off applies on the next start",Salvo: iroh desligado vale na próxima iniciação
+myMachine.transportSubtitle,"How this machine reaches the network: through iroh, or on its announced addresses only.","Como esta máquina alcança a rede: por iroh, ou só nos endereços que anuncia."
+myMachine.transportTitle,Connections,Conexões
 nat.check,"Before you keep using POM with other networks over the internet, we recommend checking your connection and giving this machine a direct path.","Antes de continuar usando o POM com outras redes pela internet, recomendamos verificar a sua conexão e dar a esta máquina um caminho direto."
 nat.fixFirewall,"Firewall: allow incoming UDP traffic to POM on this machine and on the home firewall, so the hole punch between the machines can succeed.","Firewall: libere o tráfego UDP de entrada para o POM nesta máquina e no firewall de casa, para que o hole punch entre as máquinas consiga fechar."
 nat.fixIpv6,"Publish your IPv6: if your provider gives you IPv6, enable it on the router and on this machine. A global IPv6 address is reachable from the internet with no translation, as long as the router firewall lets the POM ports in.","Publique o seu IPv6: se o seu provedor oferece IPv6, ative-o no roteador e nesta máquina. Um endereço IPv6 global é alcançável pela internet sem tradução, desde que o firewall do roteador deixe as portas do POM entrarem."
@@ -2183,6 +2196,7 @@ network.relayAnonymous,Relay anonymously for this network,Servir de relé anôni
 network.relayAnonymousHint,"Members of this network, visitors included, may pass through this machine with a pass an administrator signs. It never learns which machines they are, only their addresses.","Membros desta rede, inclusive visitantes, podem passar por esta máquina com um passe que um administrador assina. Ela nunca sabe quais máquinas são, só os endereços."
 network.relayCluster,Relay for this network,Servir de relé para esta rede
 network.relayClusterHint,"When the internet reaches this machine, members of this network behind a router can reach each other through it.","Quando a internet alcança esta máquina, membros desta rede atrás de um roteador se alcançam por ela."
+network.relayDirectOnly,iroh is off on this machine: it serves no relay of any kind,iroh está desligado nesta máquina: ela não serve nenhum relay de nenhum tipo
 network.relayEveryone,Relay for any network,Servir de relé para qualquer rede
 network.relayEveryoneHint,"Makes this machine a public relay: nodes of other networks may use it too. A public relay never carries file transfers.","Torna esta máquina um relé público: nós de outras redes também podem usá-la. Um relé público nunca transporta arquivos."
 network.relayFixed,Set on the command line for this run,Definido na linha de comando nesta execução
@@ -2190,6 +2204,7 @@ network.relaySaveFailed,Could not save the relay options,Não foi possível salv
 network.relaySaved,Relay options saved,Opções de relé salvas
 network.relaySavedDetail,They apply now; no restart is needed.,"Valem a partir de agora, sem reiniciar."
 network.relayStateCluster,Relaying for this network,Servindo de relé para esta rede
+network.relayStateDirectOnly,iroh off: this machine serves no relay,iroh desligado: esta máquina não serve relay
 network.relayStateEveryone,Relaying for any network,Servindo de relé para qualquer rede
 network.relayStateOff,Not relaying,Não está servindo de relé
 network.relayStateUnreachable,Not relaying: the internet does not reach this machine,Não está servindo de relé: a internet não alcança esta máquina

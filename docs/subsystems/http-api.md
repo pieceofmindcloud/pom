@@ -173,7 +173,9 @@ last):
   `reject` or `forget`) decides one. The list is the principal's, because the
   lobby and the key rotation on a departure are: a secondary admin reads it
   from the principal (`POST /api/internal/membership/roster`, kept as a
-  mirror every 30 s by `webui::spawn_roster_keeper`) and sends its decision
+  mirror every 30 s by `webui::spawn_roster_keeper`, which persists it in
+  `pom.db` so a secondary that restarts while the principal is offline keeps
+  the member list) and sends its decision
   there (`POST /api/internal/membership/decide`), so with the principal
   offline a secondary sees its last copy and cannot approve or reject. `forget`
   on an approved machine is a ban, and needs no principal: the admin who
@@ -204,9 +206,16 @@ last):
     trust chain, principal or secondary (`"admin_required"`). A
     `ServingMember` route needs it signed by an admin or by a live peer
     admitted as a worker (`"visitor_caller"`, `"unknown_caller"`,
-    `"role_unattested"`): the membership token it announces, or on an admin
-    its admission list, says so - the announce's profile never does. Only a legacy network open to anyone with the anchor
-    (`open_admission`), which has no admissions, keeps the announce. These
+    `"role_unattested"`): the admission roster decides when it names the
+    member - an admin's own list, or its mirror on a secondary - and where
+    the local roster cannot name it, the roster **vouch** this node holds
+    decides (`AdminTrust::vouched_role`: an admin's signature of the roster
+    entry, kept fresh on every node by the vouch keepers); the announce's
+    profile never decides, whatever else
+    says (`peer_role_is_attested`, phases B and C of the admin-hub routing).
+    Only a
+    legacy network open to anyone with the anchor (`open_admission`), which
+    has no admissions, keeps the announce. These
     routes include `/api/transfer/*`, which is on the administrative surface:
     a peer reaches it signed, and the local screen with its session, never
     with the connection key alone. A
@@ -229,7 +238,7 @@ last):
     has beyond a node's: `/api/ui/deploy/*`, `/api/ui/deployments` (writes),
     `/api/ui/apply`, `/api/ui/launch`, `/api/ui/undeploy`,
     `/api/ui/stop-inference`, `/api/ui/unload`, `/api/ui/reconfigure` and
-    the admissions; it also signs membership tokens and forwards the removal
+    the admissions; it also signs roster vouches and forwards the removal
     of a worker or a visitor (`/api/ui/leave`).
     Everything else that was `PrincipalOnly` now needs the principal, in the
     browser (`require_admin_for_surface` asks for `EffectiveAuthority::Principal`)
@@ -241,30 +250,46 @@ last):
     its acceptance of a principal transfer the principal offered to it. Routes of
     the other scopes - `/v1`, `/api/generate`, the node's own description, the
     `/api/internal` and `/api/cluster` sync routes - are unchanged.
-  `gateway::peer_is_visitor` is the one definition of "visitor": a peer
-  that announces the profile, one whose membership token says so (below), or,
-  on an admin, one whose admission record says so. **The role travels in a
-  membership token, not in the chain** (`crate::membership`,
+  `gateway::peer_is_visitor` is the one definition of "visitor": the
+  admission roster decides when it names the member - the principal's own
+  list carries every candidate by the role it carries, asked in with or
+  decided, the mirror of it counts approvals cut by the node's last ban -
+  and a roster-named member is whatever the roster says, whatever its
+  announce claims; where the local roster cannot name it, the roster
+  **vouch** this node holds decides - an admin's signature of the
+  roster entry, kept fresh for every member by `spawn_vouch_keeper` and
+  published at once when an approval happens (`apply_decision` ->
+  `publish_vouches`); with neither, one that
+  announces the profile. **The role travels in the roster - the approval
+  and its vouch - never in the chain** (`crate::membership`,
   `webui/membership.rs`). The trust chain names the admins only, so admitting
-  a worker or a visitor changes no trust document. Every machine that is not
-  an admin asks an admin (the principal first, then the secondaries) for a
-  token over `POST /api/internal/membership/token`, signed with its own key;
-  the admin issues it only for an approved admission, with the role admitted
-  (on a legacy `open_admission` network, the announced one). The token is a
-  compact JWT signed with EdDSA by the issuing admin's node key - `iss`,
-  `iss_key`, `sub`, `sub_key`, `net` (the chain's cluster id), `role`, `iat`,
-  `exp`, `jti` - and lasts 10 minutes (`TOKEN_TTL_SECS`). The answer is
-  `{token, relays}`: `relays` lists the visitors' anonymous relays the admin
-  sees, `{url, pass}` each, with a relay pass (`crate::relay_pass`) for that
-  URL; the caller's own relay is left out.
-  `webui::spawn_token_keeper` renews it two thirds in, and at once when it
-  stops holding, and the node announces it (`membership` in the Announce and
-  in `PeerInfo`). Any node checks it against its chain alone
-  (`membership::verify`: the only header accepted is EdDSA, the signer must
-  be an admin of the chain today, the network must be this one, 30 s of
-  clock leeway) and accepts it only for the node and key it names
-  (`role_of`), so a copied token is worthless. A token issued at or before the
-  member's last revocation no longer holds.
+  a worker or a visitor changes no trust document. A vouch is
+  `{net, sub, role, admitted_at, issued_at, iss, iss_key, signature}`: a
+  detached Ed25519 signature (domain label `pom-roster-vouch/v1`),
+  checked against the chain alone - the signer must be an admin of the chain
+  today, `net` must be this cluster, `sub` - the member's node id, which is
+  the hash of its key, so the vouch names the key as well - may not be an
+  admin, and `issued_at` must be within the 4 h vouch window
+  (`VOUCH_FRESH_SECS`); the ban cut belongs to the ledger lookup, where a
+  `admitted_at` at or before the member's last revocation holds nothing
+  (`AdminTrust::vouched_role`, persisted as `<trust>.vouches.json`), and the
+  keepers exchange ledgers with an admin every 30 s
+  (`POST /api/internal/membership/vouches`). A network open to anyone with
+  the anchor is vouched from the live announce the way it used to be
+  tokened, and a peer the chain holds any revocation for is never vouched
+  again - the ban is as final there as the token answer was.
+  Every machine that is not an admin also asks an admin (the principal first,
+  then the secondaries) for its relay passes over `POST
+  /api/internal/membership/relays`, signed with its own key; the admin answers
+  only a member its roster admits, with `relays`: the visitors' anonymous
+  relays it sees, `{url, pass}` each, with a relay pass (`crate::relay_pass`)
+  for that URL; the caller's own relay is left out.
+  `webui::spawn_membership_keeper` renews them every 30 s tick, and an admin
+  signs its own. The membership token this replaced - a compact JWT the
+  member carried, announced and renewed (`TOKEN_TTL_SECS`, the `membership`
+  field of the Announce and `PeerInfo`, `membership::verify`/`role_of`) -
+  was retired 2026-11-15, phase C3 (spec decision 5: no compatibility
+  bridge).
 - **Revocations** (`membership::Revocation`, `webui/membership.rs`). A ban is
   an entry `{net, sub, revoked_at, iss, iss_key, signature}`, signed by any
   admin of the chain (label `pom-revocation/v1`) and never aimed at an admin.
@@ -276,15 +301,15 @@ last):
   missed push arrives anyway. `POST /api/internal/membership/revocations`
   takes the caller's list (`InternalNodeAuth`; the signatures are what
   count) and answers with the receiver's. A revoked member loses its role on
-  the next request: its token stops holding, its admission stops counting
+  the next request: its admission stops counting
   (`NetworkChat::admitted_role` ignores an approval not newer than the ban),
-  and no admin issues it a token until it is approved again, after the ban.
+  the vouches repeating an approval from before the ban stop holding, and no
+  admin signs it one until it is approved again, after the ban.
   A banned node stays out of an admin's peers table until then; once it is
-  approved again the admin admits it without a token
-  (`Network::set_readmission`, checked by `Network::is_revoked`), because a
-  token is fetched from an admin that knows the caller.
+  approved again the admin admits it
+  (`Network::set_readmission`, checked by `Network::is_revoked`).
   Since every node-to-node call proves the caller's key (`p2p-network.md`,
-  section 5), the connection key it still holds opens nothing. Demoting an admin voids every token it signed at the next chain
+  section 5), the connection key it still holds opens nothing. Demoting an admin voids every vouch it signed at the next chain
   sync. A visitor is never made an admin: the principal's promotion refuses
   it (`visitor_target`). The deploy survey leaves such peers out, and `launch` and add-node
   refuse them as targets (`reason: "visitor_target"`).
@@ -295,9 +320,9 @@ last):
   (local operator only) says where this node stands on its way into its network:
   `{phase, since, last_error, peers, admin_in_sight}`, with `phase` one of `standalone` (an admin, or off
   the network), `discovering` (no admin of the network heard yet),
-  `authenticating` (an admin in sight, no valid membership token yet) and
+  `authenticating` (an admin in sight, no vouch naming this node yet) and
   `connected`; `since` is when the phase started (unix seconds) and `last_error`
-  the last refused token request while the node holds none; `peers` counts the
+  the last refused membership request; `peers` counts the
   other live peers it sees now and `admin_in_sight` says whether an admin of
   the network is among them. `GET /api/ui/node`
   carries `own_network` (this node is the principal of the network it is in)
@@ -483,7 +508,7 @@ opens a signed offer to the last active secondary, and
 presents the signed acceptance. `POST /admin/authority/secondaries/:id/demote`
 is exclusive to the principal. A machine's role (`worker` or `visitor`) is not
 changed by a request between nodes: it is set when an admin admits the
-machine and carried in its membership token (2 above).
+machine and travels in the roster, as the approval's vouch (2 above).
 
 The promotion is one signed delivery. `POST /admin/nodes/:id/promote-admin`
 signs the secondary grant on the principal, records it in the chain and posts
@@ -1899,7 +1924,9 @@ never returns the key and drops the in-memory material when it receives
 
 ### Charging visitors
 
-The member gateway (`POST /v1/gateway/delegate`), the visitor's balance and
+The member gateway (`POST /v1/gateway/delegate` - since phase B of the
+admin-hub routing a signed call from a visitor **or an attested worker**, an
+admin caller refused `409 plan_locally`), the visitor's balance and
 credit requests, the Payments screen routes and the internal payment routes
 are listed in `docs/subsystems/payments.md`, "Routes". `x_pom.payment` is
 added to the answers of a charged visitor request.
@@ -1925,8 +1952,9 @@ extractor for synchronization between nodes:
   public control calls; on private networks it also accepts the shared key,
   and then the transport must prove the caller is a member today
   (`auth::caller_is_member`): the TLS or QUIC client certificate, or the
-  PeerId of the libp2p tunnel, names a key that is an admin of the chain or
-  holds a valid, unrevoked membership token. Plain HTTP from loopback is the
+  PeerId of the libp2p tunnel, names a key that is an admin of the chain or a
+  member the roster vouches. Plain
+  HTTP from loopback is the
   one exception. The signed sender must be known and control mutations must
   be covered by a current authority. It is never accepted on the client
   inference routes.

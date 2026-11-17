@@ -1,8 +1,13 @@
 # Security model
 
 The nodes themselves enforce every role, between nodes as well as on the
-screen. The trust chain names the admins only, and every other machine proves
-its role with a short-lived membership token signed by an admin. This guide is
+screen. The trust chain names the admins only. Every other machine proves its
+role through the roster: the admission list the admins hold, and the roster
+entries those admins sign as **vouches** - each one an admin's signature of a
+member's admitted role, carried to every node by the vouch keepers and kept
+fresh beside the chain (`AdminTrust::vouched_role`). The short-lived membership
+token that used to carry the role was retired 2026-11-15, phase C3 of the
+admin-hub routing, with no compatibility bridge. This guide is
 the overview; `http-api.md` has the full route reference and `p2p-network.md`
 the transport.
 
@@ -15,8 +20,8 @@ are either workers or visitors.
 | --- | --- | --- |
 | Principal | The trust chain (anchor and transfers) | Everything: settings, keys, grants and demotions, admissions, removals, deploys |
 | Secondary admin | A grant signed by the principal in the trust chain | Deploy and undeploy models, view logs and telemetry, approve and reject admissions, remove workers and visitors |
-| Worker | Membership token with role `worker` | Serve models; reach other nodes' serving routes (catalog, planning, transfers) |
-| Visitor | Membership token with role `visitor` | Run inference through its own node; never holds or serves a model; no administrative call to any node |
+| Worker | Roster approval signed as a vouch of role `worker` | Serve models; reach other nodes' serving routes (catalog, planning, transfers) |
+| Visitor | Roster approval signed as a vouch of role `visitor` | Run inference through its own node; never holds or serves a model; no administrative call to any node |
 
 - Every profile installs plugins on its own machine.
 - A machine's own operator routes (API keys, plugins, its name, relay,
@@ -38,15 +43,25 @@ are either workers or visitors.
 - The lobby is the admins' only: each candidate talks in a thread of its own
   that only the admins the chain proves receive, erased once an admin approves or
   declines it, or after a day without messages (`p2p-network.md`, 6.1).
-- A visitor needs the admins and the workers
-  that serve it, so its `Network::admit_peer` refuses another visitor and
-  `alive_peers` leaves one out (`Network::hides`): it never probes, measures,
-  gossips with or lists one. Every node answers a `PeerRequest` with visitors
-  only to a requester it knows as an admin or a worker
-  (`Network::peer_list_for`). The role is the peer's token checked against the
-  chain, else its announced profile. A visitor's own announce goes straight to
-  its admins and workers, never on the gossip topic or the LAN broadcast
+- A visitor delegates its requests to an admin entry node, so it has no reason
+  to know a worker: its `Network::admit_peer` refuses another visitor and every
+  member the visitor view withholds (`Network::hides`), and `alive_peers`
+  leaves them out: it never probes, measures, gossips with or lists one. In the
+  default view the withheld ones are all members that are not admin entry nodes
+  (`payments.md`, "The member gateway"). Every node answers a `PeerRequest`
+  with visitors only to a requester it knows as an admin or a worker
+  (`Network::peer_list_for`). The role is the peer's roster vouch, else its
+  announced profile. A visitor's own announce goes straight to
+  its admins, never on the gossip topic or the LAN broadcast
   (`p2p-network.md`, "Admission before the `peers` table").
+- Since phase B of the admin-hub routing a **worker** delegates its generation
+  requests to an admin entry node too - by default, with the network's
+  `worker_delegation = false` as the escape hatch for networks whose workers
+  measurably need to keep planning directly. The entry node accepts the call
+  only from a caller the roster or its vouches attest as visitor or
+  worker (`gateway::peer_role_is_attested`); an announced profile alone never
+  opens it, and an admin caller is refused `409 plan_locally` - an admin is
+  itself an entry node (`payments.md`, "The member gateway").
 - The principal decides which iroh relays the network uses
   (`NetworkSettings.relay_policy`: `all`, `members` for only the network's own
   dedicated and member relays, `none` for direct connections only). A relay
@@ -100,40 +115,51 @@ and an IP address is never an identity.
   connection key and signed with its node key. The key never travels and an
   answer cannot be faked.
 
-## Membership tokens
+## Membership: the roster vouch
 
-A worker or visitor proves its role with a compact JWT signed with EdDSA by an
-admin's node key (`membership.rs`). It lasts 10 minutes and is accepted only
-from the node and key it names.
+A worker or visitor proves its role through the roster and its **vouch**
+(`membership::Vouch`): the roster entry signed, carried by the vouch keepers
+and kept per member on every node (`AdminTrust::merge_vouches`). A member
+carries no credential of its own.
 
-| Claim | Meaning |
+| Field | Meaning |
 | --- | --- |
-| `iss`, `iss_key` | Issuing admin's node id and public key |
-| `sub`, `sub_key` | Member's node id and public key |
 | `net` | The chain's cluster id |
-| `role` | `worker` or `visitor` |
-| `iat`, `exp`, `jti` | Issued at, expiry (iat + 600 s), unique id |
+| `sub` | The member's node id - the hash of its key, so it names the key too |
+| `role` | `worker` or `visitor` - the role it was admitted with |
+| `admitted_at` | The approval's decision time - cut by the member's last ban, exactly as the roster entry is |
+| `issued_at` | When this admin last signed it - renewed by the keepers |
 
-1. **Request**: a non-admin node calls `POST /api/internal/membership/token`
-   on an admin (the principal first, then the secondaries), signed with its own
-   key.
-2. **Issue**: the admin issues a token only for an approved, unrevoked
-   admission, with the role admitted. On a network open to anyone with the
-   anchor (`open_admission`), the announced role is used.
-3. **Carry**: the node puts the token in its announce (`membership`) and
-   renews it two thirds of the way through, or at once if it stops being
-   valid. The keeper checks every 30 s.
-4. **Check**: any node checks it against its own trust chain alone:
-   - the header must be exactly `{"alg":"EdDSA","typ":"JWT"}`;
-   - the signer must be an admin in the current chain;
+1. **Sign**: every admin signs a vouch for every approval it sees - its own
+   list, its mirror of the principal's on a secondary - newer than the last
+   ban. On a network open to anyone with the anchor the admin signs what a
+   live peer announces instead, the way it used to issue those peers tokens,
+   and a peer carrying any revocation is never signed again - the ban is as
+   final there as the token answer was.
+   An approval is published at once (`apply_decision` -> `publish_vouches`),
+   and the keeper re-signs every 30 s; the renewal is what lets a dropped
+   member age out.
+2. **Carry**: `internal_vouches` merges a caller's vouches and answers with
+   the admin's own; every node keeps the newest per member, by
+   `(admitted_at, issued_at)`, in a ledger persisted beside the chain.
+3. **Check**: any node checks each entry against its own trust chain alone:
+   - the Ed25519 signature (domain label `pom-roster-vouch/v1`) must match
+     `iss_key`, and that key must be an admin in the current chain;
    - `net` must match;
-   - not expired, with 30 s of clock leeway;
-   - lifetime no longer than 10 minutes;
-   - `sub` and `sub_key` must equal the peer's node id and key, so a copied
-     token proves nothing;
-   - the member must not be revoked after `iat`.
+   - `sub` may not be an admin of the chain: an admin's role is the chain's,
+     never a vouch;
+   - `issued_at` must be within the 4 h vouch window (`VOUCH_FRESH_SECS`) -
+     hours, where the retired token gave minutes, because the ban, not the
+     calendar, is what takes a role away.
 
-Demoting an admin voids every token it signed once the chain syncs.
+A demoted admin's vouches stop holding once the chain syncs. The membership
+token this replaced - a compact JWT the member carried and announced, with
+its own claims and a 10-minute expiry - was retired 2026-11-15 (phase C3,
+decision 5: no compatibility bridge), together with the request route
+`/api/internal/membership/token` and the `membership` field of the announce.
+`/api/internal/membership/relays` is its successor for what that answer also
+carried: the relay passes (`relay_pass.rs`) a member needs to dial the
+network's visitor relays.
 
 ## Revocation
 
@@ -148,10 +174,10 @@ principal is away.
 - The banning admin pushes the entry to every live peer at once, and every node
   trades its list with an admin each 30 s tick
   (`/api/internal/membership/revocations`), so a missed push still arrives.
-- A token for a revoked member is refused when it was issued at or before
-  `revoked_at`, and admins do not renew it unless the member was approved again
-  after the ban. Live requests are checked against the list too, so a ban takes
-  effect on the next request, not at token expiry.
+- A vouch for a revoked member is refused when its `admitted_at` is at or
+  before `revoked_at`, and admins stop signing one unless the member was
+  approved again after the ban. Live requests are checked against the list
+  too, so a ban takes effect on the next request, not when a vouch ages out.
 - The principal, on seeing a revocation of a member it approved, forgets the
   admission and rotates the connection key, as with a departure.
 
@@ -162,7 +188,10 @@ principal is away.
   server and as client. There is no switch to turn it off.
 - **The connection key alone opens nothing.** A call authenticated by the key is
   accepted only when the transport proves the caller is a current member: an
-  admin of the chain, or a node holding a valid, unrevoked membership token.
+  admin of the chain, or a member the roster vouches (`AdminTrust::vouched_role`,
+  phase C of the admin-hub routing). The membership token that used to stand
+  as a third form was retired 2026-11-15 with no compatibility bridge
+  (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`, decision 5).
 - **The iroh endpoint** authenticates the endpoint id, which is the node key,
   on every connection; the receiving side hands that identity to the request
   the same way. Announces over gossip are signed by the node key and dropped
@@ -184,7 +213,7 @@ session gate; another node goes through `caller_may_ask` (`gateway/state.rs`).
 | --- | --- | --- | --- |
 | PrincipalOnly | Principal | Signed by the principal | `signature_required`, `principal_required` |
 | AnyAdmin | Any admin | Signed by any admin in the chain | `admin_required` |
-| ServingMember | Admin or worker | Signed by an admin, or by a peer with a valid worker token | `visitor_caller`, `role_unattested`, `unknown_caller` |
+| ServingMember | Admin or worker | Signed by an admin, or by a peer the roster names a worker or a vouch says one | `visitor_caller`, `role_unattested`, `unknown_caller` |
 | AnyMember | Every profile | Every member (inference, leaving) | - |
 | LocalOnly | Every profile | Never | `local_operator_only` |
 | HandlerAuth | The handler checks | The handler checks (sync protocols) | - |
@@ -244,7 +273,7 @@ own.
 
 - **Three token kinds, three headers.** Work receipts (signed by the hop),
   bundles (countersigned by the gateway) and cycle statements (signed by the
-  ledger admin's node) are compact Ed25519 tokens like membership tokens, each
+  ledger admin's node) are compact Ed25519 tokens, each
   with its own `typ` (`<slug>-work-receipt/v1`, `-work-bundle/v1`,
   `-cycle-statement/v1`), so none can pass for another. Each names its signer's
   key and the signer's node id must be that key's hash.
@@ -264,10 +293,13 @@ own.
 
 ## Charging visitors
 
-A charging network (`docs/subsystems/payments.md`) runs
-`inference_access = member_gateway_only`: a visitor never reaches a worker's
-inference port (`visitor_must_use_gateway`) and learns only the entry nodes
-the policy allows, so it cannot skip the entry node that charges it. The
+A charging network (`docs/subsystems/payments.md`) charges on the member
+gateway - every visitor enters through an admin entry node, the only shape
+the product has (the `inference_access` knob that once named alternatives was
+deleted 2026-11-15, C3): a visitor never reaches a worker's inference port
+(`visitor_must_use_gateway`) and learns only the entry nodes
+the policy allows, so it cannot skip the entry node that charges it. The gate
+holds visitors only: a delegating worker is a member and is not charged. The
 account is named by a home statement signed by the visitor's home principal
 and checked against the key the transport proved (`crate::home_statement`); no
 address or name enters it. Only the principal writes the authoritative book;

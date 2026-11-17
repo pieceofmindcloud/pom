@@ -69,6 +69,58 @@ address, and an IP written into a document goes stale. Therefore:
   (`HashMap<node_id, PeerInfo>`). The gossip path enters through
   `Network::insert_admitted_peer`.
 
+### Direct-only nodes (`--no-iroh`, spec 2026-11-15)
+
+A machine can turn the iroh line off as a whole. The mode comes from
+`--no-iroh` / `POM_NO_IROH=1` or from the `no_iroh` saved in `pom.json` (the My
+machine screen's switch, `POST /api/ui/network/transport`, `LocalOnly` like the
+relay options: no other node turns iroh on or off here). Either source turns it
+on and the flag never turns it back off, and the mode of a run is decided when
+the node starts (`Network::is_direct_only`, held by `RelayGate` too so the relay
+screens and answers say "no" whatever is asked later). The screen's switch
+applies the "off" direction live - every consumer of the mode reads it fresh:
+the announce round takes the direct path, the policy round strips the relays off
+the endpoint, the gate refuses every relay connection, the republisher stops
+publishing the record and the tombstone goes out once; saving a re-enable waits
+for the restart its gossip subscription needs, and the view says so
+(`restart_needed`) instead of leaving the node announcing into silence. What such
+a node gives up: gossip (no subscribe, no publish - its announce round is the
+sealed direct announce to every peer it dialed, the visitor's path), any relay
+client (n0's, dedicated, member: nothing enters the endpoint's map and
+`apply_policy` never adds one), the embedded relay server (`--serve-relay` and
+the saved `relay.everyone` refuse to coexist with the mode, at startup and on
+the routes), hole punching, both tunnels (the ephemeral endpoint of `anon_tunnel`
+is never started; `relay_passes` hands it no passes), and pkarr **publication** -
+the mode change empties the node's record once (`PkarrNode::retire_record`) so
+the machine stops being dialable by key.
+pkarr **resolution** stays on: the node still cold-dials the principals and
+`--pkarr-peers` by key, learns their addresses into the endpoint, and speaks
+from there.
+
+What it keeps: the whole LAN path, plain QUIC/HTTP hops, control calls, mDNS,
+lobby, cluster logs, Chat, file transfer - all of it direct. Its announce
+carries `direct_only: true` (signature-covered), which is how admins and
+screens know. The mode is the operator's declaration of reachability and POM
+measures it: a direct-only candidate whose addresses stop answering is refused
+by planning with today's "machine unreachable", never rescued by a punch or a
+relay. An admin that serves the internet should keep iroh - it is where
+NAT-hidden visitors enter. Design:
+`docs/superpowers/specs/2026-11-15-direct-only-node-design.md`.
+
+What such a node **sees** is what it dials, and the principal is enough:
+`spawn_pkarr_bootstrap` resolves the chain's principals and `--pkarr-peers` by
+key, and the dial round enters those addresses in the endpoint's address book
+(`p2p.learn`) and in the dialed set; every announce round then sends the
+sealed announce to the dialed and learned peers on `pom/announce-direct/1`,
+which is also the connection that first opens each one. What a direct-only
+worker does not need is a full table: it never plans - the admin holds its
+announce (the direct announce is answered like a gossip one), plans, deploys,
+fans out `reload_model`, dials its serving hops and names the transfer
+sources by URL when it commands a slice pull. The LAN path is untouched: UDP
+announces are what always talk. What is genuinely lost is mesh gossip at that
+one node, and with it the self-healing of a worker that knows only other
+workers - the hub is its path to everyone else.
+
 ### Admission before the `peers` table
 
 Transport discovery is not network membership. The process can learn an address
@@ -77,17 +129,21 @@ sources registers a `PeerInfo` without local proof of admission. The same rule
 applies to UDP `Announce`, gossip `Announce`, `PeerList` and direct entry
 through `insert_peer`; policies, tunnels, routes, UI and pipeline only consume
 the table after that point. On a visitor, another visitor is never admitted and
-is left out of `alive_peers`; a `PeerList` names visitors only to a requester
+is left out of `alive_peers`; in the default visitor view (`Network::hides`,
+`payments.md`, "The visitor view") no member that is not an admin entry node is
+admitted either. A `PeerList` names visitors only to a requester
 known as an admin or a worker (`security-model.md`, roles).
 
 A visitor's own `Announce` never travels where another visitor could read it.
 The gossip topic is shared by every network, so a visitor does not publish on
 it: each announce round it sends the sealed announce straight to every admin
-and worker in its `alive_peers` and to the endpoints it dialed through pkarr
+in its `alive_peers` (the default view holds only admins) and to the endpoints
+it dialed through pkarr
 (`discovery::direct_announce_targets`), over the `pom/announce-direct/1` ALPN
 (`AnnounceCodec`), and the receiver handles it exactly like a gossip announce.
 Over UDP it skips the LAN broadcast and announces only to the peers it keeps.
-It stays subscribed to the topic, which is how it hears the admins and workers.
+It stays subscribed to the topic, which is how it hears the admins; a worker's
+announce that arrives there finds admission closed.
 
 - On a private network, a non-empty `connection_key` selects the proof through
   `/handshake`. The key never leaves the node: it sends its identity and a
@@ -669,7 +725,8 @@ and `discovery.rs` builds the endpoint and everything that rides on it.
   holds at most 2 relay connections open at once, with 64 for all passes
   together (`relay_pass::MAX_LIVE_PER_PASS`, `MAX_LIVE`). Its
   offer says `anonymous: true`. Admins hand those URLs out, each with a fresh
-  pass, in the answer to the membership token request (`relays`), and every
+  pass, in the answer to the relay pass request (`POST
+  /api/internal/membership/relays`), and every
   admin and member keeps the last list (`Network::anonymous_relays`). Design:
   `docs/superpowers/specs/2026-10-23-anonymous-visitor-relays-design.md`.
 - **Anonymous tunnels** (`network/anon_tunnel.rs`). With that list, every
@@ -786,6 +843,9 @@ one record in the DHT, so the two would overwrite each other.
   record changed (home relay changed, public address observed, pin changed) or
   every 30 min (`PKARR_REFRESH`) so it does not vanish from the DHT.
   `set_geo_label` republishes immediately when the admin edits the network.
+  A direct-only node (`--no-iroh`) publishes nothing: the republisher never
+  starts and the mode change empties the record once (`retire_record`), so its
+  machine - which the hub line exists to hide - is not dialable by key either.
 - **Resolution**: `resolve` returns `ResolvedPeer { endpoint_id, record }`; any
   failure becomes `None`, never an error. `resolve_dial_addr` turns the record
   into one `EndpointAddr` holding the direct addresses and the relays together
@@ -1217,7 +1277,7 @@ certificate as its client certificate (`tls::set_client_identity`,
 (`serve::TransportPeer`, from the certificate's key). A call authorized only
 by the connection key also needs that identity to be a member today
 (`auth::caller_is_member`, `Network::is_member_key`): an admin of the trust
-chain, a peer whose announced membership token holds and is not revoked,
+chain, a peer the roster vouches,
 or this node's own key: a worker that is the gateway of its own request dials
 its own advertised address over TLS, and the peers table never holds this
 node. Every member holds the connection key and a banned one keeps it, so the key

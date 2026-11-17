@@ -85,7 +85,9 @@ boundary.
   test scaffold (peer/state_with/body_of).
 - `db.rs` - the only local SQLite store, internal to the crate: schema created at startup,
   WAL/timeout, deployments, API keys and revocations, thermal preferences,
-  the Hugging Face secret, the catalog's durable history and the conversation history. Each
+  the Hugging Face secret, the catalog's durable history, the conversation
+  history and the gateway's session pins (`session_pins`: one row per pinned
+  conversation with its hop chain, pruned by age and cap on restore). Each
   effective admin keeps its own replica of the audit. The
   cluster process log is not here: the logs plugin keeps it in its own
   database, and the schema drops the old `cluster_logs` tables. The history identifies
@@ -144,7 +146,14 @@ boundary.
   catalog-eligible GGUF/image files; 409 warnings cover active model/multipart
   parts, projector/draft sidecars, in-flight transfers and Ollama blobs), thermal
   policy (`GET/POST /api/ui/thermal`), local auto-discovery preference
-  (`GET/POST /api/ui/network/auto-discovery`), cluster process
+  (`GET/POST /api/ui/network/auto-discovery`), the machine's transport mode
+  (`GET/POST /api/ui/network/transport`, LocalOnly like the relay options: it
+  saves `no_iroh` - the saved `--no-iroh` - and answers `no_iroh`/`live`/`restart_needed`;
+  turning iroh off applies live, the mode lands on `Network` and the gate while
+  `PkarrPublishHandle::publish_if_changed` stops publishing for a direct-only
+  node and the route retires the record once, and a saved re-enable waits for
+  the restart its gossip subscription needs; the route and `save_relay` refuse
+  the pair with `relay.everyone`, which the startup refuses too), cluster process
   logs (`GET /api/ui/cluster-logs` answered by the logs plugin, 403
   `logs_plugin_required` without it; `POST /api/ui/network/logs`, any
   admin - a secondary forwards it to the principal, signed - refuses turning collection on unless the logs plugin is active on that
@@ -417,7 +426,13 @@ boundary.
   the principal by its key through pkarr (`main::spawn_pkarr_bootstrap`), and
   setup copies `relay_hints` into its `relay_peers`. `ensure_setup_metadata` repairs only a missing setup block
   from the local administrator configuration, and only when the local
-  principal is the current primary.
+  principal is the current primary. Beside the chain lives the roster vouch
+  ledger of phase C of the admin-hub routing (`vouches_path_for`:
+  `<chain>.vouches.json`, `merge_vouches`, `vouched_role`): one
+  `crate::membership::Vouch` per member - an admin's signature of the role
+  its roster approved, the approval's decision time, and the issuer's
+  renewal - kept newest per member, verified against the chain on every
+  read, and cut by the member's last ban exactly as an approval is.
 - `deploy/` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`, split into
   `mod.rs`, `routes.rs`, `types.rs`, `survey.rs`, `planning.rs`, `preview.rs`,
   `launch.rs`, `lifecycle.rs`, `node.rs` and test fragments: the capacity survey,
@@ -487,26 +502,33 @@ boundary.
   `node.rs::peer_of` finds the peer. `transfer::servable_path` serves a path outside the
   shard folder only when it is in the node's sidecar inventory, and a finished
   download invalidates the receiver's catalog.
-- `webui/membership.rs` - membership tokens at run time (the format is
-  `crate::membership`, `src/membership.rs`: a compact EdDSA JWT naming the
-  member's node and key, its role, the network and a 10 min expiry, checked
-  against the chain alone). `internal_token` issues one on any admin for an
-  approved admission; `spawn_token_keeper` renews this node's (none on an
-  admin) and sets it in the Announce. With no token it looks again every 2 s
-  while no admin is in sight, and backs off from 2 s to the 30 s tick after a
-  refused request; it keeps the last refusal for the interface. The token answer
-  also carries `relays` (`relay_passes`: each visitor's anonymous relay the
+- `webui/membership.rs` - membership at run time: the roster vouches
+  (`crate::membership`, `src/membership.rs`: an admin's signature of one
+  roster approval - the admitted role, `admitted_at` cut by the member's last
+  ban, renewed within the 4 h vouch window, checked against the chain alone)
+  and the relay passes a member keeps fresh from an admin.
+  `internal_relays` answers on any admin with the passes it signs for the
+  member that called (`relay_passes`: each visitor's anonymous relay the
   admin sees, with a fresh relay pass, only for a URL on a public host among
-  that visitor's own addresses, `relay_url_is_peers`), which the keeper stores in
-  `Network::set_anonymous_relays`; an admin issues its own every tick.
-  `GET /api/ui/connection` (`connection_status`, `LocalOnly`) reports this
+  that visitor's own addresses, `relay_url_is_peers`; nothing for a peer whose
+  announce said direct-only - it dials no relay, `peer_direct_only`); `spawn_membership_keeper`
+  stores them in `Network::set_anonymous_relays`, an admin signing its own
+  every tick, a member asking `/api/internal/membership/relays` - it looks
+  again every 2 s while no admin is in sight, and backs off from 2 s to the
+  30 s tick after a refused request; it keeps the last refusal for the
+  interface. The membership token this used to carry was retired 2026-11-15
+  (spec 10.1, C3). `GET /api/ui/connection` (`connection_status`, `LocalOnly`)
+  reports this
   node's `ConnectionPhase` - `standalone` (an admin, or off the network),
   `discovering` (no admin heard yet), `authenticating` (an admin in sight, no
-  valid token yet), `connected` - with `since` (unix seconds, when the phase
+  vouch naming this node yet), `connected` (the roster vouches this node) -
+  with `since` (unix seconds, when the phase
   started), `last_error`, `peers` (other live peers in sight) and
   `admin_in_sight`. On a secondary admin,
   `spawn_roster_keeper` mirrors the principal's admission list
-  (`internal_roster`), and `forward_decision` sends its admission decisions
+  (`internal_roster`, persisted in `pom.db`'s `local_settings` so a restart
+  while the principal is offline keeps the member list), and
+  `forward_decision` sends its admission decisions
   to the principal (`internal_decide`, applied by `apply_decision`, which
   refuses to remove an admin). `NetworkChat::admitted_role` reads the own
   list and the mirror, ignoring an approval not newer than the member's last
@@ -514,7 +536,24 @@ boundary.
   (`push_revocations`); `internal_revocations` merges a caller's list and
   answers with its own, and `spawn_revocation_keeper` trades lists with one
   admin per tick. `on_revoked` makes the principal forget the member and
-  rotate the key.
+  rotate the key. Phase C of the admin-hub routing
+  (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md` 10.1)
+  adds the roster vouches beside this: `sign_vouches` signs every approval
+  the admin sees - own list and mirror, newer than the last ban - as a
+  `membership::Vouch` of that member's role; an approval publishes it at
+  once (`apply_decision` -> `publish_vouches`: merge locally and push to
+  every peer with a gateway, beside the ban's push), `internal_vouches`
+  merges a caller's vouches and answers with its own, and
+  `spawn_vouch_keeper` re-signs an admin's vouches every tick (the renewal
+  is what lets a dropped member age out) and trades lists with one admin
+  per tick. Since phase C the role gates read that ledger where the local
+  roster cannot name the member - `peer_role_is_attested`,
+  `gateway::peer_is_visitor`, `Network::is_member_key`, `roles_of` - and on a
+  network open to anyone with the anchor the admin signs the live peers'
+  announces as vouches too, the way it used to issue those peers tokens (a
+  peer holding any revocation is never signed, as in the token answer); the
+  token itself was retired 2026-11-15 (spec 10.1, C3: no compatibility
+  bridge).
 - `webui/gpu_metrics.rs` - the GPU energy and temperature feed of the logs
   plugin's Metrics screen: `spawn_gpu_metrics_sampler` (started with the
   gateway companions) runs once a minute and, only on a node that may see the
@@ -597,7 +636,12 @@ boundary.
   whose session is already held by a live head goes back to that head, reusing its cache;
   otherwise the heads take turns round robin (`routing::fastest::rotate_head`, per-model turn in
   `pipeline::next_head_turn`), and a head with generations in flight is passed over for the next
-  free one, or the least loaded when all are busy.
+  free one, or the least loaded when all are busy. A named conversation (the body's `session`,
+  or the `auto-` name hashed from its first user turn) additionally pins its whole
+  hop chain between turns (`gateway::SessionPin`, admin-hub routing 3.3): while
+  the chain resolves against the live peers the next turns run on it unchanged,
+  the pin's head is the plan's head, and a peer that dies, is quarantined or
+  moved releases the pin for one fresh plan.
   `/v1/models` and `/v1/models/{id}` also publish `capabilities.vision` from
   the serving head's projector configuration; the harness uses it to mark
   image input only for deployed vision models. The capacity published in
@@ -636,9 +680,12 @@ boundary.
   the peers announce and fetches the chain from whoever is ahead
   (`chain_sources`, `POST /api/internal/admin-trust/chain`) - any member, so
   it works with the principal offline. The chain names admins only: a
-  worker's or visitor's role is its membership token (`webui/membership.rs`
-  below), and a non-admin caller of a `ServingMember` route needs a `worker`
-  token (`caller_may_ask`). `chain_status` feeds
+  worker's or visitor's role is decided by the admission roster when it names
+  the member - the principal's own list, or its mirror on a secondary
+  (`webui/membership.rs` below) - and otherwise by the roster vouch that
+  reached this node (`AdminTrust::vouched_role`, `peer_role_is_attested`); a
+  non-admin caller of a
+  `ServingMember` route needs the roster or the vouch (`caller_may_ask`). `chain_status` feeds
   `NodeInfo.cluster_version` and `POST /api/ui/network/trust-sync`.
 - Image models live outside this folder, in `crates/node/src/`:
   `components.rs` (a node serves components, `POST /api/ui/components/apply|release`;
@@ -687,11 +734,23 @@ boundary.
   `gateway::generation::MeterCollect`. Spec
   `docs/superpowers/specs/2026-11-08-gpu-work-metering-design.md`.
 - `delegation.rs` - the member gateway and the payment gate for visitors
-  (`POST /v1/gateway/delegate`, `visitor_layer`): the entry node holds the
-  request's worst case, refuses in the route's vocabulary (`speak`), and
-  settles at the summary with the metering bundle (`GenSummary.metering_bundle`,
+  (`POST /v1/gateway/delegate`, `member_layer`): every member that is not an
+  admin delegates - the one shape the product has, since decision 5 of
+  2026-11-15 deleted the access-mode knobs: a visitor always (phase A), a
+  worker unless the network's `worker_delegation` is false (phase B,
+  refinement 8.4)
+  - and the entry is always an admin the chain proves
+  (`entry_nodes`, phase A of
+  `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`); with no
+  admin entry node in sight the caller gets `503 no_entry_node`, there is no
+  self-planning fallback (except a worker under the escape hatch). The entry
+  node accepts a signed call from a visitor named by the roster or an attested
+  worker (`peer_role_is_attested`), refuses an admin caller with `409
+  plan_locally`, holds the request's worst case - charging only the visitor -
+  refuses in the route's vocabulary (`speak`), and settles at the summary with
+  the metering bundle (`GenSummary.metering_bundle`,
   also held back on the plugin engine path until the stages' receipts are in);
-  the visitor relays the answer and records `x_pom.payment`
+  the caller relays the answer and records `x_pom.payment`
   (`tap_payment`). See `docs/subsystems/payments.md`.
 - `metering_verify.rs` - re-execution for the ledger (`node.reexecute`, an
   asynchronous job): cuts and loads each range of the local whole model, runs
@@ -811,7 +870,10 @@ lifecycle is `docs/subsystems/deployment.md`; the transfer protocol is
 change lands in the right place.
 
 - `gateway/` - `GatewayState` (network, ollama, default_model, local_assignment, loads,
-  http, runtime, gateway_port, auth, transfers, `reply_inbox`); `FromRef<GatewayState> for
+  http, runtime, gateway_port, auth, transfers, `reply_inbox`,
+  `session_pins` - the pinned hop chains of named conversations, `SessionPin`
+  in `state.rs`, persisted in `pom.db`'s `session_pins` and restored at
+  startup; read and validated in the planning loop of `generate_stream_inner`); `FromRef<GatewayState> for
   AuthState`; `peers_visible_to_cluster` filters blocked nodes; `all_peers` appends the local
   node with `self_dial_host` (advertised > local IP > loopback). Admission probing, the
   pinned-route order (`bases_by_route_plan`), the quarantine, the longer first wait
@@ -1111,6 +1173,15 @@ kill-switch before rendering the template) is `docs/subsystems/web-ui.md` and
   passes alone and in the full `cargo test -p node --bin pom`, but failed twice in a row
   (2026-11-08) when run filtered to `deploy:: webui::` together: it depends on test order or
   shared state, not yet traced.
+- Selector mismatch between asking and running (inherited from develop's `fcb4f4da`,
+  2026-11-16): the generation path keeps an `@<deploy_id>` no peer announced
+  (`resolve_label` holds it on purpose - "refusing here would swap 'this deployment did
+  not answer' for 'I served from another one'"), while `chat_capabilities` matches that id
+  against the announcements and answers `coverage: "unavailable"` when it finds none. The
+  interface then shows no model for a request it would still run. The test
+  `chat_capabilities_answer_for_a_model_served_elsewhere_on_a_node_that_serves_nothing`
+  asked such an id and went red with the change; its fixture now announces the id the ask
+  names, so the two paths still disagree in the open.
 
 ## Maintaining this file
 

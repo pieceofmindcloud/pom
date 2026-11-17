@@ -1320,6 +1320,70 @@ impl PomDb {
         })
     }
 
+    /// Saves one session pin (`gateway::SessionPin`): the hop chain a session
+    /// was planned on, so the planner brings the next turn back to it even
+    /// after a restart. Written when the pin is born or replaced.
+    pub(crate) fn upsert_session_pin(&self, key: &str, hops: &[String], head: &str) -> Result<()> {
+        self.with_write("save a session pin", |connection| {
+            connection.execute(
+                "INSERT INTO session_pins (pin_key, hops, head, used_at) VALUES (?, ?, ?, ?)
+                 ON CONFLICT(pin_key) DO UPDATE
+                     SET hops = excluded.hops, head = excluded.head, used_at = excluded.used_at",
+                params![
+                    key,
+                    serde_json::to_string(hops)?,
+                    head,
+                    chrono::Utc::now().to_rfc3339()
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn delete_session_pin(&self, key: &str) -> Result<()> {
+        self.with_write("drop a session pin", |connection| {
+            connection.execute("DELETE FROM session_pins WHERE pin_key = ?", params![key])?;
+            Ok(())
+        })
+    }
+
+    /// The pins as saved, newest first, capped.
+    pub(crate) fn session_pins(&self, limit: i64) -> Result<Vec<(String, Vec<String>, String)>> {
+        self.with_read("read the session pins", |connection| {
+            let mut statement = connection.prepare(
+                "SELECT pin_key, hops, head FROM session_pins ORDER BY used_at DESC LIMIT ?",
+            )?;
+            let rows = statement.query_map(params![limit], |row| {
+                let key: String = row.get(0)?;
+                let hops_json: String = row.get(1)?;
+                let head: String = row.get(2)?;
+                let hops: Vec<String> = serde_json::from_str(&hops_json).unwrap_or_default();
+                Ok((key, hops, head))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .context("read the session pins")
+        })
+    }
+
+    /// A pin unused for a day is a session that no longer exists - its KV is
+    /// gone with or without the pin. Restored only inside the cutoff, and the
+    /// table stays bounded the same way.
+    pub(crate) fn prune_session_pins(&self, limit: i64) -> Result<()> {
+        let cutoff = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+        self.with_write("prune the session pins", |connection| {
+            connection.execute(
+                "DELETE FROM session_pins WHERE used_at < ?",
+                params![cutoff],
+            )?;
+            connection.execute(
+                "DELETE FROM session_pins WHERE pin_key NOT IN
+                     (SELECT pin_key FROM session_pins ORDER BY used_at DESC LIMIT ?)",
+                params![limit],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Record the current catalog while retaining rows for files that vanished.
     pub fn record_catalog(&self, catalog: &Catalog) -> Result<()> {
         self.with_write("record catalog", |connection| {
@@ -1816,6 +1880,15 @@ fn ensure_schema(connection: &Connection) -> Result<()> {
             request_id UNINDEXED,
             prompt,
             tokenize = 'unicode61'
+        );
+        -- Session pins (`gateway::SessionPin`, admin-hub routing 3.3): the hop
+        -- chain a session was planned on, so the planner brings the next turn
+        -- back to it across a restart. Local to this node, invisible to peers.
+        CREATE TABLE IF NOT EXISTS session_pins (
+            pin_key TEXT PRIMARY KEY,
+            hops TEXT NOT NULL,
+            head TEXT NOT NULL,
+            used_at TEXT NOT NULL
         );
         -- Process logs belong to the logs plugin's own database now.
         DROP TABLE IF EXISTS cluster_logs;

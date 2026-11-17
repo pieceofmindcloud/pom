@@ -25,10 +25,20 @@ Nothing here talks to peers; everything is used by `main.rs` and
   `NetworkSettings` holds name, organization, description, rules, channels,
   visibility (`local`, `private`, `public`), access policy and geo location
   (country, city, coordinates and canonical label). It also holds
-  visitor charging: `inference_access` (`direct` | `member_gateway` |
-  `member_gateway_only`), `entry_nodes` and `payments` (`enabled`, `prices` per
-  model as `ModelPrice`); `validate_network_settings` refuses charging without
-  `member_gateway_only` (`docs/subsystems/payments.md`). `setup_pending` marks a `pom.json` that is only a
+  visitor charging - `inference_access` and `entry_nodes` were **deleted**
+  2026-11-15 (phase C3, decision 5 of the admin-hub routing spec: no
+  compatibility bridge; a file that still carries the keys loads, serde
+  ignoring them, and a new node never writes them) - and `payments`
+  (`enabled`, `prices` per model as `ModelPrice`; charging stands on the
+  member gateway, the only entry shape the product has,
+  `docs/subsystems/payments.md`). `worker_delegation`
+  (default true, phase B of the admin-hub routing) says whether a worker hands
+  its requests to an admin entry node (`backend/delegation.rs`); it is absent
+  from older files and reads as the default. `NetworkSettings`'s `Default` is
+  hand-written, not derived: the constructed default must equal the parsed one
+  of a file that predates a field (a derived `Default` would give
+  `worker_delegation: false`, and a network created in code would then write
+  the opposite of what an absent field reads as). `setup_pending` marks a `pom.json` that is only a
   preference shell (the node left a network): startup then creates a local
   network instead of loading it. `first_run_guide` is the progress of the
   first run guide (`backend/webui/guide.rs`): `None` when there is no guide,

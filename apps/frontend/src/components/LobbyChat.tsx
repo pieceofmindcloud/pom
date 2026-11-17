@@ -48,6 +48,9 @@ function errorKey(code: string | null | undefined): string {
  * again every few seconds while the window is open, and that same request is
  * what keeps this machine listed in the lobby.
  */
+// Joining as a validator is still in development: hidden from the screen for now.
+const SHOW_VALIDATOR_OPTION = false;
+
 export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLabel, headerActions, focusAdmission = false, onUnavailable }: {
   network: { name: string; publisher_key: string; accepted_enrollments?: EnrollmentRole[] } | null;
   endpoint: LobbyEndpoint;
@@ -78,6 +81,7 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [role, setRole] = useState<EnrollmentRole>("worker");
+  // Validators are still in development: the option stays hidden for now.
   // A worker may ask to join as a validator: it re-runs sampled work and serves no model.
   const [asValidator, setAsValidator] = useState(false);
   const [asking, setAsking] = useState(false);
@@ -270,7 +274,7 @@ export function LobbyChat({ network, endpoint, onClose, layout = "modal", backLa
                   <Select compact aria-label={t("lobby.admissionRole")} value={askRole} onChange={(event) => setRole(event.target.value as EnrollmentRole)}>
                     {acceptedRoles.map((option) => <option key={option} value={option}>{t(`network.enrollment.${option}`)}</option>)}
                   </Select>
-                  {askRole === "worker" && (
+                  {SHOW_VALIDATOR_OPTION && askRole === "worker" && (
                     <label className="flex items-start gap-2 text-xs text-muted">
                       <input type="checkbox" className="mt-0.5" data-testid="lobby-as-validator" checked={asValidator} onChange={(event) => setAsValidator(event.target.checked)} />
                       <span>

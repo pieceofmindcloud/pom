@@ -1063,17 +1063,18 @@ pub(super) fn terminal_prefill_meta(
 }
 
 /// The inference port is a channel between peers. It accepts only a member of
-/// the network, as the transport proves it (an admin of the chain or a node
-/// holding a valid membership token), with the internal request marker; on a
-/// private network the caller also presents the shared `connection_key`. API
-/// keys belong to the client's routes on the gateway and never reach a peer.
+/// the network, as the transport proves it - an admin of the chain, or a node
+/// the roster vouches (`Network::is_member_key`) - with the internal request
+/// marker; on a private network the caller also presents the shared
+/// `connection_key`. API keys belong to the client's routes on the gateway
+/// and never reach a peer.
 pub(super) async fn require_inference_auth(
     State(config): State<crate::auth::AuthState>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    if crate::auth::visitor_must_delegate(&config, &parts.extensions).await {
+    if crate::auth::visitor_must_delegate(&parts.extensions).await {
         return (
             axum::http::StatusCode::FORBIDDEN,
             axum::Json(serde_json::json!({

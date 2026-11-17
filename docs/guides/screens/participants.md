@@ -15,7 +15,7 @@ Network participants lists the machines this one knows in the network: their nam
 
 :::cards
 ### verified
-The machine proved its identity: its certificate derives from its key, and it holds an admin's membership token.
+The machine proved its identity: its certificate derives from its key, and the roster vouches what it is.
 ### Version
 The POM release it announces. Amber means it is not the same as this machine's.
 ### Route

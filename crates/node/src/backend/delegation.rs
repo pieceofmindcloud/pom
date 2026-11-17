@@ -1,33 +1,41 @@
-//! Member gateway: a visitor hands its requests to a member entry node
-//! (`docs/superpowers/specs/2026-11-07-member-gateway-planning-design.md`),
-//! which plans and runs them and, when the network charges visitors, charges
-//! the visitor's home network for them
-//! (`docs/superpowers/specs/2026-11-09-visitor-charging-design.md`).
+//! Member gateway: every member that is not an admin hands its requests to
+//! an **admin** entry node (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`:
+//! phase A made every visitor delegate; phase B makes **workers** delegate
+//! too, with the network's `worker_delegation = false` as the escape hatch;
+//! the entry-node call itself shipped in
+//! `docs/superpowers/specs/2026-11-07-member-gateway-planning-design.md` and
+//! the charging gate in `2026-11-09-visitor-charging-design.md`), which
+//! plans and runs them and, when the network charges visitors, charges the
+//! visitor's home network for them.
 //!
-//! - **On the visitor** ([`visitor_layer`]): under `inference_access =
-//!   member_gateway*`, a request to `/v1/chat/completions`, `/v1/completions`,
-//!   `/v1/messages` or `/api/generate`, once the client's own API key is
-//!   checked here (keys never leave the node that minted them), goes to an entry
-//!   node's `POST /v1/gateway/delegate` with the visitor's home statement; the
-//!   answer (status, content type, streamed body) comes back unchanged. Entry
-//!   nodes are members announcing `gateway/delegate-v1` that the network's
-//!   `entry_nodes` allows, by measured RTT. A request moves to the next entry
-//!   node only when it got no answer. With none: `503 no_entry_node` under
-//!   `member_gateway_only`; under `member_gateway` the visitor plans itself.
+//! - **On the member** ([`member_layer`]): a request to `/v1/chat/completions`,
+//!   `/v1/completions`, `/v1/messages` or `/api/generate`, once the client's
+//!   own API key is checked here (keys never leave the node that minted them),
+//!   goes to an admin entry node's `POST /v1/gateway/delegate` with the
+//!   caller's home statement; the answer (status, content type, streamed
+//!   body) comes back unchanged. Entry nodes are the admins the trust chain
+//!   proves, announcing `gateway/delegate-v1`, by measured RTT. A request
+//!   moves to the next entry node only when it got no answer. With none:
+//!   `503 no_entry_node` - no persisted setting opens a path where a visitor
+//!   plans itself (a worker plans itself only when the network opened the
+//!   `worker_delegation` escape hatch).
 //! - **On the entry node** ([`delegate_route`]): only a signed call from a
-//!   visitor (a member that is not a visitor plans itself: `409
-//!   plan_locally`). When the network charges, the home statement names the
-//!   account (`net:<home principal key>`) and the payment gate holds the
-//!   request's worst case before it runs: `402 payment_required` (the x402
-//!   `accepts` envelope) when the account cannot cover it, `503
-//!   payment_unavailable` when the book cannot be read. The request then runs
-//!   through this node's own router, marked as delegated (an in-process
-//!   extension no outside request can carry), so every route answers as for a
-//!   local client; the generation settles at its end ([`PAYMENT`]).
-//! - **On a worker** ([`refuse_visitor`]): under `member_gateway_only`, a
-//!   visitor's call on the inference port is refused (`visitor_must_use_gateway`).
+//!   member that is not an admin (an admin is itself an entry node: `409
+//!   plan_locally`). When the network charges, the fee falls on visitors -
+//!   the home statement names the account (`net:<home principal key>`) and
+//!   the payment gate holds the request's worst case before it runs: `402
+//!   payment_required` (the x402 `accepts` envelope) when the account cannot
+//!   cover it, `503 payment_unavailable` when the book cannot be read. A
+//!   worker delegates as a member and is not charged: the gate applies only
+//!   when its roster says visitor. The request then runs through this node's
+//!   own router, marked
+//!   as delegated (an in-process extension no outside request can carry), so
+//!   every route answers as for a local client; the generation settles at
+//!   its end ([`PAYMENT`]).
+//! - **On a worker**: a visitor's call on the inference port is refused
+//!   (`visitor_must_use_gateway`), in every access mode
+//!   (`crate::auth::visitor_must_delegate`).
 
-use crate::config::{EntryNodes, InferenceAccess};
 use crate::gateway::GatewayState;
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -96,14 +104,31 @@ fn refuse(status: StatusCode, code: &str, message: &str) -> Response {
         .into_response()
 }
 
-// ── Visitor ─────────────────────────────────────────────────────────────────
+// ── Member ───────────────────────────────────────────────────────────
 
-/// Entry nodes for this visitor: members announcing delegation that the
-/// policy allows, nearest first.
-pub(crate) async fn entry_nodes(
-    state: &GatewayState,
-    allowed: EntryNodes,
-) -> Vec<crate::network::PeerInfo> {
+/// Whether this node hands its own generation requests to an entry node: a
+/// visitor always (phase A) - a node that announces itself as a visitor is
+/// one, whatever else its chain says -; then an admin never, because it is
+/// itself an entry node of the hub, and what names an admin is the chain, not
+/// the announced profile (`webui::is_admin`); then a worker, unless the
+/// network opened the escape hatch `worker_delegation = false`
+/// (refinement 8.4).
+pub(crate) async fn delegates_own_requests(state: &GatewayState) -> bool {
+    if state.local_profile_is_visitor() {
+        return true;
+    }
+    if crate::webui::is_admin(state) {
+        return false;
+    }
+    crate::payments::runtime::settings(state)
+        .await
+        .worker_delegation
+}
+
+/// Entry nodes for this member: the admins the chain proves, announcing
+/// delegation, nearest first. Since phase A of the admin-hub routing the
+/// entry is always an admin, for a visitor and for a worker alike.
+pub(crate) async fn entry_nodes(state: &GatewayState) -> Vec<crate::network::PeerInfo> {
     let document = state.admin_trust.document();
     let rtt = crate::route_plan::book().rtt_map(crate::route_plan::Plane::Gateway);
     let mut peers: Vec<_> = state
@@ -118,10 +143,7 @@ pub(crate) async fn entry_nodes(
                 .any(|c| c == crate::pipeline::CAP_GATEWAY_DELEGATE)
         })
         .filter(|p| !crate::gateway::peer_is_visitor(state, p))
-        .filter(|p| match allowed {
-            EntryNodes::Admins => crate::admin_trust::is_admin_node(&document, &p.node_id),
-            EntryNodes::AdminsAndWorkers => true,
-        })
+        .filter(|p| crate::admin_trust::is_admin_node(&document, &p.node_id))
         .collect();
     peers.sort_by(|a, b| {
         let ra = rtt.get(&a.node_id).copied().unwrap_or(f64::MAX);
@@ -131,8 +153,8 @@ pub(crate) async fn entry_nodes(
     peers
 }
 
-/// The visitor's side, a middleware on the whole router.
-pub(crate) async fn visitor_layer(
+/// The member's side, a middleware on the whole router.
+pub(crate) async fn member_layer(
     State(state): State<GatewayState>,
     request: Request,
     next: Next,
@@ -140,12 +162,10 @@ pub(crate) async fn visitor_layer(
     if request.method() != Method::POST
         || !ROUTES.contains(&request.uri().path())
         || request.extensions().get::<Delegated>().is_some()
-        || !state.local_profile_is_visitor()
     {
         return next.run(request).await;
     }
-    let settings = crate::payments::runtime::settings(&state).await;
-    if !settings.inference_access.delegates() {
+    if !delegates_own_requests(&state).await {
         return next.run(request).await;
     }
     let (mut parts, body) = request.into_parts();
@@ -167,17 +187,12 @@ pub(crate) async fn visitor_layer(
             )
         }
     };
-    let entries = entry_nodes(&state, settings.entry_nodes).await;
+    let entries = entry_nodes(&state).await;
     if entries.is_empty() {
-        if settings.inference_access == InferenceAccess::MemberGateway {
-            return next
-                .run(Request::from_parts(parts, Body::from(bytes)))
-                .await;
-        }
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
             "no_entry_node",
-            "no entry node of the network is in sight",
+            "no admin entry node of the network is in sight",
         );
     }
     let Ok(client_body) = serde_json::from_slice::<Value>(&bytes) else {
@@ -376,20 +391,35 @@ pub(crate) async fn delegate_route(
         );
     };
     let caller_node = principal.node_id.clone();
+    if crate::admin_trust::control_issuer_is_admin(&state.admin_trust.document(), principal) {
+        return refuse(
+            StatusCode::CONFLICT,
+            "plan_locally",
+            "an admin is itself an entry node: it plans its own requests",
+        );
+    }
     let peer = state
         .network
         .alive_peers()
         .await
         .into_iter()
         .find(|p| p.node_id == caller_node);
-    if !peer
-        .as_ref()
-        .is_some_and(|p| crate::gateway::peer_is_visitor(&state, p))
-    {
+    let Some(peer) = peer else {
         return refuse(
             StatusCode::CONFLICT,
             "plan_locally",
-            "only a visitor delegates; a member plans its own requests",
+            "this node does not know the caller as a member of the network",
+        );
+    };
+    // The hub accepts delegation from a member that is not an admin: the
+    // visitor the roster names (as before) and, since phase B, an attested
+    // worker. The announced profile alone never opens this route.
+    let caller_is_visitor = crate::gateway::peer_is_visitor(&state, &peer);
+    if !caller_is_visitor && !crate::gateway::peer_role_is_attested(&state, &peer).await {
+        return refuse(
+            StatusCode::CONFLICT,
+            "plan_locally",
+            "only a visitor or an attested worker delegates",
         );
     }
     if !ROUTES.contains(&ask.route.as_str()) {
@@ -403,7 +433,10 @@ pub(crate) async fn delegate_route(
     let home = ask.home.as_deref().and_then(|token| {
         crate::home_statement::verify(token, &caller_node, chrono::Utc::now().timestamp()).ok()
     });
-    let charge = if settings.payments.enabled {
+    // The fee falls on visitors. A worker is a member: phase B makes it
+    // delegate too, and it is not charged here - the network charges only
+    // visitors, exactly as when the worker planned its own requests.
+    let charge = if settings.payments.enabled && caller_is_visitor {
         let model = ask
             .body
             .get("model")
@@ -439,9 +472,14 @@ pub(crate) async fn delegate_route(
     } else {
         None
     };
+    let role = if caller_is_visitor {
+        "visitor"
+    } else {
+        "member"
+    };
     let caller = crate::reqlog::Caller {
-        key_id: format!("visitor:{caller_node}"),
-        key_label: format!("visitor {}", &caller_node[..12.min(caller_node.len())]),
+        key_id: format!("{role}:{caller_node}"),
+        key_label: format!("{role} {}", &caller_node[..12.min(caller_node.len())]),
         key_node_id: Some(caller_node.clone()),
         ..crate::reqlog::Caller::anonymous()
     };
@@ -595,23 +633,7 @@ pub(crate) fn settle(
     })
 }
 
-// ── Worker ──────────────────────────────────────────────────────────────────
-
-/// Under `member_gateway_only`, whether `caller` (a peer calling the
-/// inference port or the tunnel) is a visitor that must use an entry node.
-pub(crate) async fn refuse_visitor(state: &GatewayState, caller: &str) -> bool {
-    let settings = crate::payments::runtime::settings(state).await;
-    if settings.inference_access != InferenceAccess::MemberGatewayOnly {
-        return false;
-    }
-    state
-        .network
-        .alive_peers()
-        .await
-        .iter()
-        .find(|p| p.node_id == caller)
-        .is_some_and(|p| crate::gateway::peer_is_visitor(state, p))
-}
+// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -665,7 +687,6 @@ mod tests {
         peer.profile = crate::profile::NodeProfile::Visitor;
         let state = testkit::state_with("entry", vec![peer]).await;
         let mut settings = crate::config::NetworkSettings::default();
-        settings.inference_access = InferenceAccess::MemberGatewayOnly;
         settings.payments.enabled = charge;
         settings.payments.prices.insert(
             "priced".into(),
@@ -709,6 +730,225 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["error"]["code"], "plan_locally");
+    }
+
+    /// Phase B of the admin-hub routing: an attested worker delegates too.
+    /// The roster is what attests it, and acceptance past the role gate is
+    /// proved by the next gate the call reaches (`not_ready`: this test
+    /// installs no router).
+    #[tokio::test]
+    async fn an_attested_worker_delegates_to_the_entry_node() {
+        let worker = key(45);
+        let mut peer = testkit::peer(&id_of(&worker), "worker", 9);
+        peer.profile = crate::profile::NodeProfile::Worker;
+        let state = testkit::state_with("entry", vec![peer]).await;
+        state
+            .network_chat
+            .request_admission(
+                &id_of(&worker),
+                Default::default(),
+                crate::config::EnrollmentRole::Worker,
+            )
+            .unwrap();
+        assert!(state.network_chat.decide_admission(
+            &id_of(&worker),
+            Some(crate::network_lobby::AdmissionStatus::Approved)
+        ));
+        state
+            .database
+            .save_network_settings(&crate::config::NetworkSettings::default())
+            .unwrap();
+        let (status, body) =
+            code_of(delegate_route(signed(&worker), State(state), Json(ask("m", None))).await)
+                .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"]["code"], "not_ready");
+    }
+
+    /// Phase C of the admin-hub routing: the entry node attests a delegation
+    /// caller its own admission list has never seen - the vouch the keepers
+    /// carried is enough, with no token and no local record. Acceptance past
+    /// the role gate is again proved by `not_ready`.
+    #[tokio::test]
+    async fn a_vouched_worker_delegates_without_local_admission() {
+        let worker = key(47);
+        let mut peer = testkit::peer(&id_of(&worker), "worker", 9);
+        peer.profile = crate::profile::NodeProfile::Worker;
+        let state = testkit::state_with("entry", vec![peer]).await;
+        let now = chrono::Utc::now().timestamp();
+        let vouch = crate::membership::sign_vouch(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            &id_of(&worker),
+            crate::config::EnrollmentRole::Worker,
+            now - 5,
+            now,
+        )
+        .unwrap();
+        state.admin_trust.merge_vouches(vec![vouch]);
+        state
+            .database
+            .save_network_settings(&crate::config::NetworkSettings::default())
+            .unwrap();
+        let (status, body) =
+            code_of(delegate_route(signed(&worker), State(state), Json(ask("m", None))).await)
+                .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"]["code"], "not_ready");
+    }
+
+    /// An admin never delegates in either direction of the hub: a call
+    /// signed by the chain's own admin is refused `plan_locally` - an admin
+    /// is itself an entry node.
+    #[tokio::test]
+    async fn an_admin_is_never_a_delegation_caller() {
+        let visitor = key(46);
+        let state = entry_state(&visitor, false).await;
+        let admin_call = crate::auth::InternalNodeAuth {
+            principal: Some(state.authority_principal.clone()),
+        };
+        let (status, body) =
+            code_of(delegate_route(admin_call, State(state), Json(ask("m", None))).await).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "plan_locally");
+    }
+
+    /// Phase B of the admin-hub routing on the member's side: a worker hands
+    /// its own request to an admin entry node; with only a worker announcing
+    /// delegation in sight it ends as `503 no_entry_node`, never at the local
+    /// planning route. The escape hatch (`worker_delegation = false`) puts
+    /// the request back on the local route.
+    ///
+    /// The fixture is a **plain worker**: the testkit node is otherwise the
+    /// primary of its own chain (an admin, which never delegates), so the
+    /// chain is anchored on an external principal instead.
+    #[tokio::test]
+    async fn a_worker_delegates_unless_the_network_opens_the_escape_hatch() {
+        let mut entry = testkit::peer("worker-entry", "worker", 9);
+        entry
+            .inference_frame_capabilities
+            .push(crate::pipeline::CAP_GATEWAY_DELEGATE.into());
+        let state = testkit::state_with("planning", vec![entry]).await;
+
+        let principal_key = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+        let principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "remote-principal",
+            "peer-principal",
+            &principal_key,
+        );
+        let trust = crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+            "hub-lab",
+            principal.clone(),
+            &principal_key,
+        )
+        .unwrap();
+        let mut state = state;
+        state.admin_trust = std::sync::Arc::new(
+            crate::admin_trust::AdminTrust::in_memory(trust.document()).unwrap(),
+        );
+        state.authority_principal = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            "planning",
+            "peer-planning",
+            &ed25519_dalek::SigningKey::from_bytes(&[92; 32]),
+        );
+
+        state
+            .database
+            .insert_api_key(&crate::config::ApiKey {
+                id: "ui-key".into(),
+                key_hash: crate::auth::api_key_hash("sk-active"),
+                key_hint: String::new(),
+                label: "planning".into(),
+                node_id: "planning".into(),
+                origin_node_id: "planning".into(),
+                active: true,
+                created_at: "2026-11-14T00:00:00Z".into(),
+                user_id: String::new(),
+            })
+            .unwrap();
+
+        let app = |state: GatewayState| {
+            axum::Router::new()
+                .route(
+                    "/api/generate",
+                    axum::routing::post(|| async { StatusCode::IM_USED }),
+                )
+                .with_state(state.clone())
+                .layer(axum::middleware::from_fn_with_state(state, member_layer))
+        };
+        let call = || {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/generate")
+                .header("x-api-key", "sk-active")
+                .body(axum::body::Body::from(r#"{"model":"m","prompt":"hi"}"#))
+                .unwrap()
+        };
+
+        // Default: the worker delegates; the only delegating peer is another
+        // worker, not an admin entry, so the request ends without planning.
+        let mut settings = crate::config::NetworkSettings::default();
+        settings.worker_delegation = true;
+        state.database.save_network_settings(&settings).unwrap();
+        let (status, body) = code_of(app(state.clone()).oneshot(call()).await.unwrap()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "no_entry_node");
+
+        // Escape hatch (refinement 8.4): the worker keeps planning directly.
+        let mut escaped = settings.clone();
+        escaped.worker_delegation = false;
+        state.database.save_network_settings(&escaped).unwrap();
+        let status = app(state).oneshot(call()).await.unwrap().status();
+        assert_eq!(status, StatusCode::IM_USED);
+    }
+
+    /// Phase A of the admin-hub routing: a visitor of the old `direct` mode
+    /// no longer plans for itself. Its request delegates, and with no admin
+    /// entry node in sight - a worker announcing delegation is not one - it
+    /// ends as `503 no_entry_node`, never at the local planning route.
+    #[tokio::test]
+    async fn a_direct_mode_visitor_delegates_and_never_plans_itself() {
+        let mut entry = testkit::peer("worker-entry", "worker", 9);
+        entry
+            .inference_frame_capabilities
+            .push(crate::pipeline::CAP_GATEWAY_DELEGATE.into());
+        let state = testkit::state_with("visiting", vec![entry]).await;
+        state
+            .network
+            .set_profile(crate::profile::NodeProfile::Visitor);
+        let settings = crate::config::NetworkSettings::default();
+        state.database.save_network_settings(&settings).unwrap();
+        state
+            .database
+            .insert_api_key(&crate::config::ApiKey {
+                id: "ui-key".into(),
+                key_hash: crate::auth::api_key_hash("sk-active"),
+                key_hint: String::new(),
+                label: "visiting".into(),
+                node_id: "visiting".into(),
+                origin_node_id: "visiting".into(),
+                active: true,
+                created_at: "2026-11-14T00:00:00Z".into(),
+                user_id: String::new(),
+            })
+            .unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/generate",
+                axum::routing::post(|| async { StatusCode::OK }),
+            )
+            .with_state(state.clone())
+            .layer(axum::middleware::from_fn_with_state(state, member_layer));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/generate")
+            .header("x-api-key", "sk-active")
+            .body(axum::body::Body::from(r#"{"model":"m","prompt":"hi"}"#))
+            .unwrap();
+        let (status, body) = code_of(app.oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "no_entry_node");
     }
 
     #[tokio::test]

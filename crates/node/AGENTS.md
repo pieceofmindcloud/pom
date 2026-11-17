@@ -95,7 +95,13 @@ public relay), `--no-cluster-relay`, `--no-relay-transfers` (the three are the
 `relay` section of the config file, see `p2p-network.md`),
 `--no-default-relays`,
 `--no-discovery`, `--no-pkarr` (no pkarr client: a network without internet
-access), `--no-tls` (remote HTTP for browser/client requests behind an HTTPS
+access), `--no-iroh` (iroh as a whole off: no gossip, no relay client or
+server, no tunnels, no pkarr publication - the node speaks and is reached on
+its announced addresses only, spec 2026-11-15; refuses `--serve-relay` and the
+saved `relay.everyone`. The My machine screen saves the same switch to
+`Config.no_iroh`; the flag or the file turns the mode on, never back off, and
+the mode of a run is decided when the node starts),
+`--no-tls` (remote HTTP for browser/client requests behind an HTTPS
 proxy; peer mTLS remains on).
 `--relay-peers` (relay URLs) adds to the `pom.json`'s `relay_peers` (`merged_relay_peers`,
 config first); `--no-default-relays` drops n0's public relays, as `--bootstrap` does to `bootstrap_nodes`. There is no flag for
@@ -281,8 +287,9 @@ troubled deployment.
   See `docs/subsystems/payments.md`.
 - `relay_pass.rs` - relay passes: the admin-signed token a visitor's relay
   admits by, naming the network, the relay URL and an expiry, never its
-  holder; its header differs from the membership token's (`membership.rs`
-  `sign_compact`/`open_compact`), so neither stands in for the other.
+  holder; it shares the compact-JWT helpers of `membership.rs`
+  (`sign_compact`/`open_compact`) under a header of its own, so no other
+  credential of the node can stand in for it.
   `PassLedger` binds a pass to the first endpoint that used it. Design:
   `docs/superpowers/specs/2026-10-23-anonymous-visitor-relays-design.md`.
 - `initial_ports.rs` - selection of available gateway, inference, P2P, QUIC

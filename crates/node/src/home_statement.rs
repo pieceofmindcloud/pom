@@ -285,7 +285,7 @@ pub(crate) async fn internal_issue(
         return refuse("signature_required");
     };
     let document = state.admin_trust.document();
-    // An admin, or a worker its membership token proves, never one banned.
+    // An admin, or a worker the roster vouches, never one banned.
     // A visitor's home is its own network, never this one.
     let revoked = state.admin_trust.revoked_node_at(&caller.node_id).is_some()
         && !may_hold_statement(&state.network_chat, &state.admin_trust, &caller.node_id);

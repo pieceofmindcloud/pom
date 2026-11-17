@@ -36,256 +36,6 @@ fn chain() -> Chain {
 
 const NOW: i64 = 1_800_000_000;
 
-#[test]
-fn any_admin_signs_a_token_every_member_checks_against_the_chain_alone() {
-    let chain = chain();
-    let document = chain.trust.document();
-    for (key, issuer) in [
-        (&chain.primary_key, &chain.primary),
-        (&chain.secondary_key, &chain.secondary),
-    ] {
-        let token = issue(
-            key,
-            issuer,
-            &document,
-            "visitor",
-            "visitor-key",
-            EnrollmentRole::Visitor,
-            NOW,
-        )
-        .unwrap();
-        assert_eq!(
-            role_of(
-                Some(&token),
-                "visitor",
-                "visitor-key",
-                &document,
-                None,
-                NOW + 60
-            ),
-            Some(EnrollmentRole::Visitor)
-        );
-    }
-}
-
-#[test]
-fn a_token_holds_only_for_its_own_key() {
-    let chain = chain();
-    let document = chain.trust.document();
-    let token = issue(
-        &chain.primary_key,
-        &chain.primary,
-        &document,
-        "worker",
-        "worker-key",
-        EnrollmentRole::Worker,
-        NOW,
-    )
-    .unwrap();
-    assert_eq!(
-        role_of(Some(&token), "worker", "another-key", &document, None, NOW),
-        None
-    );
-    assert_eq!(
-        role_of(
-            Some(&token),
-            "another-node",
-            "worker-key",
-            &document,
-            None,
-            NOW
-        ),
-        None
-    );
-}
-
-#[test]
-fn a_token_expires() {
-    let chain = chain();
-    let document = chain.trust.document();
-    let token = issue(
-        &chain.primary_key,
-        &chain.primary,
-        &document,
-        "worker",
-        "worker-key",
-        EnrollmentRole::Worker,
-        NOW,
-    )
-    .unwrap();
-    assert!(verify(&token, &document, NOW + TOKEN_TTL_SECS + CLOCK_LEEWAY_SECS).is_ok());
-    assert!(verify(
-        &token,
-        &document,
-        NOW + TOKEN_TTL_SECS + CLOCK_LEEWAY_SECS + 1
-    )
-    .is_err());
-    assert!(
-        verify(&token, &document, NOW - CLOCK_LEEWAY_SECS - 1).is_err(),
-        "issued in the future"
-    );
-    assert_eq!(expires_at(&token), Some(NOW + TOKEN_TTL_SECS));
-}
-
-#[test]
-fn only_an_admin_issues_and_a_demoted_one_stops_counting() {
-    let chain = chain();
-    let document = chain.trust.document();
-    let stranger_key = SigningKey::from_bytes(&[9; 32]);
-    let stranger = principal_of("stranger", &stranger_key);
-    assert!(issue(
-        &stranger_key,
-        &stranger,
-        &document,
-        "v",
-        "k",
-        EnrollmentRole::Worker,
-        NOW
-    )
-    .is_err());
-    assert!(
-        issue(
-            &stranger_key,
-            &chain.primary,
-            &document,
-            "v",
-            "k",
-            EnrollmentRole::Worker,
-            NOW
-        )
-        .is_err(),
-        "the key must be the issuer's"
-    );
-
-    let token = issue(
-        &chain.secondary_key,
-        &chain.secondary,
-        &document,
-        "v",
-        "k",
-        EnrollmentRole::Worker,
-        NOW,
-    )
-    .unwrap();
-    chain
-        .trust
-        .demote_secondary(&chain.primary_key, chain.secondary.clone())
-        .unwrap();
-    assert!(verify(&token, &chain.trust.document(), NOW).is_err());
-}
-
-#[test]
-fn a_tampered_token_is_refused() {
-    let chain = chain();
-    let document = chain.trust.document();
-    let token = issue(
-        &chain.primary_key,
-        &chain.primary,
-        &document,
-        "v",
-        "k",
-        EnrollmentRole::Visitor,
-        NOW,
-    )
-    .unwrap();
-    let mut parts: Vec<String> = token.split('.').map(str::to_string).collect();
-    let mut claims: MembershipClaims =
-        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(&parts[1]).unwrap()).unwrap();
-    claims.role = EnrollmentRole::Worker;
-    parts[1] = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
-    assert!(verify(&parts.join("."), &document, NOW).is_err());
-
-    let none_header = format!(
-        "{}.{}.{}",
-        URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#),
-        token.split('.').nth(1).unwrap(),
-        token.split('.').nth(2).unwrap()
-    );
-    assert!(verify(&none_header, &document, NOW).is_err());
-}
-
-#[test]
-fn a_token_of_another_network_is_nothing() {
-    let chain = chain();
-    let token = issue(
-        &chain.primary_key,
-        &chain.primary,
-        &chain.trust.document(),
-        "v",
-        "k",
-        EnrollmentRole::Worker,
-        NOW,
-    )
-    .unwrap();
-    let other_key = SigningKey::from_bytes(&[3; 32]);
-    let other = AdminTrust::bootstrap_primary_in_memory(
-        "other-cluster",
-        principal_of("primary", &other_key),
-        &other_key,
-    )
-    .unwrap();
-    assert!(verify(&token, &other.document(), NOW).is_err());
-}
-
-/// A secondary admin bans on its own, and every node then refuses the
-/// member's token from before the ban, while a token issued after a new
-/// approval holds again.
-#[test]
-fn a_secondary_bans_and_old_tokens_stop_holding() {
-    let chain = chain();
-    let document = chain.trust.document();
-    let token = issue(
-        &chain.primary_key,
-        &chain.primary,
-        &document,
-        "worker",
-        "worker-key",
-        EnrollmentRole::Worker,
-        NOW,
-    )
-    .unwrap();
-    let ban = revoke(
-        &chain.secondary_key,
-        &chain.secondary,
-        &document,
-        "worker",
-        NOW + 10,
-    )
-    .unwrap();
-    assert_eq!(
-        role_of(
-            Some(&token),
-            "worker",
-            "worker-key",
-            &document,
-            Some(ban.revoked_at),
-            NOW + 20
-        ),
-        None
-    );
-    let readmitted = issue(
-        &chain.primary_key,
-        &chain.primary,
-        &document,
-        "worker",
-        "worker-key",
-        EnrollmentRole::Worker,
-        NOW + 30,
-    )
-    .unwrap();
-    assert_eq!(
-        role_of(
-            Some(&readmitted),
-            "worker",
-            "worker-key",
-            &document,
-            Some(ban.revoked_at),
-            NOW + 40
-        ),
-        Some(EnrollmentRole::Worker)
-    );
-}
-
 /// Only an admin revokes, an admin is not revoked this way, and a tampered
 /// entry is refused.
 #[test]
@@ -357,4 +107,110 @@ fn revocation_lists_merge_keeping_the_latest_ban() {
     assert_eq!(chain.trust.revoked_node_at("worker"), Some(NOW + 5));
     assert_eq!(chain.trust.revoked_node_at("another-worker"), None);
     assert_eq!(chain.trust.revocations().len(), 1);
+}
+
+#[test]
+fn any_admin_signs_a_vouch_every_node_checks_against_the_chain_alone() {
+    let chain = chain();
+    let document = chain.trust.document();
+    for (key, issuer) in [
+        (&chain.primary_key, &chain.primary),
+        (&chain.secondary_key, &chain.secondary),
+    ] {
+        let vouch = sign_vouch(
+            key,
+            issuer,
+            &document,
+            "worker",
+            EnrollmentRole::Worker,
+            NOW - 10,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(vouch.sub, "worker");
+        assert_eq!(vouch.role, EnrollmentRole::Worker);
+        assert_eq!(vouch.admitted_at, NOW - 10);
+        assert_eq!(vouch.issued_at, NOW);
+        // The other admin checks it knowing nothing about the member.
+        verify_vouch(&vouch, &document, NOW).unwrap();
+    }
+}
+
+#[test]
+fn a_vouch_is_bound_to_its_network_its_signature_its_freshness_and_its_chain() {
+    let chain = chain();
+    let document = chain.trust.document();
+    let vouch = sign_vouch(
+        &chain.primary_key,
+        &chain.primary,
+        &document,
+        "worker",
+        EnrollmentRole::Visitor,
+        NOW - 10,
+        NOW,
+    )
+    .unwrap();
+    // A vouch of another network is nothing here.
+    let mut foreign = vouch.clone();
+    foreign.net = "other-cluster".into();
+    assert!(verify_vouch(&foreign, &document, NOW).is_err());
+    // A forged signature does not hold.
+    let mut forged = vouch.clone();
+    forged.signature = "00".repeat(64);
+    assert!(verify_vouch(&forged, &document, NOW).is_err());
+    // One that stopped being renewed ages out; inside the window it holds.
+    assert!(verify_vouch(
+        &vouch,
+        &document,
+        NOW + VOUCH_FRESH_SECS + CLOCK_LEEWAY_SECS + 1
+    )
+    .is_err());
+    assert!(verify_vouch(&vouch, &document, NOW + VOUCH_FRESH_SECS - 60).is_ok());
+    // An admin of the chain is never vouched.
+    assert!(sign_vouch(
+        &chain.primary_key,
+        &chain.primary,
+        &document,
+        &chain.primary.node_id,
+        EnrollmentRole::Worker,
+        NOW - 10,
+        NOW,
+    )
+    .is_err());
+    // A vouch signed by a stranger is refused at once.
+    let stranger_key = SigningKey::from_bytes(&[9; 32]);
+    let stranger = principal_of("stranger", &stranger_key);
+    assert!(sign_vouch(
+        &stranger_key,
+        &stranger,
+        &document,
+        "worker",
+        EnrollmentRole::Worker,
+        NOW - 10,
+        NOW,
+    )
+    .is_err());
+}
+
+#[test]
+fn a_vouch_from_an_admin_the_chain_demotes_holds_nothing() {
+    let chain = chain();
+    let document = chain.trust.document();
+    let vouch = sign_vouch(
+        &chain.secondary_key,
+        &chain.secondary,
+        &document,
+        "worker",
+        EnrollmentRole::Worker,
+        NOW - 10,
+        NOW,
+    )
+    .unwrap();
+    verify_vouch(&vouch, &document, NOW).unwrap();
+    chain
+        .trust
+        .demote_secondary(&chain.primary_key, chain.secondary.clone())
+        .unwrap();
+    // The check is against the chain as it stands now.
+    assert!(verify_vouch(&vouch, &chain.trust.document(), NOW).is_err());
 }

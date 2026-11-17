@@ -441,6 +441,20 @@ struct Args {
     #[arg(long)]
     no_pkarr: bool,
 
+    /// Turns iroh off as a whole: no gossip, no relay client, no relay server,
+    /// no NAT traversal, no tunnel, no pkarr record (the resolving side of
+    /// pkarr stays, as with `--no-pkarr` it is a lookup; the endpoint stays as
+    /// a pure direct dialer on the p2p port). The node speaks only on the
+    /// addresses it announces - direct QUIC and HTTP - and is itself reached
+    /// only there. For machines the hub or the LAN can dial directly: the
+    /// worker the outer world should never see. It cannot start with a relay
+    /// (`--serve-relay`) and cannot hide behind NAT: the hub refuses it when
+    /// the addresses stop answering (spec 2026-11-15). The My machine screen
+    /// saves the same switch to the config file; this flag turns it on but
+    /// never back off.
+    #[arg(long)]
+    no_iroh: bool,
+
     /// Linux: also install the local web CA in the system trust store, which
     /// every user of the machine reads (asks for root through `pkexec`).
     /// Without it the CA goes only to this user's browser databases.
@@ -486,6 +500,7 @@ const ARG_ENV: &[(&str, &str)] = &[
     ("no_default_relays", "NO_DEFAULT_RELAYS"),
     ("no_discovery", "NO_DISCOVERY"),
     ("no_pkarr", "NO_PKARR"),
+    ("no_iroh", "NO_IROH"),
     ("trust_ca_system_wide", "TRUST_CA_SYSTEM_WIDE"),
 ];
 
@@ -1021,6 +1036,19 @@ async fn async_main(
     app_config.huggingface_token = database.huggingface_token()?;
     config::validate_gateway_port(app_config.gateway_port)?;
     info!("Profile: {}", app_config.profile);
+    // The effective mode is the saved switch or the flag: the flag turns iroh
+    // off but never back on, like the relay options the command line fixes
+    // for a run (spec 2026-11-15).
+    let no_iroh = args.no_iroh || app_config.no_iroh;
+    // `--no-iroh` and relaying for others cannot coexist: the relay server is
+    // an iroh server, and the mode promises no iroh of any kind.
+    if no_iroh && (args.serve_relay || app_config.relay.everyone) {
+        anyhow::bail!(
+            "iroh off refuses a relay: a node with iroh off serves no relay of any kind. \
+             Remove --serve-relay or the relay option, or turn the transport mode back off \
+             (--no-iroh / no_iroh)."
+        );
+    }
 
     // Before anything that can load a model: the ggml backends enumerate
     // the devices when they are registered, and after that the list is
@@ -1055,6 +1083,7 @@ async fn async_main(
         args.no_tls,
         args.no_discovery,
         args.no_pkarr,
+        no_iroh,
         args.no_default_relays,
         merged_bootstrap_nodes(&app_config.bootstrap_nodes, &args.bootstrap),
         merged_relay_peers(&app_config.relay_peers, &args.relay_peers),
@@ -1175,6 +1204,10 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
     use crate::config::Config;
     Config {
         validator: false,
+        // A new machine starts with iroh on: the hub line hides workers, but a
+        // fresh network still reaches NAT-hidden visitors through relays
+        // (spec 2026-11-15).
+        no_iroh: false,
         retired_tls_required: (),
         saved_at: None,
         profile: crate::profile::NodeProfile::Admin,
@@ -1502,6 +1535,9 @@ struct P2pStackArgs {
     no_discovery: bool,
     /// `--no-pkarr`: no pkarr client is created.
     no_pkarr: bool,
+    /// `--no-iroh`: no endpoint, no gossip, no relay client, no relay server,
+    /// no tunnel, no pkarr publication. The node is reached on its addresses.
+    no_iroh: bool,
 }
 
 /// What a caller needs after `start_p2p_stack` returns, to keep going with
@@ -1610,6 +1646,16 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
     net.relay_gate().set_reachable(args.public_addr_configured);
+    // `--no-iroh` (spec 2026-11-15): the mode is fixed for the run. The gate
+    // answers "no relay" whatever the screens or the network policy later ask
+    // for, and `Discovery::new` builds no relay client on the endpoint.
+    net.set_direct_only(args.no_iroh);
+    net.relay_gate().set_direct_only(args.no_iroh);
+    if args.no_iroh {
+        info!(
+            "🚫 --no-iroh: no gossip, no relay client, no relay server, no tunnels, no pkarr record - this node speaks and is reached on its announced addresses only"
+        );
+    }
     // The network's relay policy holds from the first relay map on.
     net.relay_gate()
         .set_policy(args.auth.read().await.network.relay_policy);
@@ -1660,6 +1706,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         net.bind_addr.port(),
         &args.relay_urls,
         args.use_default_relays,
+        args.no_iroh,
         net.clone(),
         endpoint_key,
         tunnel_rx,
@@ -1784,10 +1831,11 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::gateway::spawn_directory_publisher(gw_state.clone());
     crate::webui::spawn_admission_poller(gw_state.clone());
     crate::webui::spawn_member_list_keeper(gw_state.clone());
-    crate::webui::spawn_token_keeper(gw_state.clone());
+    crate::webui::spawn_membership_keeper(gw_state.clone());
     crate::home_statement::spawn_keeper(gw_state.clone());
     crate::webui::spawn_roster_keeper(gw_state.clone());
     crate::webui::spawn_revocation_keeper(gw_state.clone());
+    crate::webui::spawn_vouch_keeper(gw_state.clone());
     crate::webui::spawn_key_reclaimer(gw_state.clone());
     crate::admin::spawn_trust_chain_keeper(gw_state.clone());
     crate::webui::spawn_departure_worker(gw_state.clone());
@@ -1805,6 +1853,7 @@ async fn start_node(
     no_tls: bool,
     no_discovery: bool,
     no_pkarr: bool,
+    no_iroh: bool,
     no_default_relays: bool,
     bootstrap_nodes: Vec<String>,
     relay_urls: Vec<String>,
@@ -1887,6 +1936,7 @@ async fn start_node(
         use_default_relays: !no_default_relays,
         no_discovery,
         no_pkarr,
+        no_iroh,
     })
     .await?;
     let authority_signing_key = Arc::new(stack.authority_signing_key.clone());
@@ -1920,17 +1970,41 @@ async fn start_node(
     // knows the key (trust document, public directory, `--relay-peers`) finds
     // out where to dial.
     let pkarr_node = stack.pkarr_node.map(Arc::new);
-    let pkarr_publisher = pkarr_node.as_ref().map(|node| {
-        Arc::new(crate::gateway::PkarrPublishHandle::new(
-            node.clone(),
-            Some(gateway_port),
-            None,
-            net.clone(),
-            app_config.network.geo_label.clone(),
-        ))
-    });
+    // `--no-iroh` publishes no record: a direct-only node is dialled on the
+    // addresses it announces, and its machine has no place in the public DHT
+    // (spec 2026-11-15). The pkarr client stays - the node still resolves
+    // principals and `--pkarr-peers` by key.
+    let pkarr_publisher = if no_iroh {
+        None
+    } else {
+        pkarr_node.as_ref().map(|node| {
+            Arc::new(crate::gateway::PkarrPublishHandle::new(
+                node.clone(),
+                Some(gateway_port),
+                None,
+                net.clone(),
+                app_config.network.geo_label.clone(),
+            ))
+        })
+    };
     if let Some(publisher) = pkarr_publisher.clone() {
         publisher.spawn_republisher();
+    }
+    // A machine switching to direct-only must not leave its old record dialable:
+    // the record is emptied once at startup (spec 2026-11-15).
+    if no_iroh {
+        if let Some(node) = pkarr_node.clone() {
+            tokio::spawn(async move {
+                match node.retire_record().await {
+                    Ok(()) => info!("pkarr: the record of the direct-only node was retired"),
+                    Err(error) => {
+                        warn!(
+                            "pkarr: could not retire the record of the direct-only node: {error:#}"
+                        )
+                    }
+                }
+            });
+        }
     }
     // Cold dial by key: `--pkarr-peers` and the trust chain principals. No
     // IP comes from configuration or a document.
@@ -2072,9 +2146,14 @@ async fn start_node(
             hf_token_store,
         )),
         pkarr_publisher,
+        restart_needed: no_iroh && !app_config.no_iroh,
+        session_pins: Default::default(),
     };
 
     info!("Gateway running at http://localhost:{}", gateway_port);
+    // Sessions pinned to a hop chain come back with the gateway: a restart
+    // does not re-plan every live session cold (admin-hub routing 3.3).
+    crate::gateway::restore_session_pins(&gw_state);
     spawn_gateway_companions(&gw_state, &database, net.bind_addr.port());
     let gateway_task = tokio::spawn(async move {
         crate::gateway::start_gateway_with_ready(gw_state, gateway_port, gateway_ready).await

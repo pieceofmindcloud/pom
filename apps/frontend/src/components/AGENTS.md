@@ -353,7 +353,9 @@ Per-file list:
   a public address and none is configured, so behind a NAT the machine
   cannot relay for anyone and there is nothing to choose. An option the command line fixed for this run is
   shown locked, with the reason; file transfers are locked while the machine
-  does not relay for its network. `relayStateKey` turns the answer into one
+  does not relay for its network; with the node reporting `direct_only` (iroh
+  off on this machine, the saved `--no-iroh`) every option is locked and each
+  row says the mode is why, with `relayStateKey` naming it. `relayStateKey` turns the answer into one
   line (relaying for any network, for this network, not relaying, or not
   reachable from the internet). The panel stays out when the node does not
   answer. On a visitor a fourth card, "Relay anonymously for this network"
@@ -410,8 +412,12 @@ Per-file list:
   from `NodeInfo.network_name` and linking to `/config/network`; then
   `ConnectionBadge` on a member; then hostname,
   the `NatBadge`, peer count, coverage; a machine alone in a network named
-  after it shows only the network badge; below `md`, a phone or the macOS
-  menu-bar panel, those badges fold into one Info icon, `NodeChipButton`,
+  after it shows only the network badge; the peer count with the coverage is
+  the operator's summary and is not drawn for a `visitor`, whose cluster view
+  the node narrows on purpose (`Network::hides`), so it would read as a network
+  of one machine - what that member has there is `ConnectionBadge`; below `md`,
+  a phone or the macOS menu-bar panel, those badges fold into one Info icon,
+  `NodeChipButton`,
   that opens them in a popover like the bell's), the i18n badge of the node's
   persisted profile (not drawn for a visitor, and inside that popover below `md`), the macOS button of
   the larger window, `UsageButton` (a gauge icon drawn only when

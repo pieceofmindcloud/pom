@@ -143,7 +143,11 @@ dedicated or member, with iroh's hole punching), are in
   announce signature binds the announce to its endpoint, but does not replace the
   membership proof. Every 5 s `apply_policy` refreshes the relay gate's members and
   URL, the member relays in use, the gossip membership, the published endpoint
-  addresses and the reachability from the NAT report. A gossip join is asked
+  addresses and the reachability from the NAT report. On a direct-only node
+  (`--no-iroh` or the saved `no_iroh`, `Network::is_direct_only`) the endpoint holds no gossip
+  subscription, no relay on its map, no relay server and no ephemeral anon
+  endpoint, and its announce round takes the sealed direct path to every peer
+  it dialed. A gossip join is asked
   once per peer (`PolicyState::joined`), and a node with no neighbor asks its
   known peers again every 30 s; a peer pkarr finds again while it is neither
   connected nor an active neighbor is asked to join again, at most once per
@@ -164,13 +168,13 @@ dedicated or member, with iroh's hole punching), are in
   UDP receive loop drops one that is unsigned, signed by another key or stale
   (`verify_udp_announce`); a `PeerList` never moves the addresses of a peer whose
   own announce arrived in the last 30 s (`firsthand`, `insert_announced_peer`).
-  `is_member_key` answers whether a node key is an admin of the chain or holds a
-  valid, unrevoked membership token, or is this node's own key (the peers table never
+  `is_member_key` answers whether a node key is an admin of the chain, a peer the
+  roster vouches, or this node's own key (the peers table never
   holds this node, and a worker that is the gateway of its own request dials its
   own address over TLS): what every node-to-node call authorized by the
   connection key is checked against (`auth::caller_is_member`). On a visitor, `admit_peer`
   refuses another visitor and `alive_peers` leaves one out (`hides`, role from
-  the verified token, else the announced profile): visitors never know each
+  the roster vouch, else the announced profile): visitors never know each
   other. A visitor's `announce` skips the LAN broadcast, and `discovery.rs`
   sends its sealed announce to each admin and worker over `AnnounceCodec`
   (`pom/announce-direct/1`) instead of the gossip topic. On a public network the
@@ -189,10 +193,10 @@ dedicated or member, with iroh's hole punching), are in
   and never proof; `pom_version`/`pom_build` are the release
   (`pom_core_update::RELEASE_VERSION`) and the build commit the node runs,
   copied into `PeerInfo` and `/admin/nodes` for the participants screen and
-  never used for a decision; `membership` is this node's membership token
-  (`set_membership`, renewed by `webui::spawn_token_keeper`), announced and
-  carried in `PeerInfo`, and only believed once `membership::peer_role`
-  checks it against the chain; `is_principal` / `peer_is_principal` tell the
+  never used for a decision; the `membership` announce field and this node's
+  token store were retired 2026-11-15 (admin-hub routing C3): membership is
+  what the roster vouch ledger says (`AdminTrust::vouched_role`), never
+  something a node carries; `is_principal` / `peer_is_principal` tell the
   principal from any admin (a secondary has the profile, not the principal's
   duties: chat relay, lobby, member list), by the key the local trust chain
   names; the admin capability does not come from the announcement but
@@ -260,8 +264,12 @@ dedicated or member, with iroh's hole punching), are in
   `DIRECT_REPROBE_INTERVAL` (`relay::spawn_direct_reprobe`); a success erases the mark.
 - `pkarr_node.rs` - key -> address resolver on the pkarr DHT: a signed `_pom`
   TXT with the endpoint's public direct addresses and its relay URLs;
-  `publish`/`resolve`/`resolve_dial_addr` (one `EndpointAddr` with both). The live publisher is
-  `gateway::PkarrPublishHandle`.
+  `publish`/`resolve`/`resolve_dial_addr` (one `EndpointAddr` with both), and
+  `retire_record` - the empty tombstone a direct-only node publishes once so
+  its old record stops resolving: at startup when the mode came up, and from
+  `POST /api/ui/network/transport` when the switch turns iroh off mid-run. The
+  live publisher is `gateway::PkarrPublishHandle`, whose `publish_if_changed`
+  skips a direct-only node the same way it skips a detached one.
 - `public_directory.rs` - the federated protocol of the public catalog. Complete
   records are signed by the network's principal, have a 16 bit proof of work, a
   monotonic sequence, a TTL of seven days and a deterministic merge. The local
@@ -539,7 +547,8 @@ dedicated or member, with iroh's hole punching), are in
   `/pom/anon-tunnel/1`) in step with `Network::anonymous_relays` (`sync`, every
   policy round in `discovery.rs`), rotates it every `ROTATE_AFTER` on unused
   passes, publishes its address (`AnonTunnelAddr`, in the announce's
-  `anon_tunnel`) and makes the calls (`call`). A connection starts with a
+  `anon_tunnel`) and makes the calls (`call`). On a direct-only node
+  `AnonTunnels::disabled` answers: `sync` does nothing and no endpoint exists. A connection starts with a
   `Binding`: the node key signs the connection's exported keying material
   (`sign_binding`/`check_binding`); the answering side (`AnonServe`) checks it
   and membership, then serves `InferTunnelCodec` as the bound node
@@ -550,7 +559,10 @@ dedicated or member, with iroh's hole punching), are in
   every connecting endpoint (`allows`): everyone with `relay.everyone`/`--serve-relay`;
   the admitted members of its cluster when the internet reaches it and
   `relay.cluster` is on (the default); nobody otherwise, and nobody when the server
-  did not come up (`set_available`). An iroh relay cannot tell an endpoint that homes
+  did not come up (`set_available`). `set_direct_only` (the flag or the saved
+  `no_iroh`) holds the mode against all of it: `serving`, `everyone`, `anonymous_serving`, `offer`
+  and `allows` all answer no, and `status().direct_only` shows it on the
+  screens. An iroh relay cannot tell an endpoint that homes
   on it from one that only sends through it, so a member relay admits members only.
   `offer()` is what goes into the `Announce` (`RelayOffer`, with whether transfers may
   cross it and the `url`). The options are atomics: `set` changes them live from the
@@ -653,6 +665,9 @@ dedicated or member, with iroh's hole punching), are in
   endpoint addresses `ip:port`, `x` relay URLs, `h`, `i`, `r`, `g`), trimmed from
   the end until it fits in 900 B. The `g` field carries the
   geo label as metadata, without changing the key.
+- `PkarrNode::retire_record` - signs the same name with an unparseable value:
+  every resolver - older builds included - reads `None`. A node turning
+  direct-only empties its record with it (spec 2026-11-15).
 - `resolve`/`resolve_public_peer` - a `pk:` or hex key into
   `ResolvedPeer { endpoint_id, record }`; failure becomes `None`, never an error.
   This does not enumerate the DHT: `/api/public/networks` only resolves
@@ -680,12 +695,18 @@ dedicated or member, with iroh's hole punching), are in
   (`self_addr_candidates`), `route.rs` (`Network.routes`); `discovery.rs` →
   `network.rs::insert_admitted_peer`, `p2p.rs`.
 
-## Visitors under member_gateway_only
+## The visitor view (the admin-hub shape)
 
-`Network::set_visitor_view` (kept from the network settings by
-`payments::runtime::install`) narrows what visitors learn: `peer_list_for` a
-visitor lists only allowed entry nodes (`gateway/delegate-v1`, admins only
-under `entry_nodes = admins`), and a node kept from visitors
+`Network::set_visitor_view` is set once at startup by
+`payments::runtime::install` to "admin entry nodes only" - the one shape the
+product has, since decision 5 of 2026-11-15 deleted the access-mode knobs
+(phase A of
+`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). It narrows
+what visitors learn, on both sides: `peer_list_for` a visitor lists only the
+admins announcing `gateway/delegate-v1`; `hides` keeps a visitor from ever
+admitting a worker or another visitor (`insert_admitted_peer` refuses, the
+announce loop, `PeerRequest` targets and `alive_peers` never name one), so a
+visitor's table holds only admins; and a node kept from visitors
 (`self_withheld_from_visitors`) neither announces to them nor answers their
 `PeerRequest`. See `docs/subsystems/payments.md`.
 

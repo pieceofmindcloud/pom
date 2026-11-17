@@ -1,6 +1,7 @@
 //! Compact Ed25519 tokens: `header.claims.signature`, each part base64url
-//! without padding, the signature over the first two. The same format as the
-//! node's membership tokens; each kind has its own header, so one kind can
+//! without padding, the signature over the first two. The same compact form
+//! the node's relay passes use (`crates/node/src/membership.rs`); each kind
+//! has its own header, so one kind can
 //! never pass for another.
 
 use anyhow::{bail, Context, Result};
@@ -16,7 +17,10 @@ pub fn sign<T: Serialize>(header: &str, claims: &T, key: &SigningKey) -> Result<
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims)?)
     );
     let signature = key.sign(signed.as_bytes());
-    Ok(format!("{signed}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes())))
+    Ok(format!(
+        "{signed}.{}",
+        URL_SAFE_NO_PAD.encode(signature.to_bytes())
+    ))
 }
 
 /// Opens a token with exactly `header`, checking the signature by the key
@@ -43,8 +47,12 @@ pub fn open<T: DeserializeOwned>(
         .try_into()
         .map_err(|_| anyhow::anyhow!("invalid signer key size"))?;
     let key = VerifyingKey::from_bytes(&raw).context("invalid signer key")?;
-    let signature = Signature::from_slice(&URL_SAFE_NO_PAD.decode(signature).context("invalid signature")?)
-        .context("invalid signature")?;
+    let signature = Signature::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(signature)
+            .context("invalid signature")?,
+    )
+    .context("invalid signature")?;
     key.verify(format!("{head}.{body}").as_bytes(), &signature)
         .context("the token signature does not match")?;
     Ok(claims)

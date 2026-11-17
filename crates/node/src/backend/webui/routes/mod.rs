@@ -407,6 +407,13 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::LocalOnly,
     },
+    // The machine's transport mode is its operator's choice too: no other
+    // node turns iroh on or off here (spec 2026-11-15).
+    RouteRule {
+        prefix: "/api/ui/network/transport",
+        method: None,
+        scope: RouteScope::LocalOnly,
+    },
     RouteRule {
         prefix: "/api/ui/network/settings",
         method: Some(Method::POST),
@@ -900,6 +907,7 @@ mod policy_tests {
             RouteScope::LocalOnly
         );
         assert_eq!(scope_of("/api/ui/network/relay"), RouteScope::LocalOnly);
+        assert_eq!(scope_of("/api/ui/network/transport"), RouteScope::LocalOnly);
         assert_eq!(
             scope_of("/api/ui/network/admin-authority"),
             RouteScope::HandlerAuth

@@ -427,8 +427,8 @@ local-only notice. Routes:
   direct or relayed connection, latency and hardware, and a link to that
   candidate's thread, where an admin approves or declines after talking;
   once decided, the candidate's window hides the conversation; on the candidate it lists the answer, with "Join now" when approved.
-  After "Join now" the node restarts into the network and, until it holds a
-  membership token, has no models to show. The interface says so instead of
+  After "Join now" the node restarts into the network and, until the roster
+  vouches it, has no models to show. The interface says so instead of
   "the network serves no model": `GET /api/ui/connection` gives the phase
   (`discovering`, `authenticating`, `connected`, or `standalone` for an admin),
   a "Connecting…" badge sits in the top bar and on this machine's row here,
@@ -597,7 +597,12 @@ served model, layer range and in-flight requests. For `visitor`, global coverage
 is not an operational indicator of its screen, so it is not rendered as a
 pipeline alarm. If `/api/ui/node` is unavailable, those fields show
 unavailable; missing data never becomes an empty model, an incomplete pipeline
-or zero.
+or zero. The top bar keeps the same split: the machine count with the layer
+coverage is the operator's summary, so a `visitor` is not shown it - the visitor
+view (`Network::hides`, `p2p-network.md`) leaves it knowing the admin entry
+nodes and itself, and a count over that narrowed view reads as a network of one
+machine. What a member of any profile gets in the top bar instead is the
+connection badge, which says how many machines of the network it sees.
 
 "Requests on this node" measures the number of inference requests currently in
 flight in that machine's `LoadTracker`. Zero is a valid measurement only when

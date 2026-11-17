@@ -249,7 +249,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = Join-Path $env:RUNNER_TEMP 'VulkanSDK-Installer.exe'
-          curl.exe -fsSL -o $exe "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_VERSION.exe"
+          # The LunarG download sometimes drops mid-transfer ("Connection was reset"): retry,
+          # and stop here on failure instead of running a truncated installer.
+          curl.exe -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o $exe "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_VERSION.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Vulkan SDK download failed (curl exit $LASTEXITCODE)" }
           & $exe --accept-licenses --default-answer --confirm-command install
           $sdk = "C:\VulkanSDK\$env:VULKAN_VERSION"
           if (-not (Test-Path "$sdk\Lib\vulkan-1.lib")) { throw "Vulkan SDK did not install in $sdk" }

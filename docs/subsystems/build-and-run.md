@@ -1162,6 +1162,10 @@ use `scripts/release-ksia.sh --variant windows-cpu --debug-symbols` (see
 
 ## Defects noted
 
+- DEFECT NOTED: the engine's `build.rs` (`pom-plugin-llama.cpp`) compiles
+  `tools/mtmd` with MSVC without `_USE_MATH_DEFINES`, so the fork's audio code
+  fails on `M_PI` (C2065). `release-windows.yml` works around it with
+  `CL=/D_USE_MATH_DEFINES`; the define belongs in the engine's build.
 - DEFECT NOTED: `routing-base::plan` (its only real logic) is called by nobody -
   the node's planner (`crates/node/src/routing/pipeline.rs::plan_pipeline`)
   makes its own greedy plan. `routing-base` is dead code kept alive only by its

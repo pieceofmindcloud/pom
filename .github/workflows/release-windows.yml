@@ -271,6 +271,10 @@ jobs:
       - name: Compile (${{ matrix.variante }})
         shell: pwsh
         run: |
+          # MSVC only defines M_PI with _USE_MATH_DEFINES. llama.cpp's CMake sets it, but the
+          # engine's build.rs compiles tools/mtmd (whose audio code uses M_PI) with cl.exe
+          # directly; cl.exe reads extra options from the CL variable.
+          $env:CL = '/D_USE_MATH_DEFINES'
           if ('${{ matrix.variante }}' -eq 'gpu') {
             $env:CUDAARCHS = $env:POM_WINDOWS_CUDAARCHS
             Remove-Item Env:CMAKE_CUDA_ARCHITECTURES -ErrorAction SilentlyContinue

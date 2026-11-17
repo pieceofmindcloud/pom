@@ -1130,17 +1130,19 @@ affecting the other two. `release-windows.yml` has two variants (input
 `variantes`), each a matrix job and a package:
 
 - **llama.cpp comes from the fork's release**, not from a source build: the
-  job takes `llama-<tag>-bin-win-cuda-13.4-vulkan-x64.zip` (gpu) or
+  job takes `llama-<tag>-bin-win-cuda-13.5-vulkan-x64.zip` (gpu) or
   `llama-<tag>-bin-win-cpu-x64.zip` (cpu) from `pieceofmindcloud/llama.cpp`
-  (input `llama_tag`; empty picks the newest release of the fork's `pom` branch,
-  the one the engine compiles against, that has the combined CUDA 13.4 + Vulkan
-  package), links the `.lib` import libraries in it
+  (input `llama_tag`; empty picks the newest `pom-b*` release that has the
+  combined CUDA 13.5 + Vulkan package and was built from the fork commit in the
+  pinned engine's `llama-cpp.lock`, or from a later commit that changed only
+  `.github/`; with none the job stops and asks for the fork's Release to run on
+  its `pom` branch, instead of failing later inside the engine's wrapper), links the `.lib` import libraries in it
   (`POM_LLAMA_CPP_PREBUILT_LIB_DIR`) and ships its DLLs next to `pom.exe`,
   except the llama.cpp tools' `*-impl.dll`. The tag's source archive is
   `LLAMA_SOURCE`, for the headers.
 - **`gpu`** (default): `--features cuda,vulkan` in the same `pom.exe`, package
-  `pom-<v>-x86_64-pc-windows-msvc-cuda-vulkan.zip`. CUDA 13.4 for NVIDIA, the
-  same as the fork package and the Docker image; Vulkan covers NVIDIA, AMD
+  `pom-<v>-x86_64-pc-windows-msvc-cuda-vulkan.zip`. CUDA 13.5 for NVIDIA, the
+  same as the fork package; Vulkan covers NVIDIA, AMD
   (e.g. RX 7800 XT) and Intel. The job installs only the CUDA components in
   use (`nvcc`, `libnvvm`, `cudart`, `cccl`, `cublas`...), downloaded from
   NVIDIA's "redist" archives through the version manifest (`CUDA_VERSION`), and

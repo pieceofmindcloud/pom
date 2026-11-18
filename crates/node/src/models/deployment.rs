@@ -184,6 +184,9 @@ pub struct NodeOverrides {
     pub max_sessions: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_gpu_layers: Option<u32>,
+    /// The machine's GPUs for this deployment (`RuntimeParams.gpus`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<crate::config::GpuSet>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offload_kqv: Option<bool>,
     /// The machine's whole configuration, as its inspector set it when it joined. It replaces the version's parameters
@@ -197,6 +200,7 @@ impl NodeOverrides {
         self.n_ctx.is_none()
             && self.max_sessions.is_none()
             && self.n_gpu_layers.is_none()
+            && self.gpus.is_none()
             && self.offload_kqv.is_none()
             && self.params.is_none()
     }
@@ -213,6 +217,9 @@ impl NodeOverrides {
         }
         if let Some(v) = self.n_gpu_layers {
             merged.n_gpu_layers = v;
+        }
+        if self.gpus.is_some() {
+            merged.gpus = self.gpus;
         }
         if let Some(v) = self.offload_kqv {
             merged.offload_kqv = v;

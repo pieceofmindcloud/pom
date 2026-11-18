@@ -757,6 +757,9 @@ pub struct LaunchTarget {
     /// before this the whole launch had to settle on one.
     #[serde(default)]
     pub n_gpu_layers: Option<u32>,
+    /// The GPUs of this peer the deployment runs on, overriding `params.gpus`.
+    #[serde(default)]
+    pub gpus: Option<crate::config::GpuSet>,
     /// Where this peer's KV cache lives, overriding `params.offload_kqv` for
     /// it alone.
     ///
@@ -847,6 +850,9 @@ pub(crate) fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> Runtime
     let mut params = base.clone();
     if let Some(gpu) = target.n_gpu_layers {
         params.n_gpu_layers = gpu;
+    }
+    if target.gpus.is_some() {
+        params.gpus = target.gpus;
     }
     if let Some(kqv) = target.offload_kqv {
         params.offload_kqv = kqv;

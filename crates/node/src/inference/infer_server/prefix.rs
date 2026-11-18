@@ -216,6 +216,7 @@ mod decision_prefix_tests {
             n_batch: 512,
             n_ubatch: llama_engine::DEFAULT_N_UBATCH,
             n_gpu_layers: 0,
+            devices: None,
             n_threads: 2,
             max_sessions: 1,
             need_embeddings: false,

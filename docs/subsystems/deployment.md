@@ -575,6 +575,18 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
 
 - **An empty `target_node_id` is a refusal, not an invitation** for the node
   to choose.
+- **`gpus`** (a `config::GpuSet`, JSON `[0, 1]`, the node's own GPU indices)
+  says which of the machine's GPUs the range runs on; absent = all of them.
+  It travels like `n_gpu_layers`: `SelectedSlice`/`WholeRangeSelection` ->
+  `PeerOverrides` -> `Step` -> `LaunchTarget` -> `RuntimeParams.gpus` ->
+  `NodeConfig.gpus`, and in `NodeOverrides`/`PerNodeParams` for a redeploy.
+  llama.cpp loads the model only on those devices (`EngineConfig.devices`,
+  `runtime::device_picks`: each index becomes its vendor and its position
+  among that vendor's cards; the engine matches the ggml devices by backend
+  and description, `picked_device_indices`). A plugin's engine receives only
+  those GPUs in `engine.load` (`plugin_engine::chosen_gpus`). The plan's
+  machines carry their `gpus` (index, name, VRAM) for the Machines tab.
+  The process-wide `pom.json` `gpus` still bounds what the node sees at all.
 - **Machine with `n_gpu_layers`/`offload_kqv`**: only what is a property of the
   hardware travels per machine. `offload_kqv` is only the GPU-versus-RAM
   boolean, and when it stays on the GPU the cache follows the layer that holds

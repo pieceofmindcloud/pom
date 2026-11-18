@@ -1481,6 +1481,7 @@ mod tests {
             prefill_min_tokens: None,
             inference_port: port,
             n_gpu_layers: 99,
+            gpus: None,
             n_ctx: 8192,
             offload_kqv: true,
             hidden_state_dtype: crate::wire::WireDtype::F16,

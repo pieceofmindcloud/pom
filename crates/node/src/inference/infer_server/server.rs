@@ -786,7 +786,10 @@ pub async fn run(
     // `rs_seq_window` (largest speculative batch width, across the two mechanisms
     // lookup and MTP) is now computed inside `engine_config_from_node` -
     // see the doc of `EngineConfig::rs_seq_window`.
-    let engine_cfg = crate::runtime::engine_config_from_node(&cfg, cfg.needs_residual_export())?;
+    let mut engine_cfg =
+        crate::runtime::engine_config_from_node(&cfg, cfg.needs_residual_export())?;
+    // The deployment's GPUs (`NodeConfig.gpus`), as the engine numbers them.
+    engine_cfg.devices = crate::runtime::device_picks(cfg.gpus).await;
 
     let model_path = cfg.model_path.clone();
     let mut engine = tokio::task::spawn_blocking(move || {

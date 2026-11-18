@@ -29,6 +29,9 @@ pub struct MachineView {
     pub(super) label: String,
     pub(super) mem_free_mb: u64,
     pub(super) gpu_free_mb: u64,
+    /// The machine's GPUs, for the Machines tab's choice.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) gpus: Vec<super::survey::MachineGpu>,
     pub(super) ram_free_mb: u64,
     pub(super) disk_free_mb: u64,
     pub(super) rtt_ms: Option<f64>,
@@ -140,6 +143,9 @@ pub struct Step {
     /// Per-machine GPU offload, when the operator set one. `None` means this
     /// peer takes `params.n_gpu_layers`.
     pub(super) n_gpu_layers: Option<u32>,
+    /// The GPUs of the target this step runs on. `None` = all of them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) gpus: Option<crate::config::GpuSet>,
     /// Per-machine KV cache placement. `None` takes `params.offload_kqv`.
     pub(super) offload_kqv: Option<bool>,
     /// Per-machine prefill/decode role. `None` takes `params.inference_role`.
@@ -1341,6 +1347,7 @@ pub(super) fn plan_with_rtt_options(
                     s.target_node_id.clone(),
                     PeerOverrides {
                         n_gpu_layers: s.n_gpu_layers,
+                        gpus: s.gpus,
                         offload_kqv: s.offload_kqv,
                         inference_role: s.inference_role,
                     },
@@ -1810,6 +1817,7 @@ pub(super) fn plan_with_rtt_options(
                 target_path: None,
                 primary: start_layer == 0,
                 n_gpu_layers: grp[0].2.n_gpu_layers,
+                gpus: grp[0].2.gpus,
                 offload_kqv: grp[0].2.offload_kqv,
                 inference_role: grp[0].2.inference_role,
                 options: merged_alternatives(&parts, machines),
@@ -1958,6 +1966,7 @@ pub(super) fn plan_with_rtt_options(
                         .map(|s| s.path.clone()),
                     primary: c.start_layer == 0,
                     n_gpu_layers: over.n_gpu_layers,
+                    gpus: over.gpus,
                     offload_kqv: over.offload_kqv,
                     inference_role: over.inference_role,
                     options: alternatives(c, machines, kind),
@@ -2039,6 +2048,7 @@ pub(super) fn plan_with_rtt_options(
             label: m.label(),
             mem_free_mb: m.mem_free_mb,
             gpu_free_mb: m.gpu_free_mb,
+            gpus: m.gpus.clone(),
             ram_free_mb: m.ram_free_mb,
             disk_free_mb: m.disk_free_mb,
             rtt_ms: m.rtt_ms,

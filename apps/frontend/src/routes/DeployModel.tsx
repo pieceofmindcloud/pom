@@ -87,6 +87,7 @@ import {
 import type {
   DeployKind,
   DeployPlan,
+  DeployMachineGpu,
   DeploySelection,
   DeployStrategy,
   CacheTypesResponse,
@@ -126,6 +127,7 @@ function rowsOf(plan: DeployPlan | undefined): DeploySelection[] {
           target_node_id: s.target_node_id,
           // Per-machine, so every part of a merged step carries the same pair.
           n_gpu_layers: s.n_gpu_layers,
+          ...(s.gpus ? { gpus: s.gpus } : {}),
           offload_kqv: s.offload_kqv,
           ...(s.inference_role ? { inference_role: s.inference_role } : {}),
         }))
@@ -135,6 +137,7 @@ function rowsOf(plan: DeployPlan | undefined): DeploySelection[] {
             end_layer: s.end_layer,
             target_node_id: s.target_node_id,
             n_gpu_layers: s.n_gpu_layers,
+            ...(s.gpus ? { gpus: s.gpus } : {}),
             offload_kqv: s.offload_kqv,
             ...(s.inference_role ? { inference_role: s.inference_role } : {}),
           },
@@ -156,6 +159,7 @@ const launchOverridesKey = (rows: DeploySelection[] | null) =>
             row.end_layer,
             row.target_node_id,
             row.n_gpu_layers ?? null,
+            row.gpus?.join(",") ?? null,
             row.offload_kqv ?? null,
             row.inference_role ?? null,
           ])
@@ -1110,6 +1114,17 @@ export function DeployModel() {
    * number. One number per machine, so it lands on every row the machine
    * holds — a merged machine can't have two of them.
    */
+  /** The machine's GPUs for this deployment; `null` = all of them. */
+  function setPeerGpus(nodeId: string, value: number[] | null) {
+    edit((base) =>
+      base.map((r) => {
+        if (r.target_node_id !== nodeId) return r;
+        const { gpus: _gpus, ...rest } = r;
+        return value ? { ...rest, gpus: value } : rest;
+      }),
+    );
+  }
+
   function setPeerGpu(nodeId: string, value: number | null) {
     edit((base) =>
       base.map((r) => (r.target_node_id === nodeId ? { ...r, n_gpu_layers: value } : r)),
@@ -1795,6 +1810,7 @@ export function DeployModel() {
               onRemoveMachine={removePeerFromDeployment}
               onRows={(next) => setSelection(next.slice().sort(byLayer))}
               onGpu={setPeerGpu}
+              onGpus={setPeerGpus}
               onKqv={setPeerKqv}
               marked={markedNodeIds}
               onToggleMarked={toggleMarked}
@@ -1946,6 +1962,50 @@ export function DeployModel() {
  * range or several, each picked on the valid cuts (virtual slices read any of
  * them from the whole file); nothing here re-plans, Deploy validates the map.
  */
+/** Which of a machine's GPUs the deployment runs on: one box per GPU, all
+ *  checked by default (`chosen` null). The last box cannot be unchecked. */
+function MachineGpuPicker({
+  machine,
+  gpus,
+  chosen,
+  onChange,
+}: {
+  machine: string;
+  gpus: DeployMachineGpu[];
+  chosen: number[] | null;
+  onChange: (value: number[] | null) => void;
+}) {
+  const { t } = useI18n();
+  const on = (index: number) => chosen == null || chosen.includes(index);
+  const toggle = (index: number) => {
+    const current = chosen ?? gpus.map((gpu) => gpu.index);
+    const next = on(index) ? current.filter((value) => value !== index) : [...current, index].sort((a, b) => a - b);
+    if (next.length === 0) return;
+    onChange(next.length === gpus.length ? null : next);
+  };
+  return (
+    <div className="space-y-1 border-t border-line pt-2" data-testid={`machine-gpus-${machine}`} onClick={(event) => event.stopPropagation()}>
+      <p className="text-[0.62rem] font-medium text-muted">{t("deployStudio.machineGpus")}</p>
+      {gpus.map((gpu) => (
+        <label key={gpu.index} className="flex items-center gap-2 text-[0.62rem] text-fg">
+          <input
+            type="checkbox"
+            aria-label={t("deployStudio.machineGpu", { index: gpu.index, name: gpu.name })}
+            checked={on(gpu.index)}
+            onChange={() => toggle(gpu.index)}
+          />
+          <span className="font-mono">GPU {gpu.index}</span>
+          <span className="truncate text-faint">
+            {gpu.name}
+            {gpu.vram_total_mb ? ` · ${Math.round(gpu.vram_total_mb / 1024)} GB` : ""}
+          </span>
+        </label>
+      ))}
+      <p className="text-[0.58rem] leading-snug text-faint">{t("deployStudio.machineGpusHint")}</p>
+    </div>
+  );
+}
+
 function MachinesTab({
   machines,
   rows,
@@ -1960,6 +2020,7 @@ function MachinesTab({
   onRemoveMachine,
   onRows,
   onGpu,
+  onGpus,
   onKqv,
   marked,
   onToggleMarked,
@@ -1968,7 +2029,7 @@ function MachinesTab({
   onSplit,
   serviceName,
 }: {
-  machines: { node_id: string; label: string }[];
+  machines: { node_id: string; label: string; gpus?: DeployMachineGpu[] }[];
   rows: DeploySelection[];
   total: number | null;
   ends: number[];
@@ -1981,6 +2042,8 @@ function MachinesTab({
   onRemoveMachine: (nodeId: string) => void;
   onRows: (rows: DeploySelection[]) => void;
   onGpu: (nodeId: string, value: number | null) => void;
+  /** The machine's GPUs for this deployment; `null` = all of them. */
+  onGpus: (nodeId: string, value: number[] | null) => void;
   onKqv: (nodeId: string, value: boolean) => void;
   /** The machines Split the layers works on. */
   marked: string[];
@@ -2158,6 +2221,14 @@ function MachinesTab({
               )}
               {rangesOnWhole && !holds && (
                 <p className="text-[0.6rem] leading-snug text-amber">{t("deployStudio.machineLacksModel")}</p>
+              )}
+              {first && (machine.gpus?.length ?? 0) > 1 && (
+                <MachineGpuPicker
+                  machine={machine.node_id}
+                  gpus={machine.gpus ?? []}
+                  chosen={first.gpus ?? null}
+                  onChange={(value) => onGpus(machine.node_id, value)}
+                />
               )}
               {first && llama && (
                 <div className="space-y-1 border-t border-line pt-2" onClick={(event) => event.stopPropagation()}>

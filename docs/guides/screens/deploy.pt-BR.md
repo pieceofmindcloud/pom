@@ -21,7 +21,7 @@ O que implantar: **Pipeline** (um modelo de linguagem, a partir do GGUF inteiro)
 ### O mapa
 As máquinas da implantação, cada uma com as faixas de camadas que vai servir e a GPU, a RAM e a carga ao vivo. Uma máquina segue a ordem do pipeline assim que tem uma faixa; **Organizar** devolve ao lugar os cartões que você arrastou. Arraste o fundo pontilhado para levar o mapa a qualquer lugar, além de qualquer borda, e solte onde ele fica melhor de ver; um cartão também vai para onde você o soltar; a roda do mouse ou a pinça do trackpad dá zoom. O **Gateway** fecha o ciclo.
 ### O inspetor
-**Globais** guarda as configurações da implantação inteira (contexto, sessões, amostragem, as configurações do POM). **Máquinas** lista todas as máquinas do mapa, na ordem do pipeline, só com o que você edita por máquina: as faixas de camadas, as camadas na GPU e se o cache KV vai para a GPU.
+**Globais** guarda as configurações da implantação inteira (contexto, sessões, amostragem, as configurações do POM). **Máquinas** lista todas as máquinas do mapa, na ordem do pipeline, só com o que você edita por máquina: as faixas de camadas, as camadas na GPU e se o cache KV vai para a GPU. Uma máquina com mais de uma GPU também as lista, todas marcadas: desmarque uma e o motor roda só nas GPUs marcadas, seja qual for o motor (llama.cpp, Strata, Avalon ou outro plugin).
 :::
 
 ## Da escolha ao serviço

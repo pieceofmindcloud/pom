@@ -2213,6 +2213,8 @@ export interface DeployStep {
   primary: boolean;
   /** Per-machine GPU offload, when set. `null` means "the cluster's number". */
   n_gpu_layers: number | null;
+  /** The machine's GPUs this step runs on (node indices); absent = all of them. */
+  gpus?: number[] | null;
   /** Per-machine KV cache placement. `null` means "the cluster's answer". */
   offload_kqv: boolean | null;
   /** Per-machine prefill/decode role; absent means the deployment's `params.inference_role`. */
@@ -2335,10 +2337,20 @@ export interface DeployMachine {
   load: number | null;
   holds: Array<[number, number]>;
   taking: [number, number] | null;
+  /** The machine's GPUs (its `system.gpus[]`), for the Machines tab's choice.
+   *  Absent from older nodes. */
+  gpus?: DeployMachineGpu[];
   /** Post-deployment projection for this machine — the sum of the steps it
    *  would take, per GPU. Absent until previewed, or when no step of this
    *  machine is materialized locally yet. */
   capacity?: MachineCapacity | null;
+}
+
+/** One GPU of a machine on the deploy screen. */
+export interface DeployMachineGpu {
+  index: number;
+  name: string;
+  vram_total_mb?: number | null;
 }
 
 export type DeployStrategy = "simple" | "complete";
@@ -2490,6 +2502,9 @@ export interface DeploySelection {
   target_node_id: string;
   /** Overrides `params.n_gpu_layers` for this machine alone. */
   n_gpu_layers?: number | null;
+  /** The machine's GPUs this range runs on, by the node's GPU index. Absent or
+   *  `null` = every GPU of the machine, the default. */
+  gpus?: number[] | null;
   /** This machine's part in a prefill/decode split of a whole model on a plugin's
    *  inference service; `null` takes `params.inference_role`. */
   inference_role?: InferenceRole | null;

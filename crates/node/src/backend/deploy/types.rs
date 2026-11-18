@@ -13,6 +13,11 @@ pub struct SelectedSlice {
     /// decided per machine.
     #[serde(default)]
     pub n_gpu_layers: Option<u32>,
+    /// The GPUs of this machine the range runs on (`GpuSet`). `None` = all of
+    /// them. Two deployments on one machine take disjoint sets, each served by
+    /// its own instance (`crate::instances`).
+    #[serde(default)]
+    pub gpus: Option<crate::config::GpuSet>,
     /// Whether this machine's KV cache lives on its GPU. `None` takes the
     /// cluster's answer.
     ///
@@ -38,6 +43,7 @@ pub struct SelectedSlice {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PeerOverrides {
     pub n_gpu_layers: Option<u32>,
+    pub gpus: Option<crate::config::GpuSet>,
     pub offload_kqv: Option<bool>,
     pub inference_role: Option<crate::webui::InferenceRole>,
 }
@@ -228,6 +234,9 @@ pub struct WholeRangeSelection {
     pub node_id: String,
     pub start_layer: u32,
     pub end_layer: u32,
+    /// The machine's GPUs for this range (`SelectedSlice::gpus`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<crate::config::GpuSet>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

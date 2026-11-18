@@ -2377,3 +2377,67 @@ mod tests {
         );
     }
 }
+
+
+/// A set of this node's GPUs, by the index the node publishes in
+/// `system.gpus[]` (the number the dashboard shows). The JSON form is the
+/// sorted list of indices, `[0, 1]`. A deployment that carries no set
+/// (`None` where it is optional) uses every GPU the node may use.
+///
+/// A bit mask so the per-machine overrides that carry it stay `Copy`; 64
+/// GPUs on one machine is beyond what any node reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct GpuSet(u64);
+
+impl GpuSet {
+    pub fn from_indices(indices: impl IntoIterator<Item = u32>) -> Self {
+        Self(
+            indices
+                .into_iter()
+                .filter(|index| *index < 64)
+                .fold(0, |mask, index| mask | (1u64 << index)),
+        )
+    }
+
+    pub fn contains(&self, index: u32) -> bool {
+        index < 64 && self.0 & (1u64 << index) != 0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn indices(&self) -> Vec<u32> {
+        (0..64).filter(|index| self.contains(*index)).collect()
+    }
+
+    /// Whether two sets share a GPU.
+    pub fn overlaps(&self, other: &GpuSet) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// The canonical text of the set, `0,1`: a stable key for an instance.
+    pub fn key(&self) -> String {
+        self.indices()
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+impl Serialize for GpuSet {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.indices().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GpuSet {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let indices = Vec::<u32>::deserialize(deserializer)?;
+        if let Some(index) = indices.iter().find(|index| **index >= 64) {
+            return Err(serde::de::Error::custom(format!("GPU index {index} is out of range")));
+        }
+        Ok(Self::from_indices(indices))
+    }
+}

@@ -56,6 +56,7 @@ import {
   History,
   Rocket,
   ServerCog,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 import { LayerRangeSlider, rangeBounds } from "../components/LayerRangeSlider";
@@ -305,7 +306,10 @@ export function DeployModel() {
    *  Machines tab; empty until the first move (then pipeline order rules). */
   const [machineOrder, setMachineOrder] = useState<string[]>([]);
   const [inspectorTab, setInspectorTab] = useState<"global" | "machine">("machine");
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  // Below the `lg` grid the inspector is a sheet over the map, closed at first
+  // so the map shows; on a wide screen it is the right column, open.
+  const narrow = useNarrowStudio();
+  const [inspectorOpen, setInspectorOpen] = useState(() => !narrow);
   /** The whole model to deploy, when that is the question being asked. */
   const [wholeName, setWholeName] = useState("");
   const [tensorGroupKey, setTensorGroupKey] = useState("");
@@ -1647,12 +1651,38 @@ export function DeployModel() {
             )}
           </div>
 
+          {inspectorOpen && narrow && (
+            <div
+              aria-hidden="true"
+              className="fixed inset-0 z-40 bg-black/50"
+              onClick={() => setInspectorOpen(false)}
+            />
+          )}
           {inspectorOpen ? <>
-            <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45">
+            <aside
+              data-testid="deploy-inspector"
+              className={narrow
+                ? "fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col overflow-y-auto overscroll-y-contain rounded-t-2xl border-t border-line-strong bg-surface shadow-2xl"
+                : "relative min-h-0 overflow-y-auto border-l border-line bg-surface/45"}
+            >
+            {narrow && (
+              <div className="sticky top-0 z-20 flex items-center justify-between gap-2 border-b border-line bg-surface px-3 py-2">
+                <span aria-hidden="true" className="absolute left-1/2 top-1 h-1 w-10 -translate-x-1/2 rounded-full bg-line-strong" />
+                <span className="pt-1 text-[0.7rem] font-semibold text-fg">{t("deployStudio.propertiesLabel")}</span>
+                <button
+                  type="button"
+                  aria-label={t("deployStudio.hideInspector")}
+                  onClick={() => setInspectorOpen(false)}
+                  className="mt-1 rounded-md p-1.5 text-faint hover:bg-raised hover:text-fg"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
             <Tabs
               fill
               label={t("deployStudio.propertiesLabel")}
-              className="sticky top-0 z-10"
+              className={narrow ? "sticky top-[2.6rem] z-10" : "sticky top-0 z-10"}
               value={inspectorTab}
               onChange={setInspectorTab}
               items={[
@@ -1826,7 +1856,7 @@ export function DeployModel() {
             />
             )}
             </aside>
-            <button
+            {!narrow && <button
               type="button"
               aria-label={t("deployStudio.hideInspector")}
               title={t("deployStudio.hideInspector")}
@@ -1837,8 +1867,18 @@ export function DeployModel() {
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-y-0 right-0 w-[3px] bg-line transition-colors duration-150 group-hover:bg-muted group-focus-visible:bg-muted"
               />
+            </button>}
+          </> : narrow ? (
+            <button
+              type="button"
+              data-testid="deploy-inspector-open"
+              onClick={() => setInspectorOpen(true)}
+              className="fixed bottom-24 right-4 z-30 flex items-center gap-2 rounded-full border border-iris/60 bg-iris px-4 py-2.5 text-sm font-semibold text-white shadow-lg"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              {t("deployStudio.openSettings")}
             </button>
-          </> : (
+          ) : (
             <button
               type="button"
               aria-label={t("deployStudio.showInspector")}
@@ -1962,6 +2002,23 @@ export function DeployModel() {
  * range or several, each picked on the valid cuts (virtual slices read any of
  * them from the whole file); nothing here re-plans, Deploy validates the map.
  */
+/** Below the studio's two-column grid (`lg`): the inspector becomes a sheet. */
+function useNarrowStudio(): boolean {
+  const query = "(max-width: 1023px)";
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && window.matchMedia?.(query).matches === true,
+  );
+  useEffect(() => {
+    const media = typeof window !== "undefined" ? window.matchMedia?.(query) : undefined;
+    if (!media) return;
+    const update = () => setNarrow(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+  return narrow;
+}
+
 /** Which of a machine's GPUs the deployment runs on: one box per GPU, all
  *  checked by default (`chosen` null). The last box cannot be unchecked. */
 function MachineGpuPicker({

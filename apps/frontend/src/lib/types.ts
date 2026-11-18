@@ -120,6 +120,8 @@ export interface NodeConfig {
   primary: boolean;
   inference_port: number;
   n_gpu_layers: number;
+  /** The GPUs this deployment runs on (indices of `system.gpus`); absent = all. */
+  gpus?: number[] | null;
   n_ctx: number;
   offload_kqv: boolean;
   fit_memory: boolean;

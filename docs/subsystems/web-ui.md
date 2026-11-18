@@ -133,7 +133,10 @@ machine's highest reading and the VRAM gauge of the first card, so on a box
 with two cards half of the hardware vanished from the screen - and the second
 one could be boiling with nobody seeing it. The mini card's VRAM is the **sum**
 of the cards that report it (`lib/gpu.ts`), and cards with the same name get
-`#index`. The normal, attention and critical bands use the existing `aqua`,
+`#index`. A node whose deployment runs on chosen GPUs (`config.gpus`, as an
+instance usually does) shows only those boards in both cards and in their sum
+(`servedSystem`, `lib/gpu.ts`), so two nodes of one machine do not show each
+other's cards. The normal, attention and critical bands use the existing `aqua`,
 `amber` and `rose` tones; machines without a GPU omit the temperature section,
 while a GPU whose sensor does not answer shows "temperature unknown" and
 "sensor unavailable". The `GET /api/ui/node` API carries the thermal policy

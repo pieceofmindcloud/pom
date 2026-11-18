@@ -38,7 +38,7 @@ import {
 import { rateSpeed } from "../lib/peerSpeed";
 import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
-import { sumVram } from "../lib/gpu";
+import { servedSystem, sumVram } from "../lib/gpu";
 import { layerPlacement, warnsLayersOnCpu, type LayerPlacement } from "../lib/layerPlacement";
 import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView, PluginService, RoutingEdge } from "../lib/types";
 import { RouteRttLabel } from "./RouteRttLabel";
@@ -196,7 +196,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
     observer.observe(element);
     return () => observer.disconnect();
   }, [compact, onMeasure]);
-  const system = range.node?.system;
+  const system = servedSystem(range.node?.system, range.node?.config);
   /*
    * A machine may have more than one card, and the miniature card showed only
    * the first: in a box with two RTXs, half of the VRAM vanished from the screen and the

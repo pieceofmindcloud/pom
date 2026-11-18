@@ -18,6 +18,7 @@ import { ChevronRight, Lock } from "lucide-react";
 import { type ReactNode } from "react";
 import { Modal } from "./Confirm";
 import { GpuTemperature } from "./GpuTemperature";
+import { servedSystem } from "../lib/gpu";
 import { MachineIcon, gpuDisplayName, machineKind } from "./MachineIcon";
 import { trackOf } from "./PipelineRail";
 import { ReleaseSlice } from "./ReleaseSlice";
@@ -386,7 +387,7 @@ export function PeerDetailCard({
   const { t } = useI18n();
   const track = trackOf(index);
   const n = peer.node;
-  const system = n?.system;
+  const system = servedSystem(n?.system, n?.config);
   const kind = machineKind(system);
   const cfg = n?.config;
   const serving = isServing(n?.status.state);

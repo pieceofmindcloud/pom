@@ -98,6 +98,7 @@ mod direct;
 mod direct_lab;
 #[path = "network/discovery.rs"]
 mod discovery;
+mod instances;
 #[path = "inference/engine_telemetry.rs"]
 mod engine_telemetry;
 #[path = "enterprise_p2p.rs"]
@@ -1652,6 +1653,8 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     // Before `Discovery::new` binds the endpoint: it reads this to bind on the
     // advertised address alone.
     net.set_advertise_only(args.advertise_only);
+    // Which machine this process is on: the host's id for an instance.
+    crate::instances::set_local_machine(&net.node_id, net.instance_certificate().as_ref());
     // `--no-iroh` (spec 2026-11-15): the mode is fixed for the run. The gate
     // answers "no relay" whatever the screens or the network policy later ask
     // for, and `Discovery::new` builds no relay client on the endpoint.
@@ -1824,6 +1827,8 @@ fn merged_bootstrap_nodes(from_config: &[String], cli: &str) -> Vec<String> {
 /// Background tasks that go with every gateway.
 fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, bind_port: u16) {
     crate::plugin_stage_link::install(gw_state.clone());
+    // This machine's instances (`crate::instances`), as the host left them.
+    crate::instances::start_all(database);
     crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
     crate::metering::spawn_refresher(gw_state.clone());

@@ -2002,6 +2002,50 @@ export function DeployModel() {
  * range or several, each picked on the valid cuts (virtual slices read any of
  * them from the whole file); nothing here re-plans, Deploy validates the map.
  */
+/** A machine's instances (`crate::instances` on the node): a host offers
+ *  another instance of itself, so the same machine joins the deployment again
+ *  on other GPUs; an instance offers its removal. The new instance shows up as
+ *  a machine of its own once it is in the network. */
+function MachineInstanceAction({ machine }: { machine: { node_id: string; label: string; machine_id?: string } }) {
+  const { t } = useI18n();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const host = machine.machine_id ?? machine.node_id;
+  const isInstance = host !== machine.node_id;
+  const act = async () => {
+    setBusy(true);
+    try {
+      if (isInstance) {
+        await api.post("/api/ui/instances/remove", { node_id: host, instance_node_id: machine.node_id });
+        toast.success(t("deployStudio.instanceRemoved"), machine.label);
+      } else {
+        await api.post("/api/ui/instances", { node_id: machine.node_id });
+        toast.success(t("deployStudio.instanceAdded"), t("deployStudio.instanceAddedDetail"));
+      }
+    } catch (error) {
+      toast.fromError(t(isInstance ? "deployStudio.instanceRemoveFailed" : "deployStudio.instanceAddFailed"), error);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex items-center justify-between gap-2" onClick={(event) => event.stopPropagation()}>
+      {isInstance && <span className="text-[0.58rem] text-sky">{t("deployStudio.instanceOfHost")}</span>}
+      <Button
+        size="sm"
+        variant={isInstance ? "ghost" : "outline"}
+        loading={busy}
+        className="ml-auto"
+        data-testid={isInstance ? `instance-remove-${machine.node_id}` : `instance-add-${machine.node_id}`}
+        title={t(isInstance ? "deployStudio.instanceRemoveHint" : "deployStudio.instanceAddHint")}
+        onClick={() => void act()}
+      >
+        {t(isInstance ? "deployStudio.instanceRemove" : "deployStudio.instanceAdd")}
+      </Button>
+    </div>
+  );
+}
+
 /** Below the studio's two-column grid (`lg`): the inspector becomes a sheet. */
 function useNarrowStudio(): boolean {
   const query = "(max-width: 1023px)";
@@ -2086,7 +2130,7 @@ function MachinesTab({
   onSplit,
   serviceName,
 }: {
-  machines: { node_id: string; label: string; gpus?: DeployMachineGpu[] }[];
+  machines: { node_id: string; label: string; gpus?: DeployMachineGpu[]; machine_id?: string }[];
   rows: DeploySelection[];
   total: number | null;
   ends: number[];
@@ -2150,7 +2194,6 @@ function MachinesTab({
           >
             {t("deployStudio.splitLayers", { count: splitOver.length })}
           </Button>
-          <p className="text-[0.58rem] leading-snug text-faint">{t("deployStudio.splitMarkedHint")}</p>
         </>
       )}
       {machines.map((machine, position) => {
@@ -2215,6 +2258,7 @@ function MachinesTab({
               </span>
             </div>
             <div className="space-y-2 px-2 py-2">
+              <MachineInstanceAction machine={machine} />
               {taking.length === 0 && <p className="text-[0.62rem] text-faint">{t("deployStudio.noLayerAssigned")}</p>}
               {taking.length > 0 && balance && (() => {
                 const sizes = taking.map((row) => balance.bytes(row.start_layer, row.end_layer));

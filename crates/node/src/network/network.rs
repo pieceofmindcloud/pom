@@ -854,6 +854,11 @@ pub enum P2PMessage {
         /// parseable; the announce signature covers it.
         #[serde(default)]
         direct_only: bool,
+        /// The host's certificate when this node is one of its instances
+        /// (`crate::instances`). Optional: older nodes neither send nor read
+        /// it; the announce signature covers it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instance: Option<crate::instances::InstanceCertificate>,
         /// Trigger for the network Chat's authenticated gate.
         #[serde(default)]
         network_chat_enabled: bool,
@@ -1007,6 +1012,11 @@ pub struct PeerInfo {
     /// Carried by the peer's own signed announce.
     #[serde(default)]
     pub direct_only: bool,
+    /// The host's certificate when the peer is an instance of another node
+    /// (`crate::instances`), as its signed announce carried it. Verified by
+    /// whoever relies on it (`InstanceCertificate::verifies_for`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<crate::instances::InstanceCertificate>,
 }
 
 /// Extract the host part of an addr string for use in HTTP URLs.
@@ -1338,7 +1348,12 @@ impl PeerInfo {
             .iter()
             .map(String::as_str)
             .chain(std::iter::once(self.addr.as_str()));
-        let mut urls = Vec::with_capacity(self.addr_candidates.len() + 1);
+        let mut urls = Vec::with_capacity(self.addr_candidates.len() + 2);
+        // Another process of this machine (`crate::instances`): the hidden
+        // state crosses the loopback, never the network.
+        if self.on_this_machine() {
+            urls.push(format!("{}://127.0.0.1:{port}", crate::peer_client::peer_scheme()));
+        }
         for address in base {
             if !is_peer_destination(&self.node_id, address) {
                 continue;
@@ -1378,10 +1393,23 @@ impl PeerInfo {
         let Some(port) = self.inference_quic_port else {
             return Vec::new();
         };
-        self.dialable_addrs()
+        let local = self
+            .on_this_machine()
+            .then(|| format!("127.0.0.1:{port}"));
+        local
             .into_iter()
-            .map(|address| format!("{}:{port}", ip_host(&address)))
+            .chain(
+                self.dialable_addrs()
+                    .into_iter()
+                    .map(|address| format!("{}:{port}", ip_host(&address))),
+            )
             .collect()
+    }
+
+    /// Whether the peer is another process of this machine: the host and its
+    /// instances, or two instances of one host (`crate::instances`).
+    pub fn on_this_machine(&self) -> bool {
+        crate::instances::same_machine(&self.node_id, self.instance.as_ref())
     }
 
     /// Base URL of this peer's HTTP API / web UI.
@@ -1422,7 +1450,10 @@ impl PeerInfo {
         };
         let mut base: Vec<&str> = vec![self.addr.as_str()];
         base.extend(self.addr_candidates.iter().map(String::as_str));
-        let mut urls: Vec<String> = Vec::with_capacity(base.len());
+        let mut urls: Vec<String> = Vec::with_capacity(base.len() + 1);
+        if self.on_this_machine() {
+            urls.push(crate::peer_client::peer_base_url("127.0.0.1", port, tls));
+        }
         for a in base {
             if !is_peer_destination(&self.node_id, a) {
                 continue;
@@ -1497,6 +1528,9 @@ pub struct Network {
     advertise_addr: std::sync::RwLock<Option<String>>,
     /// `Config.advertise_only`: with a pin, announce no other direct address.
     advertise_only: AtomicBool,
+    /// The host's certificate when this node is an instance of another node
+    /// (`<home>/instance.json`, `crate::instances`), read once at start.
+    instance_cert: Option<crate::instances::InstanceCertificate>,
     /// Whether the p2p endpoint of this run is bound to the advertised address
     /// alone (`discovery::held_bind_ip`); a change waits for the next start.
     bind_held: AtomicBool,
@@ -2028,6 +2062,7 @@ impl Network {
             hostname: std::sync::RwLock::new(String::new()),
             advertise_addr: std::sync::RwLock::new(None),
             advertise_only: AtomicBool::new(false),
+            instance_cert: crate::instances::own_certificate(),
             bind_held: AtomicBool::new(false),
             tp: std::sync::RwLock::new(None),
             runtime_capacity: std::sync::RwLock::new(RuntimeCapacityState::default()),
@@ -2353,6 +2388,11 @@ impl Network {
     /// (`discovery::bind`).
     pub fn set_advertise_only(&self, only: bool) {
         self.advertise_only.store(only, Ordering::Relaxed);
+    }
+
+    /// The host's certificate when this node is an instance (`crate::instances`).
+    pub fn instance_certificate(&self) -> Option<crate::instances::InstanceCertificate> {
+        self.instance_cert.clone()
     }
 
     /// The saved choice, with or without a pin.
@@ -2820,6 +2860,7 @@ impl Network {
             cluster_logs_enabled: self.cluster_logs_enabled(),
             idle: self.is_idle(),
             direct_only: self.is_direct_only(),
+            instance: self.instance_certificate(),
             network_chat_enabled: self.network_chat_enabled(),
             signature: None,
         }
@@ -3924,6 +3965,7 @@ impl Network {
                 cluster_logs_enabled,
                 idle,
                 direct_only,
+                instance,
                 network_chat_enabled,
                 cluster_id,
                 trust_version,
@@ -3985,6 +4027,7 @@ impl Network {
                     runtime_capacity,
                     idle,
                     direct_only,
+                    instance,
                 };
 
                 self.remember_public_discovery_peer(&peer).await;
@@ -5725,6 +5768,7 @@ mod tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         };
         assert_eq!(
             peer.inference_url().as_deref(),
@@ -5782,6 +5826,7 @@ mod tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         };
 
         for count in [0usize, 1, 2, 3, 5, 12] {
@@ -5879,6 +5924,7 @@ mod tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 
@@ -6022,6 +6068,7 @@ mod tests {
                 cluster_logs_enabled: false,
                 network_chat_enabled: false,
                 direct_only: false,
+                instance: None,
             },
             current.parse().unwrap(),
             &assignment,
@@ -6343,6 +6390,7 @@ mod tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 
@@ -6458,6 +6506,7 @@ mod tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 
@@ -6792,6 +6841,7 @@ mod tests {
                 runtime_capacity: None,
                 idle: false,
                 direct_only: true,
+                instance: None,
                 cluster_logs_enabled: false,
                 network_chat_enabled: false,
             },
@@ -8006,6 +8056,7 @@ mod tests {
             idle: false,
             network_chat_enabled: false,
             direct_only: false,
+            instance: None,
         };
         sign_announce(&mut announce, key);
         announce

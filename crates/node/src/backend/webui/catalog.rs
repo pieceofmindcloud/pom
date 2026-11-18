@@ -2149,7 +2149,7 @@ pub(super) async fn network_rtt(
             measurements: Vec::new(),
         });
     }
-    let mut measurements = local_rtt_measurements(&state);
+    let mut measurements = local_rtt_measurements(&state).await;
     measurements.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
 
     Json(RttReport {
@@ -3147,6 +3147,32 @@ pub(super) async fn chat_telemetry(
         Vec::new()
     };
 
+    // Two processes of one machine (a host and its instances,
+    // `crate::instances`) talk over the loopback: their hop is zero, and the
+    // panel draws it apart (`transport: "local"`).
+    let machines: HashMap<String, String> = state
+        .all_peers()
+        .await
+        .into_iter()
+        .map(|peer| {
+            let machine = crate::instances::machine_of(&peer.node_id, peer.instance.as_ref());
+            (peer.node_id, machine)
+        })
+        .collect();
+    for measurement in &mut measurements {
+        let same = match (
+            machines.get(&measurement.from_node_id),
+            machines.get(&measurement.to_node_id),
+        ) {
+            (Some(from), Some(to)) => from == to && measurement.from_node_id != measurement.to_node_id,
+            _ => false,
+        };
+        if same {
+            measurement.rtt_ms = 0.0;
+            measurement.transport = "local".into();
+            measurement.relayed = false;
+        }
+    }
     measurements.sort_by(|a, b| {
         a.from_node_id
             .cmp(&b.from_node_id)
@@ -3457,6 +3483,21 @@ pub(super) async fn clear_chat_history(
     }
 }
 
-pub(super) fn local_rtt_measurements(state: &GatewayState) -> Vec<crate::route::RttMeasurement> {
-    state.network.rtts.fresh_snapshot()
+/// The RTTs this node measured, with the peers of this machine (the host and
+/// its instances, `crate::instances`) at zero over the `local` transport: the
+/// hidden state crosses the loopback, and the panel draws that hop apart.
+pub(super) async fn local_rtt_measurements(state: &GatewayState) -> Vec<crate::route::RttMeasurement> {
+    let mut measurements = state.network.rtts.fresh_snapshot();
+    for peer in state.network.alive_peers().await {
+        if peer.node_id == state.network.node_id || !peer.on_this_machine() {
+            continue;
+        }
+        measurements.retain(|m| m.target_node_id != peer.node_id);
+        measurements.push(crate::route::RttMeasurement {
+            target_node_id: peer.node_id.clone(),
+            rtt_ms: 0.0,
+            transport: "local".into(),
+        });
+    }
+    measurements
 }

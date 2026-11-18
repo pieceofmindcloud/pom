@@ -246,6 +246,21 @@ describe("ModelNetworkCanvas: relayed route", () => {
     expect(screen.getByTestId("pipeline-route").textContent).toMatch(/head → tail67\.0 ms/);
   });
 
+  it("draws a hop between two processes of one machine dotted, at RTT zero", () => {
+    const view = fakeCluster([fakeSlicePeer("host", 0, 15), fakeSlicePeer("instance", 16, 31)]);
+    view.routing_edges = [
+      { from_node_id: "host", to_node_id: "instance", model_id: "qwen35", from_end_layer: 15, to_start_layer: 16 },
+    ];
+    const { container } = mount(view, [
+      { from_node_id: "host", to_node_id: "instance", rtt_ms: 0, transport: "local" },
+      { from_node_id: "instance", to_node_id: "gateway", rtt_ms: 3, transport: "quic" },
+    ]);
+
+    expect(container.querySelectorAll('path[data-local="true"]').length).toBe(1);
+    const label = screen.getByTestId("route-local-label");
+    expect(label.textContent).toContain("RTT 0.0 ms");
+  });
+
   it("says when the ring bypasses the relay of the direct return", () => {
     const view = fakeCluster([fakeSlicePeer("gw", 0, 15), fakeSlicePeer("tail", 16, 31)]);
     mount(view, [], undefined, undefined, [

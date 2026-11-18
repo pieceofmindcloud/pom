@@ -309,6 +309,7 @@ mod tests {
                 runtime_capacity: None,
                 idle: false,
                 direct_only: false,
+                instance: None,
             },
         );
         let candidates = secondary

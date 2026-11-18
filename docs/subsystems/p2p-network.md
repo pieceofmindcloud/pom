@@ -277,7 +277,15 @@ network beside nodes in a Docker bridge of the same machine offers about ten
 equal-RTT candidates; iroh 1.4 flips its selected path between them without
 end (path ids in the hundreds within minutes, `could not close last open path`,
 `missed a PathEvent, RemoteStateActor lagging`, gossip `send loop terminated`)
-and both processes burn several cores. Whoever dials
+and both processes burn several cores.
+
+An instance (`crate::instances`) announces `instance`, the host's signed
+certificate (optional, ignored by older nodes). Every node knows its machine
+(`instances::set_local_machine`: the host's id for an instance): a peer on the
+same machine (`PeerInfo::on_this_machine`) gets `127.0.0.1` first in its
+inference, gateway and QUIC candidates, so the hidden state between a host and
+its instances never leaves the machine, and the RTT reports give it 0 with
+`transport: "local"` (`local_rtt_measurements`, `chat_telemetry`). Whoever dials
 (`PeerInfo::endpoint_dialable_addrs`) adds the peer's UDP candidates on the
 endpoint port, which is how a LAN or VPN peer is reached where mDNS does not
 cross.

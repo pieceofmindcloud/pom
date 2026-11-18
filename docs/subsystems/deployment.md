@@ -587,6 +587,13 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
   those GPUs in `engine.load` (`plugin_engine::chosen_gpus`). The plan's
   machines carry their `gpus` (index, name, VRAM) for the Machines tab.
   The process-wide `pom.json` `gpus` still bounds what the node sees at all.
+- **The same machine twice** (for example two ranges on two GPUs of one
+  machine, or an AMD and an NVIDIA card under an engine that runs one
+  architecture at a time): a node serves one range, so the machine adds an
+  **instance** (`crate::instances`, `operations.md`) and the second range goes
+  to it like to any other machine, with its own `gpus`. `MachineView.machine_id`
+  (the host's id for an instance) tells the screens which nodes share a
+  machine: their hop crosses the loopback and is drawn dotted at RTT 0.
 - **Machine with `n_gpu_layers`/`offload_kqv`**: only what is a property of the
   hardware travels per machine. `offload_kqv` is only the GPU-versus-RAM
   boolean, and when it stays on the GPU the cache follows the layer that holds

@@ -347,6 +347,7 @@
                 mem_free_mb: s.mem_free_mb,
                 gpu_free_mb: s.mem_free_mb,
                 gpus: Vec::new(),
+                machine_id: String::new(),
                 ram_free_mb: s.mem_free_mb,
                 disk_free_mb: s.disk_free_mb,
                 rtt_ms: None,

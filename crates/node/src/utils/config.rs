@@ -1010,7 +1010,7 @@ impl Config {
         self.write_to(&path)
     }
 
-    fn write_to(&self, path: &Path) -> Result<()> {
+    pub(crate) fn write_to(&self, path: &Path) -> Result<()> {
         let mut value = serde_json::to_value(self)?;
         // Keep the file safe even if a caller hands this writer a legacy
         // literal. Normal startup migrates before this point, but enforcing

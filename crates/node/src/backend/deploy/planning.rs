@@ -32,6 +32,9 @@ pub struct MachineView {
     /// The machine's GPUs, for the Machines tab's choice.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) gpus: Vec<super::survey::MachineGpu>,
+    /// The physical machine (`Machine::machine_id`): equal ids are processes
+    /// of one machine, drawn joined by a local hop.
+    pub(super) machine_id: String,
     pub(super) ram_free_mb: u64,
     pub(super) disk_free_mb: u64,
     pub(super) rtt_ms: Option<f64>,
@@ -2049,6 +2052,7 @@ pub(super) fn plan_with_rtt_options(
             mem_free_mb: m.mem_free_mb,
             gpu_free_mb: m.gpu_free_mb,
             gpus: m.gpus.clone(),
+            machine_id: m.machine_id.clone(),
             ram_free_mb: m.ram_free_mb,
             disk_free_mb: m.disk_free_mb,
             rtt_ms: m.rtt_ms,

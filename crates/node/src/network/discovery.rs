@@ -1363,6 +1363,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         cluster_logs_enabled,
         idle,
         direct_only,
+        instance,
         network_chat_enabled,
         cluster_id,
         trust_version,
@@ -1432,6 +1433,7 @@ async fn handle_announce(ctx: &Ctx, sealed: &[u8]) {
         runtime_capacity,
         idle,
         direct_only,
+        instance,
     };
     network.remember_public_discovery_peer(&peer).await;
     // Never `admit_peer` here: the probe may need the tunnel, and a probe per

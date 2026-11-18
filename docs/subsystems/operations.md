@@ -192,6 +192,21 @@ The UI is read from disk at `<POM_HOME>/apps/frontend/dist`, hence the `apps`
 symlink - without it the second peer starts but answers 500 on the UI. Check
 with `/api/ui/cluster`: two **distinct** `node_id`s.
 
+**Instances** are the supported way to run several nodes on one machine: the
+Deploy Studio's **+ Instance** (`POST /api/ui/instances`, `{node_id}` of the
+host) makes the host create and supervise another POM process of the same
+binary in `<home>/instances/<n>/`, with its own key, the host's network,
+trust chain, connection key and plugins (symlinked, with a `run/` of its own
+per plugin) and the host's ports plus `n * 20` (P2P, gateway; inference HTTP
+gateway + 101, QUIC P2P + 1000/2000, endpoint P2P + 10000). The instance joins
+with a host certificate and needs no admission (`security-model.md`). The host
+and its instances talk over `127.0.0.1` (hidden state, control) and report RTT
+0 (`transport: "local"`, drawn dotted on the maps). A host inside a container
+must publish the instances' ports for machines elsewhere to reach them
+directly; otherwise they fall back to the relay. `POST /api/ui/instances/remove`
+stops one and deletes its folder; the host restarts its instances at its own
+start (`pom.db` `instances`).
+
 Two nodes on one machine should share the network mode: all on one Docker
 bridge, or all on the host network. A host-network node beside bridge nodes
 reaches them by every interface of the host at the same RTT, and iroh keeps

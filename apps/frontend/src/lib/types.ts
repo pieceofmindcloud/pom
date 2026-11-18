@@ -2340,6 +2340,9 @@ export interface DeployMachine {
   /** The machine's GPUs (its `system.gpus[]`), for the Machines tab's choice.
    *  Absent from older nodes. */
   gpus?: DeployMachineGpu[];
+  /** The physical machine this node runs on: the host's id for an instance,
+   *  else its own. Equal ids talk over the loopback (RTT zero). */
+  machine_id?: string;
   /** Post-deployment projection for this machine — the sum of the steps it
    *  would take, per GPU. Absent until previewed, or when no step of this
    *  machine is materialized locally yet. */

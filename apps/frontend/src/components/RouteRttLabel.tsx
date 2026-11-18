@@ -15,7 +15,9 @@ export function RouteRttLabel({ rttMs, transport, relayed = false, left, top }: 
   const { t } = useI18n();
   const transportLabel = relayed
     ? t("canvas.relayBadge")
-    : transport
+    : transport === "local"
+      ? t("canvas.localBadge")
+      : transport
       ? transport === "quic"
         ? "QUIC"
         : transport === "https"
@@ -36,6 +38,19 @@ export function RouteRttLabel({ rttMs, transport, relayed = false, left, top }: 
       >
         <Info className="h-3 w-3" aria-hidden="true" />
         <span className="text-[9px] uppercase tracking-[0.08em]">{transportLabel}</span>
+        <span>{rtt}</span>
+      </span>
+    );
+  }
+  if (transport === "local") {
+    return (
+      <span
+        data-testid="route-local-label"
+        title={t("canvas.localEdgeHint")}
+        className="absolute z-10 -translate-x-1/2 cursor-help rounded-md border border-dashed border-sky/50 bg-ink/95 px-1.5 py-0.5 font-mono text-[10px] text-sky"
+        style={{ left, top }}
+      >
+        <span className="mr-1 text-[9px] uppercase">{transportLabel}</span>
         <span>{rtt}</span>
       </span>
     );

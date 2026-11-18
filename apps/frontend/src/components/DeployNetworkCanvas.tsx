@@ -17,7 +17,7 @@ import {
   type CanvasPosition,
 } from "../lib/networkLayout";
 import type { DeployMachine, DeployPlan, DeploySelection, InferenceRole } from "../lib/types";
-import { edgeStyle, type EdgeState } from "./ModelNetworkCanvas";
+import { edgeStyle, LOCAL_EDGE_STYLE, type EdgeState } from "./ModelNetworkCanvas";
 import { PipelineGatewayNode, type PipelineCycleCost } from "./PipelineGatewayNode";
 import { RouteRttLabel } from "./RouteRttLabel";
 import { AlertTooltip, Badge, Button, Progress } from "./ui";
@@ -527,6 +527,11 @@ export function DeployNetworkCanvas({
   const principalEdges = [...bridgeIds]
     .map((id) => { const [from, to] = id.split(":"); return { from, to }; })
     .filter((edge) => !edges.some((route) => route.from_node_id === edge.from && route.to_node_id === edge.to));
+  // Processes of one machine (a host and its instances) share `machine_id`:
+  // their hop is the loopback, drawn dotted with RTT zero.
+  const machineOf = new Map((plan.machines ?? []).map((machine) => [machine.node_id, machine.machine_id ?? machine.node_id]));
+  const sameMachine = (a: string, b: string) =>
+    a !== b && machineOf.has(a) && machineOf.has(b) && machineOf.get(a) === machineOf.get(b);
   const allEdges = [
     ...edges,
     ...principalEdges.map((edge) => ({
@@ -597,8 +602,9 @@ export function DeployNetworkCanvas({
               const geometry = routeGeometry(from, to, DEPLOY_CARD_SIZE, DEPLOY_CARD_SIZE);
               const id = edgeId(route.from_node_id, route.to_node_id);
               const state: EdgeState = selectedEdges.has(id) || (!selectedEdges.has(id) && route.selected) ? "principal" : candidateEdges.has(id) ? "paralela" : "inativa";
-              const style = edgeStyle(state);
-              return <path key={`${id}-${index}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd?.replace("route-arrow", "deploy-route-arrow")} />;
+              const local = sameMachine(route.from_node_id, route.to_node_id);
+              const style = local ? LOCAL_EDGE_STYLE : edgeStyle(state);
+              return <path key={`${id}-${index}`} data-local={local ? "true" : undefined} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} strokeLinecap={local ? "round" : undefined} markerEnd={style.markerEnd?.replace("route-arrow", "deploy-route-arrow")} />;
             })}
             {gatewayPosition && terminalNodeIds.map((nodeId) => {
               const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition, DEPLOY_CARD_SIZE);
@@ -612,7 +618,8 @@ export function DeployNetworkCanvas({
             const from = positionOf(route.from_node_id, fromIndex);
             const to = positionOf(route.to_node_id, toIndex);
             const geometry = routeGeometry(from, to, DEPLOY_CARD_SIZE, DEPLOY_CARD_SIZE);
-            return <RouteRttLabel key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} rttMs={route.rtt_ms} left={geometry.labelX} top={geometry.labelY} />;
+            const local = sameMachine(route.from_node_id, route.to_node_id);
+            return <RouteRttLabel key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} rttMs={local ? 0 : route.rtt_ms} transport={local ? "local" : undefined} left={geometry.labelX} top={geometry.labelY} />;
           })}
           {gatewayPosition && terminalNodeIds.map((nodeId) => {
             const geometry = gatewayRouteGeometry(positionOf(nodeId, nodeIds.indexOf(nodeId)), gatewayPosition, DEPLOY_CARD_SIZE);

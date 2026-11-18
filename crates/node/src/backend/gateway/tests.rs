@@ -3188,6 +3188,7 @@ mod peer_visibility_tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 
@@ -4070,6 +4071,7 @@ pub(crate) mod testkit {
             }),
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 

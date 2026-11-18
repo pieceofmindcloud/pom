@@ -1,7 +1,12 @@
 # GPU instances: several deployments on one machine
 
-Status: design, not implemented. Part 1 (the per-deployment GPU choice) is
-implemented; this document covers what remains.
+Status: implemented on 2026-11-18 with one change of plan: there is no
+admission request at all. An admin signs an instance a roster vouch when its
+announce carries a valid host certificate and the host is a member
+(`sign_vouches`), the way open networks vouch live peers. The Deploy Studio
+adds instances explicitly ("+ Instance" on a machine) instead of redirecting a
+launch; the instance is then a machine of its own in the plan. Hops between a
+host and its instances use the loopback and report RTT 0.
 
 ## Goal
 

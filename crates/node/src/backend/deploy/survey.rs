@@ -82,6 +82,10 @@ pub(super) struct Machine {
     /// The machine's GPUs, as its `system.gpus[]` reports them: what the
     /// Machines tab offers to pick from.
     pub(super) gpus: Vec<MachineGpu>,
+    /// The physical machine this node runs on: its host's id when it is an
+    /// instance (`crate::instances`), else its own. Two nodes with the same
+    /// one talk over the loopback.
+    pub(super) machine_id: String,
     pub(super) ram_free_mb: u64,
     /// Room for the file itself, which is what a copy needs and what
     /// `transfer.rs` checks before it writes a byte.
@@ -861,6 +865,7 @@ pub(super) async fn survey(
                     mem_free_mb: free_memory_mb(node.get("system")),
                     gpu_free_mb,
                     gpus: machine_gpus(node.get("system")),
+                    machine_id: crate::instances::machine_of(&peer.node_id, peer.instance.as_ref()),
                     ram_free_mb,
                     // The peer's own reading beats the one it gossiped minutes ago,
                     // but the gossip is still there when it did not answer.

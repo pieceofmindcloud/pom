@@ -803,6 +803,7 @@ mod ipv6_tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 

@@ -203,7 +203,10 @@ with a host certificate and needs no admission (`security-model.md`). The host
 and its instances talk over `127.0.0.1` (hidden state, control) and report RTT
 0 (`transport: "local"`, drawn dotted on the maps). A host inside a container
 must publish the instances' ports for machines elsewhere to reach them
-directly; otherwise they fall back to the relay. `POST /api/ui/instances/remove`
+directly; otherwise they fall back to the relay. The instance announces the
+host's pinned address at its own P2P port: the host's `ADVERTISE_ADDR` (or
+`PUBLIC_ADDR`) environment variable when set, else its `pom.json`
+`advertise_addr` (`instances::pinned_address_for`). `POST /api/ui/instances/remove`
 stops one and deletes its folder; the host restarts its instances at its own
 start (`pom.db` `instances`).
 

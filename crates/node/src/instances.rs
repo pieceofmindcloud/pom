@@ -366,6 +366,21 @@ fn inherited(name: &str) -> bool {
     )
 }
 
+/// The host machine's pinned address moved to the instance's own port. A host
+/// pinned by the environment (`ADVERTISE_ADDR`, then `PUBLIC_ADDR`, like the
+/// command line) wins over `pom.json`, which the instance's config copied:
+/// without it an instance in a bridged container announces only addresses
+/// the other machines cannot reach and its hops fall back to a relay.
+fn pinned_address_for(env_advertise: Option<&str>, env_public: Option<&str>, port: u16) -> Option<String> {
+    let pinned = [env_advertise, env_public]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())?;
+    let host = pinned.rsplit_once(':').map(|(host, _)| host).unwrap_or(pinned);
+    (!host.is_empty()).then(|| format!("{host}:{port}"))
+}
+
 /// Starts (or restarts, when it exits) the process of `record`, until
 /// [`stop`]. Its output goes to `<instance home>/instance.log`.
 pub fn start(record: &InstanceRecord) {
@@ -379,6 +394,7 @@ pub fn start(record: &InstanceRecord) {
         running.insert(record.n, stop_tx);
     }
     let n = record.n;
+    let p2p_port = record.p2p_port;
     tokio::spawn(async move {
         let home = home_of(n);
         loop {
@@ -401,6 +417,14 @@ pub fn start(record: &InstanceRecord) {
                 }
             }
             command.env(crate::brand::env_var("HOME"), &home);
+            let env_of = |name: &str| std::env::var(crate::brand::env_var(name)).ok();
+            if let Some(pinned) = pinned_address_for(
+                env_of("ADVERTISE_ADDR").as_deref(),
+                env_of("PUBLIC_ADDR").as_deref(),
+                p2p_port,
+            ) {
+                command.env(crate::brand::env_var("ADVERTISE_ADDR"), pinned);
+            }
             if let Ok(log) = log {
                 if let Ok(err) = log.try_clone() {
                     command.stderr(err);
@@ -533,6 +557,19 @@ mod tests {
         assert!(!inherited(&format!("{slug}_HOME")));
         assert!(!inherited(&format!("{slug}_ADVERTISE_ADDR")));
         assert!(!inherited(&format!("{slug}_SLOT_SAVE_PATH")));
+    }
+
+    #[test]
+    fn an_environment_pinned_host_address_moves_to_the_instance_port() {
+        assert_eq!(
+            pinned_address_for(Some("100.71.127.127:42777"), None, 42797).as_deref(),
+            Some("100.71.127.127:42797")
+        );
+        assert_eq!(
+            pinned_address_for(Some(" "), Some("[2001:db8::1]:42777"), 42797).as_deref(),
+            Some("[2001:db8::1]:42797")
+        );
+        assert_eq!(pinned_address_for(None, None, 42797), None);
     }
 }
 

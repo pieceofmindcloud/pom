@@ -1895,6 +1895,9 @@ async fn start_node(
         Ok(count) => info!("{count} replaced internal key(s) revoked"),
         Err(error) => warn!("could not revoke replaced internal keys: {error:#}"),
     }
+    if crate::instances::own_certificate().is_some() {
+        crate::instances::adopt_host_plugins(&database, &node_id);
+    }
     let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
     plugin_engine::install(plugins.clone());
 

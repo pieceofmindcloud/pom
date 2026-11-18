@@ -3942,6 +3942,38 @@ impl PluginManager {
     }
 }
 
+/// Copies the host's plugin installations (public and local development) into
+/// an instance's database, bound to the instance's own fingerprint, so the
+/// instance starts the same installed binaries (its `plugins/` folder is the
+/// host's). Licenses are not copied: an activation belongs to one node.
+/// Returns how many entries were adopted.
+pub(crate) fn adopt_installs(
+    host: &crate::db::PomDb,
+    instance: &crate::db::PomDb,
+    node_id: &str,
+) -> anyhow::Result<usize> {
+    let fingerprint = serde_json::to_value(machine_fingerprint(node_id))?;
+    let mut adopted = 0;
+    for prefix in [PUBLIC_INSTALL_SETTING_PREFIX, DEVELOPMENT_INSTALL_SETTING_PREFIX] {
+        for key in host.local_setting_keys_with_prefix(prefix)? {
+            let Some(text) = host.local_setting_json(&key)? else { continue };
+            let mut value: serde_json::Value = serde_json::from_str(&text)?;
+            let Some(object) = value.as_object_mut() else { continue };
+            object.insert("fingerprint".into(), fingerprint.clone());
+            instance.save_local_setting(&key, &value)?;
+            adopted += 1;
+        }
+    }
+    for prefix in [UI_MANIFEST_SETTING_PREFIX, PREFERENCES_SETTING_PREFIX, GITHUB_REPOSITORIES_SETTING] {
+        for key in host.local_setting_keys_with_prefix(prefix)? {
+            if let Some(text) = host.local_setting_json(&key)? {
+                instance.save_local_setting(&key, &serde_json::from_str::<serde_json::Value>(&text)?)?;
+            }
+        }
+    }
+    Ok(adopted)
+}
+
 fn machine_fingerprint(node_id: &str) -> Fingerprint {
     Fingerprint::from_components(
         std::env::consts::OS,
@@ -5701,6 +5733,34 @@ mod tests {
     }
 
     use super::tests_support::MockLicenseService;
+
+    #[test]
+    fn an_instance_adopts_the_hosts_installs_with_its_own_fingerprint_but_no_license() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let host = crate::db::PomDb::open(directory.path().join("host.db")).expect("host db");
+        let instance = crate::db::PomDb::open(directory.path().join("instance.db")).expect("instance db");
+        let installed = DevelopmentPluginInstallState {
+            fingerprint: machine_fingerprint("host-node"),
+            plugin_sha256: "00".into(),
+            size: 1,
+            plugin_path: "/data/plugins/strata/lib.so".into(),
+            installed_at: "now".into(),
+        };
+        let key = format!("{DEVELOPMENT_INSTALL_SETTING_PREFIX}strata");
+        host.save_local_setting(&key, &serde_json::to_value(&installed).unwrap()).unwrap();
+        host.save_local_setting(&format!("{PERSISTED_SETTING_PREFIX}logs"), &serde_json::json!({"x": 1}))
+            .unwrap();
+
+        assert_eq!(adopt_installs(&host, &instance, "instance-node").unwrap(), 1);
+        let adopted: DevelopmentPluginInstallState =
+            serde_json::from_str(&instance.local_setting_json(&key).unwrap().unwrap()).unwrap();
+        assert_eq!(adopted.fingerprint, machine_fingerprint("instance-node"));
+        assert_eq!(adopted.plugin_path, installed.plugin_path);
+        assert!(instance
+            .local_setting_json(&format!("{PERSISTED_SETTING_PREFIX}logs"))
+            .unwrap()
+            .is_none());
+    }
     use super::*;
     use enterprise_protocol::{ActivationResponse, Grant, LicenseErrorCode, PluginManifest};
     use serde_json::Value;

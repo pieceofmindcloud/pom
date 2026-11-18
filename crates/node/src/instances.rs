@@ -112,6 +112,21 @@ pub fn own_certificate() -> Option<InstanceCertificate> {
     serde_json::from_str(&text).ok()
 }
 
+/// On an instance's start: takes the host's plugin installations again (the
+/// host's `pom.db`, two folders up), so a plugin the host installed or rebuilt
+/// runs here too (Strata, Avalon and every engine plugin; `plugins::adopt_installs`).
+pub fn adopt_host_plugins(database: &crate::db::PomDb, node_id: &str) {
+    let root = crate::config::project_root();
+    let Some(host_home) = root.parent().and_then(Path::parent) else { return };
+    let host_db = host_home.join(crate::db::DATABASE_FILENAME);
+    let result = crate::db::PomDb::open(&host_db)
+        .and_then(|host| crate::plugins::adopt_installs(&host, database, node_id));
+    match result {
+        Ok(count) => tracing::info!("adopted {count} plugin installation(s) of the host"),
+        Err(error) => tracing::warn!("could not adopt the host's plugin installations: {error:#}"),
+    }
+}
+
 /// The machine this process runs on, as a node id: the host's when this node
 /// is an instance, else its own. Set once at start (`set_local_machine`).
 static LOCAL_MACHINE: std::sync::OnceLock<String> = std::sync::OnceLock::new();

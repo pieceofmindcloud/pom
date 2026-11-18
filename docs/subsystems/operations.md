@@ -206,7 +206,13 @@ must publish the instances' ports for machines elsewhere to reach them
 directly; otherwise they fall back to the relay. The instance announces the
 host's pinned address at its own P2P port: the host's `ADVERTISE_ADDR` (or
 `PUBLIC_ADDR`) environment variable when set, else its `pom.json`
-`advertise_addr` (`instances::pinned_address_for`). `POST /api/ui/instances/remove`
+`advertise_addr` (`instances::pinned_address_for`). At each start the instance adopts
+the host's plugin installations (public and local development, with its own
+fingerprint; licenses stay per node: `plugins::adopt_installs`), so engine
+plugins such as Strata serve on it. The binaries and plugin data are the
+host's through symlinks (only each plugin's `run/` is the instance's), so no
+disk is duplicated, and an on-demand plugin (ImageStudio, for example) starts
+no process on the instance until opened. `POST /api/ui/instances/remove`
 stops one and deletes its folder; the host restarts its instances at its own
 start (`pom.db` `instances`).
 

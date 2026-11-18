@@ -77,6 +77,13 @@ pub struct NodeInfo {
     /// Raw operator-pinned address (`Config.advertise_addr`), for pre-filling
     /// the edit form — `None` means "nothing pinned," not "unknown."
     pub advertise_addr: Option<String>,
+    /// `Config.advertise_only`: offer peers only the pinned address.
+    #[serde(default)]
+    pub advertise_only: bool,
+    /// The saved `advertise_only` asks for a different endpoint bind than this
+    /// run has: it lands on the next start.
+    #[serde(default)]
+    pub advertise_only_restart: bool,
     /// What this node actually puts in `Announce.addr` right now
     /// (`Network::announce_addr()`, full `host:port`): the pin if set, else
     /// a peer-observed public address, else the `0.0.0.0:<port>` "ask the
@@ -337,6 +344,9 @@ pub(super) async fn node_info(
         detached: state.network.is_detached(),
         node_name,
         advertise_addr,
+        advertise_only: state.network.advertise_only_asked(),
+        advertise_only_restart: crate::discovery::held_bind_ip(&state.network).is_some()
+            != state.network.bind_held(),
         effective_address: state.network.announce_addr(),
         quic_enabled,
         quic_authority,
@@ -1574,6 +1584,9 @@ pub struct SaveAdvertiseAddrRequest {
     /// Empty means "clear the pin" — same convention as `SavePathsRequest.shard_dir`.
     #[serde(default)]
     pub advertise_addr: String,
+    /// Offer peers only this address; absent keeps the saved choice.
+    #[serde(default)]
+    pub advertise_only: Option<bool>,
 }
 
 /// Pin (or clear) the address this node advertises to peers, live — no
@@ -1601,16 +1614,26 @@ pub(super) async fn save_advertise_addr(
     {
         let mut cfg = state.auth.write().await;
         cfg.advertise_addr = normalized.clone();
+        if let Some(only) = req.advertise_only {
+            cfg.advertise_only = only;
+        }
         if let Err(e) = cfg.save() {
             return bad_request(format!("could not write pom.json: {e}"));
         }
     }
 
     state.network.set_advertise_addr(normalized.as_deref());
+    if let Some(only) = req.advertise_only {
+        state.network.set_advertise_only(only);
+    }
     info!("advertised address updated from the interface: {normalized:?}");
+    let restart_needed =
+        crate::discovery::held_bind_ip(&state.network).is_some() != state.network.bind_held();
 
     Json(json!({
         "advertise_addr": normalized,
+        "advertise_only": state.network.advertise_only_asked(),
+        "advertise_only_restart": restart_needed,
         "effective_address": state.network.announce_addr(),
     }))
     .into_response()

@@ -1609,6 +1609,7 @@ mod tests {
             relay_peers: vec![],
             relay: Default::default(),
             advertise_addr: None,
+            advertise_only: false,
             network: Default::default(),
             api_keys: vec![
                 crate::config::ApiKey {
@@ -1686,6 +1687,7 @@ mod tests {
             relay_peers: vec![],
             relay: Default::default(),
             advertise_addr: None,
+            advertise_only: false,
             network: Default::default(),
             api_keys: vec![crate::config::ApiKey {
                 id: "active-id".into(),

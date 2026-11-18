@@ -1495,6 +1495,11 @@ pub struct Network {
     /// change this live, via `POST /api/ui/network/advertise-addr`, without a
     /// process restart.
     advertise_addr: std::sync::RwLock<Option<String>>,
+    /// `Config.advertise_only`: with a pin, announce no other direct address.
+    advertise_only: AtomicBool,
+    /// Whether the p2p endpoint of this run is bound to the advertised address
+    /// alone (`discovery::held_bind_ip`); a change waits for the next start.
+    bind_held: AtomicBool,
     /// Tensor parallelism identity of this node (path C). `None` outside
     /// a TP group. Mutable like `advertise_addr`: `apply` can turn the
     /// node on as primary/worker without restarting the process.
@@ -2022,6 +2027,8 @@ impl Network {
             direct_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hostname: std::sync::RwLock::new(String::new()),
             advertise_addr: std::sync::RwLock::new(None),
+            advertise_only: AtomicBool::new(false),
+            bind_held: AtomicBool::new(false),
             tp: std::sync::RwLock::new(None),
             runtime_capacity: std::sync::RwLock::new(RuntimeCapacityState::default()),
             idle: AtomicBool::new(false),
@@ -2341,6 +2348,37 @@ impl Network {
     /// rather than stored broken; callers that need to reject bad input
     /// outright (the web UI's save endpoint) should validate with
     /// `advertised_addr` themselves first and only call this on success.
+    /// Offer peers only the pinned address (`Config.advertise_only`), live for
+    /// the announce; the endpoint's bind follows on the next start
+    /// (`discovery::bind`).
+    pub fn set_advertise_only(&self, only: bool) {
+        self.advertise_only.store(only, Ordering::Relaxed);
+    }
+
+    /// The saved choice, with or without a pin.
+    pub fn advertise_only_asked(&self) -> bool {
+        self.advertise_only.load(Ordering::Relaxed)
+    }
+
+    pub fn set_bind_held(&self, held: bool) {
+        self.bind_held.store(held, Ordering::Relaxed);
+    }
+
+    pub fn bind_held(&self) -> bool {
+        self.bind_held.load(Ordering::Relaxed)
+    }
+
+    /// Whether the announce is held to the pinned address: asked for, and a
+    /// pin is set (without one there is nothing to hold it to).
+    pub fn advertise_only(&self) -> bool {
+        self.advertise_only.load(Ordering::Relaxed)
+            && self
+                .advertise_addr
+                .read()
+                .expect("advertise_addr lock")
+                .is_some()
+    }
+
     pub fn set_advertise_addr(&self, raw: Option<&str>) {
         let normalized = raw.and_then(|r| advertised_addr(r, self.bind_addr.port()));
         if let Some(ref a) = normalized {
@@ -2438,12 +2476,18 @@ impl Network {
         if let Some(address) = pinned.as_deref().and_then(pinned_endpoint_addr) {
             addrs.push(address);
         }
+        let only = self.advertise_only();
         for address in self
             .endpoint_addrs
             .read()
             .expect("endpoint_addrs lock")
             .iter()
         {
+            // Held to the pin: relays stay (a fallback, not a direct path),
+            // every other direct address goes.
+            if only && address.parse::<std::net::SocketAddr>().is_ok() {
+                continue;
+            }
             if !addrs.contains(address) {
                 addrs.push(address.clone());
             }
@@ -2687,7 +2731,9 @@ impl Network {
             addr_candidates,
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
             deploy_id: assignment.map(|a| a.deploy_id.clone()).unwrap_or_default(),
-            deployment_name: assignment.map(|a| a.deployment_name.clone()).unwrap_or_default(),
+            deployment_name: assignment
+                .map(|a| a.deployment_name.clone())
+                .unwrap_or_default(),
             start_layer: assignment.map(|a| a.start_layer).unwrap_or(0),
             end_layer: assignment.map(|a| a.end_layer).unwrap_or(0),
             total_layers: assignment.map(|a| a.total_layers).unwrap_or(0),
@@ -5542,6 +5588,36 @@ mod tests {
         );
     }
 
+    /// "Announce only this address": with a pin, no other direct address
+    /// leaves the node (relays stay as a fallback); without a pin the choice
+    /// holds nothing and every published address goes out as before.
+    #[tokio::test]
+    async fn advertise_only_keeps_the_pin_and_the_relays() {
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
+            .await
+            .unwrap();
+        net.set_endpoint_addrs(vec![
+            "203.0.113.5:52777".into(),
+            "https://relay.example.org/".into(),
+        ]);
+        net.set_advertise_only(true);
+        assert!(!net.advertise_only(), "no pin, nothing to hold to");
+        assert_eq!(net.endpoint_addrs().len(), 2);
+
+        net.set_advertise_addr(Some("198.51.100.9:42777"));
+        assert!(net.advertise_only());
+        assert_eq!(
+            net.endpoint_addrs(),
+            vec![
+                "198.51.100.9:52777".to_string(),
+                "https://relay.example.org/".to_string(),
+            ]
+        );
+
+        net.set_advertise_only(false);
+        assert_eq!(net.endpoint_addrs().len(), 3);
+    }
+
     /// Clearing the pin (`None`, from the UI's "empty means auto" convention)
     /// has to fall back through the same precedence `announce_addr` applies
     /// back to an observed address if no current public local address exists.
@@ -6294,6 +6370,7 @@ mod tests {
             relay_peers: vec![],
             relay: Default::default(),
             advertise_addr: None,
+            advertise_only: false,
             network: crate::config::NetworkSettings {
                 visibility,
                 ..Default::default()

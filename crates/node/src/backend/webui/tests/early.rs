@@ -377,6 +377,7 @@ mod advertise_addr_tests {
             State(state.clone()),
             Json(SaveAdvertiseAddrRequest {
                 advertise_addr: "203.0.113.9:42777".into(),
+                advertise_only: None,
             }),
         )
         .await;
@@ -406,6 +407,7 @@ mod advertise_addr_tests {
             State(state.clone()),
             Json(SaveAdvertiseAddrRequest {
                 advertise_addr: "".into(),
+                advertise_only: None,
             }),
         )
         .await;
@@ -424,6 +426,7 @@ mod advertise_addr_tests {
             State(state.clone()),
             Json(SaveAdvertiseAddrRequest {
                 advertise_addr: "[not-a-valid-ipv6]".into(),
+                advertise_only: None,
             }),
         )
         .await;

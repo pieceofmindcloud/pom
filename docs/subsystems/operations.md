@@ -192,6 +192,13 @@ The UI is read from disk at `<POM_HOME>/apps/frontend/dist`, hence the `apps`
 symlink - without it the second peer starts but answers 500 on the UI. Check
 with `/api/ui/cluster`: two **distinct** `node_id`s.
 
+Two nodes on one machine should share the network mode: all on one Docker
+bridge, or all on the host network. A host-network node beside bridge nodes
+reaches them by every interface of the host at the same RTT, and iroh keeps
+switching paths (`p2p-network.md`, "endpoint_addrs"). If they must mix, pin the
+host-network node's `advertise_addr` to one of its interfaces and turn on
+`advertise_only`.
+
 To try the UI next to a live cluster without joining it, start the node with
 `--no-discovery`: no announce, no LAN broadcast, no bootstrap.
 

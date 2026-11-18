@@ -4214,6 +4214,7 @@ pub(crate) mod testkit {
             relay_peers: vec![],
             relay: Default::default(),
             advertise_addr: None,
+            advertise_only: false,
             api_keys: vec![],
             blocked_nodes: vec![],
             model_dirs: None,

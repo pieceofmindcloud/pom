@@ -1236,6 +1236,7 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
         relay_peers: vec![],
         relay: Default::default(),
         advertise_addr: None,
+        advertise_only: false,
         network: Default::default(),
         api_keys: vec![],
         blocked_nodes: vec![],
@@ -1514,6 +1515,8 @@ struct P2pStackArgs {
     profile: crate::profile::NodeProfile,
     node_display_name: String,
     advertise_addr: Option<String>,
+    /// `Config.advertise_only`: announce and bind on the pinned address alone.
+    advertise_only: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     audit: Arc<reqlog::AuditLog>,
     plugins: Arc<plugins::PluginManager>,
@@ -1646,6 +1649,9 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
     net.relay_gate().set_reachable(args.public_addr_configured);
+    // Before `Discovery::new` binds the endpoint: it reads this to bind on the
+    // advertised address alone.
+    net.set_advertise_only(args.advertise_only);
     // `--no-iroh` (spec 2026-11-15): the mode is fixed for the run. The gate
     // answers "no relay" whatever the screens or the network policy later ask
     // for, and `Discovery::new` builds no relay client on the endpoint.
@@ -1919,6 +1925,7 @@ async fn start_node(
         profile: app_config.profile,
         node_display_name,
         advertise_addr: advertise_addr.clone(),
+        advertise_only: app_config.advertise_only,
         cluster_logs: cluster_logs.clone(),
         audit: audit.clone(),
         plugins: plugins.clone(),

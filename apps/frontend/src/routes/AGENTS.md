@@ -309,7 +309,9 @@ Per-file list:
   ports, profile, effective authority, and `Sair da rede`/`Voltar para a rede` ("Leave the network"/"Return to the network") via
   `POST /api/ui/leave`/`/api/ui/rejoin` - abdication, not privilege, available
   to every profile) and "Announced address" (`POST /api/ui/network/advertise-addr`,
-  it shows the effective address the peers use). Between the two sits "Machine
+  it shows the effective address the peers use, and the "Announce only this
+  address" checkbox, `advertise_only`, enabled only with an address typed and
+  saved with it; a footnote shows while the endpoint's bind waits for a restart). Between the two sits "Machine
   name" (`POST /api/ui/network/node-name`): the field holds the configured
   `node_name` and, while empty, shows the hostname in use as its placeholder.
   The relay options moved to `NetworkSettings.tsx`. "Connections" (`GET/POST

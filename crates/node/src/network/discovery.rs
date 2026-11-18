@@ -185,6 +185,29 @@ fn relay_config(url: &RelayUrl) -> Arc<iroh::RelayConfig> {
 /// The textual addresses worth publishing about this endpoint: relay URLs
 /// always, direct addresses only when public. A private address goes out in
 /// `addr_candidates` already, and mDNS covers the LAN.
+/// The IP the endpoint binds to alone: the advertised address, when the
+/// operator held the announce to it (`Config.advertise_only`) and it belongs to
+/// one of this machine's interfaces. Inside a container the advertised address
+/// is usually the host's, not an interface here; the bind stays wide then.
+pub(crate) fn held_bind_ip(network: &crate::network::Network) -> Option<std::net::IpAddr> {
+    if !network.advertise_only() {
+        return None;
+    }
+    let host = network.advertised_host()?;
+    let ip: std::net::IpAddr = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse()
+        .ok()?;
+    is_local_interface(ip, &crate::addrs::local_addrs()).then_some(ip)
+}
+
+fn is_local_interface(ip: std::net::IpAddr, locals: &[crate::addrs::LocalAddr]) -> bool {
+    locals
+        .iter()
+        .any(|local| local.ip.parse::<std::net::IpAddr>().ok() == Some(ip))
+}
+
 fn publishable_addrs(addr: &EndpointAddr) -> Vec<String> {
     p2p::addr_texts(addr)
         .into_iter()
@@ -434,7 +457,12 @@ impl Discovery {
         network.set_dedicated_relays(dedicated_relays.iter().map(|url| url.to_string()));
 
         let book = iroh::address_lookup::MemoryLookup::new();
-        let endpoint = Self::bind(port, &secret, &relay_map, &book).await?;
+        let only_ip = held_bind_ip(&network);
+        network.set_bind_held(only_ip.is_some());
+        if let Some(ip) = only_ip {
+            info!("p2p: binding the endpoint to the advertised address {ip} only");
+        }
+        let endpoint = Self::bind(port, only_ip, &secret, &relay_map, &book).await?;
         if let Some(pinned) = network.advertised_host() {
             let host = pinned.trim_start_matches('[').trim_end_matches(']');
             if let Ok(ip) = host.parse::<std::net::IpAddr>() {
@@ -584,6 +612,7 @@ impl Discovery {
     /// IPv6.
     async fn bind(
         port: u16,
+        only_ip: Option<std::net::IpAddr>,
         secret: &SecretKey,
         relay_map: &iroh::RelayMap,
         book: &iroh::address_lookup::MemoryLookup,
@@ -594,6 +623,15 @@ impl Discovery {
                 .relay_mode(iroh::RelayMode::Custom(relay_map.clone()))
                 .address_lookup(book.clone())
         };
+        // Held to the advertised address: one socket on it, so iroh offers
+        // no other interface as a NAT traversal candidate.
+        if let Some(ip) = only_ip {
+            return builder()
+                .bind_addr(SocketAddr::new(ip, port))?
+                .bind()
+                .await
+                .with_context(|| format!("binding the endpoint on {ip} UDP {port}"));
+        }
         let dual = builder()
             .bind_addr(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)))?
             .bind_addr(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)))?
@@ -2469,6 +2507,21 @@ mod tests {
 
     /// A private direct address is not published: it only wastes a dial from
     /// the internet. A relay URL always is.
+    #[test]
+    fn the_held_bind_ip_must_be_one_of_this_machines_interfaces() {
+        let locals = vec![crate::addrs::LocalAddr {
+            ip: "100.71.127.127".into(),
+            interface: Some("tailscale0".into()),
+            deprecated: false,
+            temporary: false,
+        }];
+        assert!(is_local_interface(
+            "100.71.127.127".parse().unwrap(),
+            &locals
+        ));
+        assert!(!is_local_interface("203.0.113.9".parse().unwrap(), &locals));
+    }
+
     #[test]
     fn only_public_direct_addresses_and_relays_are_published() {
         let id = key(3).public();

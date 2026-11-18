@@ -35,6 +35,7 @@ export function MyMachine() {
 
   const [busy, setBusy] = useState(false);
   const [advertiseAddr, setAdvertiseAddr] = useState("");
+  const [advertiseOnly, setAdvertiseOnly] = useState(false);
   const [addrSaving, setAddrSaving] = useState(false);
   const [addrLoaded, setAddrLoaded] = useState(false);
   const [nodeName, setNodeName] = useState("");
@@ -49,6 +50,7 @@ export function MyMachine() {
   useEffect(() => {
     if (addrLoaded || !node.data) return;
     setAdvertiseAddr(node.data.advertise_addr ?? "");
+    setAdvertiseOnly(node.data.advertise_only ?? false);
     setNodeName(node.data.node_name ?? "");
     setAddrLoaded(true);
   }, [node.data, addrLoaded]);
@@ -87,12 +89,18 @@ export function MyMachine() {
   async function saveAdvertiseAddr() {
     setAddrSaving(true);
     try {
-      const saved = await api.post<Pick<NodeInfo, "advertise_addr" | "effective_address">>(
-        "/api/ui/network/advertise-addr",
-        { advertise_addr: advertiseAddr.trim() },
-      );
+      const saved = await api.post<
+        Pick<NodeInfo, "advertise_addr" | "effective_address" | "advertise_only" | "advertise_only_restart">
+      >("/api/ui/network/advertise-addr", {
+        advertise_addr: advertiseAddr.trim(),
+        advertise_only: advertiseOnly,
+      });
       setAdvertiseAddr(saved.advertise_addr ?? "");
-      toast.success(t("network.addrSaved"), t("network.addrSavedDetail"));
+      setAdvertiseOnly(saved.advertise_only ?? advertiseOnly);
+      toast.success(
+        t("network.addrSaved"),
+        saved.advertise_only_restart ? t("network.addrOnlyRestart") : t("network.addrSavedDetail"),
+      );
       invalidate();
     } catch (e) {
       toast.fromError(t("network.addrSaveFailed"), e);
@@ -243,6 +251,22 @@ export function MyMachine() {
                 onChange={(e) => setAdvertiseAddr(e.target.value)}
               />
             </Field>
+            <label className="flex items-start gap-2.5 text-sm" data-testid="advertise-only">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={advertiseOnly}
+                disabled={!advertiseAddr.trim()}
+                onChange={(e) => setAdvertiseOnly(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium text-fg">{t("network.addrOnlyLabel")}</span>
+                <span className="mt-0.5 block text-xs text-muted">{t("network.addrOnlyHint")}</span>
+              </span>
+            </label>
+            {node.data?.advertise_only_restart && (
+              <Footnote icon={<Radio className="h-3.5 w-3.5" />}>{t("network.addrOnlyRestart")}</Footnote>
+            )}
             <KeyValue label={t("network.addrEffective")}>
               <Mono>{node.data?.effective_address ?? "—"}</Mono>
             </KeyValue>

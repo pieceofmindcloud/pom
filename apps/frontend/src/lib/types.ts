@@ -450,6 +450,10 @@ export interface NodeInfo {
   node_name: string | null;
   /** Address pinned by the operator. `null` when nothing was pinned. */
   advertise_addr: string | null;
+  /** Offer peers only the pinned address (older nodes omit it). */
+  advertise_only?: boolean;
+  /** The saved choice changes the endpoint's bind: it lands on the next start. */
+  advertise_only_restart?: boolean;
   /** What this node actually announces now (pinned, observed, or the sentinel). */
   effective_address: string;
   /** Whether the cluster prefers HTTP/3 over QUIC on new hops. */

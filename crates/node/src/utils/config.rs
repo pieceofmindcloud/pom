@@ -514,6 +514,15 @@ pub struct Config {
     /// address that has stopped answering. See `network::advertised_addr`.
     #[serde(default)]
     pub advertise_addr: Option<String>,
+    /// With `advertise_addr` set, offer peers only that address: the announce
+    /// carries no other direct address and, when the address belongs to one of
+    /// this machine's interfaces, the p2p endpoint binds to it alone, so iroh
+    /// cannot offer the other interfaces as NAT traversal candidates either.
+    /// Two nodes on one machine (host network beside a Docker bridge) otherwise
+    /// see several equal paths to each other and iroh flips between them.
+    /// The bind side takes effect on the next start.
+    #[serde(default)]
+    pub advertise_only: bool,
     /// Human-facing network settings captured during first access.
     #[serde(default)]
     pub network: NetworkSettings,
@@ -693,6 +702,7 @@ impl fmt::Debug for Config {
             .field("inference_port", &self.inference_port)
             .field("bootstrap_nodes", &self.bootstrap_nodes)
             .field("advertise_addr", &self.advertise_addr)
+            .field("advertise_only", &self.advertise_only)
             .field("network", &self.network)
             .field("api_key_count", &self.api_keys.len())
             .field("blocked_nodes", &self.blocked_nodes)
@@ -1671,6 +1681,7 @@ mod tests {
             relay_peers: vec![],
             relay: Default::default(),
             advertise_addr: None,
+            advertise_only: false,
             network: Default::default(),
             api_keys: vec![],
             blocked_nodes: vec![],
@@ -1783,6 +1794,7 @@ mod tests {
             relay_peers: vec![],
             relay: Default::default(),
             advertise_addr: None,
+            advertise_only: false,
             network: Default::default(),
             api_keys: vec![],
             blocked_nodes: vec![],
@@ -2038,6 +2050,7 @@ mod tests {
             relay_peers: vec![],
             relay: Default::default(),
             advertise_addr: None,
+            advertise_only: false,
             network: Default::default(),
             api_keys: vec![],
             blocked_nodes: vec![],
@@ -2255,6 +2268,7 @@ mod tests {
             relay_peers: vec![],
             relay: Default::default(),
             advertise_addr: None,
+            advertise_only: false,
             network: Default::default(),
             api_keys: vec![
                 ApiKey {

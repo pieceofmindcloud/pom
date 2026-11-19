@@ -983,8 +983,22 @@ async fn plugin_cuts_range(state: &GatewayState, req: &ApplyRequest) -> bool {
         return false;
     };
     let source = std::path::PathBuf::from(&req.source_model_path);
-    let info = match tokio::task::spawn_blocking(move || crate::gguf::read_info(&source)).await {
-        Ok(Ok(info)) if info.shard_range.is_none() => info,
+    // A whole GGUF names its architecture in the header; a Hugging Face
+    // folder in its config.json (`model_type`). A slice is not a whole model.
+    let architecture = match tokio::task::spawn_blocking(move || {
+        if source.is_dir() {
+            let parent = source.parent().unwrap_or(&source).to_path_buf();
+            return crate::catalog::describe_hf_folder(&parent, &source)
+                .map(|model| model.architecture);
+        }
+        match crate::gguf::read_info(&source) {
+            Ok(info) if info.shard_range.is_none() => Some(info.architecture),
+            _ => None,
+        }
+    })
+    .await
+    {
+        Ok(Some(architecture)) => architecture,
         _ => return false,
     };
     crate::plugin_engine::services_of(state, &state.network.node_id)
@@ -995,7 +1009,7 @@ async fn plugin_cuts_range(state: &GatewayState, req: &ApplyRequest) -> bool {
                 .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference")
         })
         .is_some_and(|entry| {
-            crate::plugin_engine::runs_ranges(&entry, info.architecture.as_deref())
+            crate::plugin_engine::runs_ranges(&entry, architecture.as_deref())
         })
 }
 

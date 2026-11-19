@@ -415,7 +415,11 @@ slicing screen leaves it out) and the Models screen shows it with a
 `safetensors` badge, without the GGUF actions. The model provider downloads
 one with `folder: true` on `POST /api/ui/model-provider/downloads`: the
 folder's files (`model_provider::is_folder_file`) land in
-`<models folder>/<repo_id>/`.
+`<models folder>/<repo_id>/`. A service that lists the folder's `model_type`
+in `stage_ranges` serves ranges of it, one stage per machine, each machine
+from its own copy of the folder: the apply reads the architecture from the
+folder's `config.json` (`plugin_cuts_range`) and `engine.load` gets the
+folder with its `range` (`plugin_engine::file_is_whole_model`).
 
 ## 1.7 Image model components
 

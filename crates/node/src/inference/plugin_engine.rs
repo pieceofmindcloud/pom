@@ -388,10 +388,15 @@ pub(crate) fn load_params(
     params
 }
 
-/// Whether the GGUF at `path` is a whole model rather than a POM slice (its header has no slice range). An unreadable
-/// file is not taken for a whole model.
+/// Whether the GGUF at `path` is a whole model rather than a POM slice (its header has no slice range), or `path` is a
+/// Hugging Face model folder. An unreadable file is not taken for a whole model.
 pub(crate) fn file_is_whole_model(path: &str) -> bool {
-    crate::gguf::read_info(std::path::Path::new(path)).is_ok_and(|info| info.shard_range.is_none())
+    let path = std::path::Path::new(path);
+    // A Hugging Face model folder is always the whole model.
+    if path.join("config.json").is_file() {
+        return true;
+    }
+    crate::gguf::read_info(path).is_ok_and(|info| info.shard_range.is_none())
 }
 
 /// The `/health` this node answers while a plugin engine serves its model:

@@ -1382,6 +1382,19 @@ mod tests {
     use super::{folder_layer_options, resolve_mmproj_path};
 
     #[test]
+    fn a_model_folder_cuts_at_every_layer() {
+        let options = folder_layer_options(4, 400);
+        assert_eq!(
+            options.cuts.iter().map(|cut| cut.end_layer).collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        assert_eq!(options.cuts[1].size_bytes, 200);
+        assert_eq!(options.cuts[1].remainder_bytes, 200);
+        assert_eq!(options.cuts[3].remainder_bytes, 0);
+        assert_eq!(options.valid_starts, [0, 1, 2, 3]);
+    }
+
+    #[test]
     fn explicit_projector_path_is_used_for_a_slice() {
         let root = std::env::temp_dir().join(format!("pom-mmproj-apply-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -1581,17 +1594,4 @@ pub(super) async fn merge_parts(
         bytes as f64 / 1_073_741_824.0
     );
     Ok(final_path.to_string_lossy().into_owned())
-
-    #[test]
-    fn a_model_folder_cuts_at_every_layer() {
-        let options = folder_layer_options(4, 400);
-        assert_eq!(
-            options.cuts.iter().map(|cut| cut.end_layer).collect::<Vec<_>>(),
-            [0, 1, 2, 3]
-        );
-        assert_eq!(options.cuts[1].size_bytes, 200);
-        assert_eq!(options.cuts[1].remainder_bytes, 200);
-        assert_eq!(options.cuts[3].remainder_bytes, 0);
-        assert_eq!(options.valid_starts, [0, 1, 2, 3]);
-    }
 }

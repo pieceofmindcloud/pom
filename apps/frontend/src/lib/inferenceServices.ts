@@ -18,7 +18,7 @@ export interface InferenceServiceEntry {
   architectures: string[];
   /** Hugging Face `model_type`s whose folders (safetensors) it runs whole. */
   hfArchitectures: string[];
-  /** The settings its engine takes (the first machine that publishes them). */
+  /** The settings its engine takes (the union of what its machines publish). */
   settings: EngineSetting[];
   /** The POM deployment settings that apply to its engine, as it declares them. */
   pomSettings: PomSetting[];
@@ -78,7 +78,11 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
       for (const architecture of service.draft_architectures ?? []) {
         if (!entry.draftArchitectures.includes(architecture)) entry.draftArchitectures.push(architecture);
       }
-      if (entry.settings.length === 0 && service.settings?.length) entry.settings = service.settings;
+      // The union over the machines, in first-seen order: in a network mixing
+      // plugin versions, an older machine must not hide a newer one's setting.
+      for (const setting of service.settings ?? []) {
+        if (!entry.settings.some((known) => known.key === setting.key)) entry.settings = [...entry.settings, setting];
+      }
       for (const setting of service.pom_settings ?? []) {
         if (!entry.pomSettings.includes(setting)) entry.pomSettings.push(setting);
       }

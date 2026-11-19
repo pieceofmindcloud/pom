@@ -25,6 +25,16 @@ describe("inferenceServicesOf", () => {
     expect(serviceRunsModel(services[0], null)).toBe(false);
   });
 
+  it("offers the settings of every machine when the plugin versions differ", () => {
+    const [vllm] = inferenceServicesOf([
+      peer("old", [{ plugin_code: "vllm", id: "vllm", kind: "inference", name: "vLLM", status: "ready",
+        settings: [{ key: "cpu_offload_gb" }] }]),
+      peer("new", [{ plugin_code: "vllm", id: "vllm", kind: "inference", name: "vLLM", status: "ready",
+        settings: [{ key: "cpu_offload_gb" }, { key: "ngram_table" }] }]),
+    ]);
+    expect(vllm.settings.map((setting) => setting.key)).toEqual(["cpu_offload_gb", "ngram_table"]);
+  });
+
   it("marks a service whose engine runs slices", () => {
     const services = inferenceServicesOf([
       peer("a", [{ plugin_code: "strata", id: "strata", kind: "inference", name: "Strata", status: "ready" }]),

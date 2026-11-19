@@ -756,7 +756,7 @@ export function DeployModel() {
       if (isWhole && total != null && (selection ?? []).length === 0) {
         const holders = (wholeModel?.holders ?? []).filter((nodeId) =>
           machineIds.includes(nodeId) && (!service || service.nodeIds.includes(nodeId)));
-        const picked = service && !splitRoles ? holders.slice(0, 1) : holders;
+        const picked = service && !splitRoles && !rangesOnWhole ? holders.slice(0, 1) : holders;
         if (picked.length > 0) {
           const ends = validEnds(total, p.layer_options?.cuts.map((cut) => cut.end_layer) ?? null);
           // A service that does not cut this architecture into ranges runs the
@@ -1257,7 +1257,9 @@ export function DeployModel() {
     // declares the prefill/decode role (the machines hand conversations over as
     // sessions): the next machine then joins with the whole model and the
     // default role, and the node keeps the sessions on for all of them.
-    if (isWhole && service && mapMachineIds.length > 0 && !mapMachineIds.includes(nodeId)) {
+    // A service that cuts the model's ranges itself (`stage_ranges`) takes the
+    // next machine like llama.cpp does: it joins without a range.
+    if (isWhole && service && !rangesOnWhole && mapMachineIds.length > 0 && !mapMachineIds.includes(nodeId)) {
       if (!splitRoles) {
         toast.warning(
           t("deploy.serviceSingleMachineTitle", { name: service.name }),

@@ -419,7 +419,10 @@ folder's files (`model_provider::is_folder_file`) land in
 in `stage_ranges` serves ranges of it, one stage per machine, each machine
 from its own copy of the folder: the apply reads the architecture from the
 folder's `config.json` (`plugin_cuts_range`) and `engine.load` gets the
-folder with its `range` (`plugin_engine::file_is_whole_model`).
+folder with its `range` (`plugin_engine::file_is_whole_model`). The deploy survey's
+`layer_options` for a folder offer every whole layer as a cut, the weights
+costed evenly per layer (`jobs_apply::folder_layer_options`): the folder has
+no GGUF layout to read.
 
 ## 1.7 Image model components
 

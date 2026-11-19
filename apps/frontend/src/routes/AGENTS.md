@@ -606,7 +606,7 @@ while the node does not answer.
   model opens on its last deployment when one is remembered (each range checked
   only against the machines and the layer count), else on the machines that
   hold it with the layers split evenly (`evenSplit`; one machine under a
-  service without the prefill/decode role); either way the machines also go to
+  service that neither cuts ranges nor has the prefill/decode role); either way the machines also go to
   `preferredNodeIds`, so a split never drops one off the map. A machine dropped
   on an empty map takes the whole model; the next ones join without a range.
   The default deployment name is `deployModelDisplayName(chosen)` (no `.gguf`,

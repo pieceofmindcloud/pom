@@ -461,7 +461,7 @@ pub(crate) fn approx_tokens(text: &str) -> u32 {
 // ── Models ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-struct ModelObject {
+pub(crate) struct ModelObject {
     id: String,
     object: &'static str,
     created: i64,
@@ -653,26 +653,65 @@ pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
     model_ids_from_peers(&peers)
 }
 
-async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> impl IntoResponse {
+/// The `/v1/models` objects this node serves from its own peer table. With
+/// `head_pins` false the `<name>@<node_id>` ids of a deployment with several
+/// heads are left out: they name machines, and a visitor never reads them
+/// (`visitor_view::servable_catalog`).
+pub(crate) async fn model_objects(state: &GatewayState, head_pins: bool) -> Vec<ModelObject> {
     let created = chrono::Utc::now().timestamp();
     let peers = state.all_peers().await;
-    let settings = crate::payments::runtime::settings(&state).await;
+    let settings = crate::payments::runtime::settings(state).await;
+    let pins: std::collections::BTreeSet<String> = if head_pins {
+        Default::default()
+    } else {
+        named_deployments(&peers)
+            .into_iter()
+            .filter(|n| n.heads.len() > 1)
+            .flat_map(|n| {
+                n.heads
+                    .iter()
+                    .map(|head| format!("{}@{head}", n.name))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
     let mut data = Vec::new();
     for id in model_ids_from_peers(&peers) {
+        if pins.contains(&id) {
+            continue;
+        }
         // A deployment name stands for `<model>@<deploy_id>`, which the lookups read.
         let target = lookup_id(&peers, &id);
         let pricing = model_pricing(&settings, &model_label_of(&target));
         let (context_length, max_completion_tokens) = state
             .advertised_output_limits_from_peers(&peers, Some(&target))
             .await;
-        let vision = crate::webui::model_vision_supported(&state, &target).await;
+        let vision = crate::webui::model_vision_supported(state, &target).await;
         let mut model = model_object(id, created, context_length, max_completion_tokens, vision);
         model.pricing = pricing;
         data.push(model);
     }
+    data
+}
 
-    let first_id = data.first().map(|model| model.id.clone());
-    let last_id = data.last().map(|model| model.id.clone());
+/// The models list as JSON values: on a visitor, the catalog its admin entry
+/// node hands it (`visitor_view`), since a visitor's peer table holds no
+/// serving machine; on any other node, its own `model_objects`.
+pub(crate) async fn listed_models(state: &GatewayState) -> Vec<serde_json::Value> {
+    if state.local_profile_is_visitor() || state.network.is_visitor() {
+        return crate::visitor_view::catalog_from_entry(state).await;
+    }
+    model_objects(state, true)
+        .await
+        .into_iter()
+        .filter_map(|model| serde_json::to_value(model).ok())
+        .collect()
+}
+
+async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> impl IntoResponse {
+    let data = listed_models(&state).await;
+    let first_id = data.first().and_then(|m| m.get("id")).cloned();
+    let last_id = data.last().and_then(|m| m.get("id")).cloned();
     (
         cors_headers(),
         Json(json!({
@@ -688,7 +727,9 @@ async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> im
 /// The id the capacity, vision and price lookups read: a deployment name (or
 /// `<name>@<node_id>`) becomes its `<model>@<deploy_id>`; anything else is itself.
 pub(crate) fn lookup_id(peers: &[crate::network::PeerInfo], id: &str) -> String {
-    resolve_named(peers, id).map(|(selector, _)| selector).unwrap_or_else(|| id.to_owned())
+    resolve_named(peers, id)
+        .map(|(selector, _)| selector)
+        .unwrap_or_else(|| id.to_owned())
 }
 
 /// The model label of an id, without a `@<deploy_id>` suffix (prices are per model).
@@ -701,6 +742,19 @@ async fn get_model(
     State(state): State<GatewayState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if state.local_profile_is_visitor() || state.network.is_visitor() {
+        return match crate::visitor_view::catalog_from_entry(&state)
+            .await
+            .into_iter()
+            .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+        {
+            Some(model) => (cors_headers(), Json(model)).into_response(),
+            None => error_response(
+                StatusCode::NOT_FOUND,
+                format!("model '{id}' does not exist on this network"),
+            ),
+        };
+    }
     let peers = state.all_peers().await;
     if model_ids_from_peers(&peers).contains(&id) {
         let target = lookup_id(&peers, &id);
@@ -1077,7 +1131,24 @@ pub(crate) async fn resolve_model_and_head(
     if let Some(resolved) = resolve_named(&peers, &requested) {
         return Ok(resolved);
     }
-    resolve_label(state, requested).await.map(|model| (model, None))
+    resolve_label(state, requested)
+        .await
+        .map(|model| (model, None))
+}
+
+/// Whether `requested` would pin a machine: `<anything>@<suffix>` whose
+/// suffix is not a deploy id some live peer announces. Any such suffix
+/// counts, matching a head or not, so the answer says nothing about which
+/// node ids exist.
+pub(crate) async fn names_a_head(state: &GatewayState, requested: &str) -> bool {
+    let Some((_, suffix)) = requested.rsplit_once('@') else {
+        return false;
+    };
+    !state
+        .all_peers()
+        .await
+        .iter()
+        .any(|p| !p.deploy_id.is_empty() && p.deploy_id == suffix)
 }
 
 /// A deployment name, or `<name>@<node_id>` of one of its heads, as the internal

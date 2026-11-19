@@ -534,16 +534,19 @@ boundary.
   list and the mirror, ignoring an approval not newer than the member's last
   ban. `ban` signs a revocation on any admin and pushes it to every peer
   (`push_revocations`); `internal_revocations` merges a caller's list and
-  answers with its own, and `spawn_revocation_keeper` trades lists with one
-  admin per tick. `on_revoked` makes the principal forget the member and
+  answers with its own (to a visitor, or a caller it cannot place, only its
+  own ban; the push skips a visitor it does not name), and
+  `spawn_revocation_keeper` trades lists with one admin per tick. `on_revoked` makes the principal forget the member and
   rotate the key. Phase C of the admin-hub routing
   (`docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md` 10.1)
   adds the roster vouches beside this: `sign_vouches` signs every approval
   the admin sees - own list and mirror, newer than the last ban - as a
   `membership::Vouch` of that member's role; an approval publishes it at
   once (`apply_decision` -> `publish_vouches`: merge locally and push to
-  every peer with a gateway, beside the ban's push), `internal_vouches`
-  merges a caller's vouches and answers with its own, and
+  every peer with a gateway, beside the ban's push; a visitor gets only
+  its own), `internal_vouches` merges a caller's vouches and answers with its
+  own (to a visitor, or a caller it cannot place, only the vouch naming it),
+  and
   `spawn_vouch_keeper` re-signs an admin's vouches every tick (the renewal
   is what lets a dropped member age out) and trades lists with one admin
   per tick. Since phase C the role gates read that ledger where the local
@@ -751,7 +754,21 @@ boundary.
   the metering bundle (`GenSummary.metering_bundle`,
   also held back on the plugin engine path until the stages' receipts are in);
   the caller relays the answer and records `x_pom.payment`
-  (`tap_payment`). See `docs/subsystems/payments.md`.
+  (`tap_payment`). For a visitor caller the entry node refuses a head pin
+  (`inference_head`, or `openai::names_a_head`) with 404 `model_not_found`
+  and redacts the answer before it leaves (`visitor_view`). See
+  `docs/subsystems/payments.md`.
+- `visitor_view.rs` - what a visitor may learn, cut on the node that holds it
+  and never on the visitor: `redact_answer` (a delegated answer's `x_pom` and
+  `/api/generate` report, JSON whole or SSE/NDJSON line by line;
+  `TRACE_KEEP` is an allowlist, `Hidden` the non-admin peers' identifiers
+  scrubbed from error messages; the generated text is never touched),
+  `servable_catalog` / `internal_servable_catalog`
+  (`POST /api/internal/catalog/servable`, the admin's `/v1/models` objects
+  without head pins) and `catalog_from_entry` (a visitor's `/v1/models`,
+  read from its nearest admin entry node), and `caller_is_visitor`, which
+  the membership exchanges use to answer a visitor only its own vouch and
+  ban. See `docs/subsystems/security-model.md`.
 - `metering_verify.rs` - re-execution for the ledger (`node.reexecute`, an
   asynchronous job): cuts and loads each range of the local whole model, runs
   the head's sequence teacher-forced with each boundary's codec, and checks the

@@ -274,6 +274,8 @@ mod tp;
 #[path = "backend/transfer.rs"]
 mod transfer;
 mod trust_store;
+#[path = "backend/visitor_view.rs"]
+mod visitor_view;
 #[path = "network/web_ca.rs"]
 pub mod web_ca;
 #[path = "backend/webapp.rs"]

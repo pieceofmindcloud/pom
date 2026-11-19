@@ -274,7 +274,10 @@ last):
   `admitted_at` at or before the member's last revocation holds nothing
   (`AdminTrust::vouched_role`, persisted as `<trust>.vouches.json`), and the
   keepers exchange ledgers with an admin every 30 s
-  (`POST /api/internal/membership/vouches`). A network open to anyone with
+  (`POST /api/internal/membership/vouches`). A visitor - or a caller the
+  answering node cannot place - reads back only the vouch that names
+  itself, and an admin's push to a visitor carries only that one: the other
+  vouches name every worker of the network. A network open to anyone with
   the anchor is vouched from the live announce the way it used to be
   tokened, and a peer the chain holds any revocation for is never vouched
   again - the ban is as final there as the token answer was.
@@ -300,7 +303,9 @@ last):
   list with one admin per 30 s tick (`webui::spawn_revocation_keeper`), so a
   missed push arrives anyway. `POST /api/internal/membership/revocations`
   takes the caller's list (`InternalNodeAuth`; the signatures are what
-  count) and answers with the receiver's. A revoked member loses its role on
+  count) and answers with the receiver's - to a visitor, or a caller the
+  node cannot place, only its own ban, and a ban push skips a visitor it
+  does not name. A revoked member loses its role on
   the next request: its admission stops counting
   (`NetworkChat::admitted_role` ignores an approval not newer than the ban),
   the vouches repeating an approval from before the ban stop holding, and no
@@ -858,6 +863,17 @@ does (`openai::named_deployments`, `resolve_model_and_head`; chat, completions a
 messages). A deployment from earlier-version peers keeps its model label and
 `<model>@<deploy_id>`. The model label of a named deployment is no longer listed
 but is still accepted, so a client pinned to it keeps working.
+
+**On a visitor, `GET /v1/models` is its admin's catalog.** A visitor's peer
+table holds only admin entry nodes, so it asks the nearest one that answers
+(`visitor_view::catalog_from_entry`, `POST /api/internal/catalog/servable`,
+signed, answered only by an admin, cached 5 s, the last list kept a minute
+when no admin answers). The catalog is the admin's own `/v1/models` objects
+without the `<name>@<node_id>` head pins (`openai::model_objects(state,
+false)`), and the entry node refuses a visitor's request that pins a head -
+`inference_head`, or a `@suffix` that is not an announced deploy id, whether
+it names a real head or not - with 404 `model_not_found`
+(`openai::names_a_head`), so the refusal tells no node id apart.
 
 `GET /v1/models` and `GET /v1/models/{id}` only announce models published by
 live peers, including the local model when there is an active assignment. The
@@ -2032,6 +2048,22 @@ some text was left), `"local"` or `"peer:<node_id>"`. It shows up as the
 `/v1` and in the last SSE chunk, and as `source` in `reqlog`. `"none"` marks an
 error/abandonment. It is the only way for a harness to know inference was
 joint: a `source` starting with `pipeline:` and with **two** hops is the proof.
+
+**A visitor never reads it.** The entry node that runs a visitor's delegated
+request redacts the answer before it leaves (`visitor_view::redact_answer`,
+called by `delegation::delegate_entry`; the visitor's node relays what it
+gets and filters nothing): `x_pom.source` becomes `"pipeline:network"`,
+`x_pom.trace` keeps only the request's own counters (the allowlist
+`visitor_view::TRACE_KEEP`: `trace_id`, `model`, token counts, the TTFTs, the
+MTP counters - no `hops`, `spans`, `stage_balance`, `issues`,
+`session_transfer`, byte or transport counts, and no field added later until
+someone opts it in), `x_pom.error` becomes a fixed sentence,
+`x_pom.timings.local_engine_first_event_ms` is dropped, and in every error
+message the node ids (whole and prefixes), host names, endpoint ids and
+addresses of every live peer that is not an admin are replaced. The
+generated text and tool calls are never touched. `/api/generate` gets the same
+treatment on its top-level `source`/`trace`, and its failure text. A worker
+that delegates is a member and keeps the whole report.
 
 `x_pom.timings` is its own extension, both in the last SSE chunk and in
 non-streaming answers. The OpenAI-compatible format stays intact: clients that

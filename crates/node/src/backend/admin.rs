@@ -199,6 +199,10 @@ fn internal_routes() -> Router<crate::gateway::GatewayState> {
             post(crate::webui::internal_vouches),
         )
         .route(
+            crate::visitor_view::CATALOG_PATH,
+            post(crate::visitor_view::internal_servable_catalog),
+        )
+        .route(
             "/api/internal/enterprise/fingerprint",
             get(crate::plugins::plugin_peer_fingerprint),
         )

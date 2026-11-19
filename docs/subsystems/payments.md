@@ -58,8 +58,8 @@ visitors only - a worker delegates as a member and is not charged, exactly as
 when it planned its own requests.
 The inference port refuses a visitor
 (`403 visitor_must_use_gateway`), and visitors learn only the admin entry
-nodes (`Network::set_visitor_view`, the default shape `payments::runtime::install`
-sets once at startup): a `PeerList` to a visitor leaves the others out, a node
+nodes (`Network::visitor_view`, held from construction on and set again by
+`payments::runtime::install`): a `PeerList` to a visitor leaves the others out, a node
 that is not an admin entry node neither announces to visitors nor answers their
 `PeerRequest`, and a visitor's own table never holds a worker.
 

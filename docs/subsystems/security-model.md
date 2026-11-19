@@ -54,6 +54,30 @@ are either workers or visitors.
   announced profile. A visitor's own announce goes straight to
   its admins, never on the gossip topic or the LAN broadcast
   (`p2p-network.md`, "Admission before the `peers` table").
+- **A visitor sees the models, never the machines - and the node that holds
+  the information removes it, never the visitor** (`backend/visitor_view.rs`).
+  A visitor's code filters nothing; a visitor running other code must not
+  learn more than an honest one. What each node cuts before it answers a
+  visitor, or a caller it cannot place:
+  - the answer of a delegated request (`delegation::delegate_entry` ->
+    `visitor_view::redact_answer`): `x_pom.source` is `pipeline:network`,
+    the trace keeps an allowlist of the request's own counters, the error
+    text is fixed, and error messages lose every non-admin peer's node id,
+    host name, endpoint id and address (`http-api.md`, 4);
+  - the models list: the admin's catalog without head pins
+    (`/api/internal/catalog/servable`), and a request pinning a head is a
+    404 whatever it names (`http-api.md`);
+  - the roster: `internal_vouches` and `internal_revocations` answer only
+    the entry naming the caller, and the pushes skip what a visitor is not
+    named in (`http-api.md`, vouches and revocations);
+  - the peer table: the admins-only view from construction on, and the
+    admins it learns of with their layer range widened to the whole model,
+    no memory, disk or tensor parallel group (`PeerInfo::for_visitor`,
+    `Network::visitor_announce`; `p2p-network.md`).
+  The trust chain (`/api/internal/admin-trust/chain`) still reaches a
+  visitor: it names admins, which a visitor knows anyway. **Not closed**: the
+  gossip topic and the LAN broadcast carry every member's announce in clear
+  to whoever listens (`p2p-network.md`, "Defects noted").
 - Since phase B of the admin-hub routing a **worker** delegates its generation
   requests to an admin entry node too - by default, with the network's
   `worker_delegation = false` as the escape hatch for networks whose workers

@@ -429,6 +429,29 @@ pub(crate) async fn delegate_route(
             "this route is not delegated",
         );
     }
+    // A head pin (`<name>@<node_id>`) names a machine: a visitor's catalog
+    // never offers one, and accepting one would let a visitor probe which
+    // node ids serve layer 0.
+    if caller_is_visitor {
+        let model = ask
+            .body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let pins_head = ask
+            .body
+            .get("inference_head")
+            .is_some_and(|head| !head.is_null());
+        if pins_head || crate::openai::names_a_head(&state, model).await {
+            return speak(
+                &ask.route,
+                StatusCode::NOT_FOUND,
+                "model_not_found",
+                &format!("model '{model}' does not exist on this network"),
+                json!({}),
+            );
+        }
+    }
     let settings = crate::payments::runtime::settings(&state).await;
     let home = ask.home.as_deref().and_then(|token| {
         crate::home_statement::verify(token, &caller_node, chrono::Utc::now().timestamp()).ok()
@@ -511,6 +534,15 @@ pub(crate) async fn delegate_route(
     };
     request.extensions_mut().insert(Delegated { caller });
     let held = charge.clone();
+    // What a visitor may not learn is taken out here, on the entry node,
+    // before the answer leaves (`visitor_view`): the visitor never filters.
+    // The machines are listed before the generation so a peer that drops
+    // out during it is still hidden.
+    let hidden = if caller_is_visitor {
+        Some(crate::visitor_view::Hidden::of(&state).await)
+    } else {
+        None
+    };
     let answer = PAYMENT.scope(charge, router.oneshot(request)).await;
     match answer {
         Ok(response) => {
@@ -521,7 +553,12 @@ pub(crate) async fn delegate_route(
                     crate::payments::runtime::release(&charge.account, charge.hold_micro);
                 }
             }
-            response
+            match hidden {
+                Some(hidden) => {
+                    crate::visitor_view::redact_answer(response, &ask.route, hidden).await
+                }
+                None => response,
+            }
         }
         Err(never) => match never {},
     }
@@ -730,6 +767,36 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["error"]["code"], "plan_locally");
+    }
+
+    /// A visitor never pins a machine: `<name>@<suffix>` with a suffix no
+    /// peer announces as a deploy id, and `inference_head`, are refused as
+    /// an unknown model - whether the suffix names a real head or not, so the
+    /// refusal is no oracle of which node ids exist (`visitor_view`).
+    #[tokio::test]
+    async fn a_visitor_cannot_pin_a_head() {
+        let visitor = key(48);
+        let state = entry_state(&visitor, false).await;
+        for request in [
+            ask("m@e5f6a7b8c9d0", None),
+            ask("m@anything", None),
+            DelegateRequest {
+                body: json!({"model": "m", "inference_head": "e5f6a7b8c9d0", "messages": []}),
+                ..ask("m", None)
+            },
+        ] {
+            let (status, body) = code_of(
+                delegate_route(signed(&visitor), State(state.clone()), Json(request)).await,
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+            assert_eq!(body["error"]["code"], "model_not_found");
+        }
+        // A plain name goes on to the next gate (`not_ready`: no router).
+        let (status, body) =
+            code_of(delegate_route(signed(&visitor), State(state), Json(ask("m", None))).await)
+                .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     }
 
     /// Phase B of the admin-hub routing: an attested worker delegates too.

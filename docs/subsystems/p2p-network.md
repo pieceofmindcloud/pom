@@ -132,7 +132,18 @@ the table after that point. On a visitor, another visitor is never admitted and
 is left out of `alive_peers`; in the default visitor view (`Network::hides`,
 `payments.md`, "The visitor view") no member that is not an admin entry node is
 admitted either. A `PeerList` names visitors only to a requester
-known as an admin or a worker (`security-model.md`, roles).
+known as an admin or a worker (`security-model.md`, roles). Every node holds
+that admins-only view from construction on (`Network::visitor_view`, 2);
+the legacy shapes that let a visitor learn workers are kept for tests only.
+
+What a visitor is told is cut on the node that tells it, never on the
+visitor: a `PeerList` to a visitor holds only admin entry nodes, each as
+`PeerInfo::for_visitor` (the layer range widened to the whole model, no
+memory, disk, API key count or tensor parallel group), and the announce a
+node sends a visitor over UDP - its round, and its answer to a
+`PeerRequest` - is `Network::visitor_announce`, the same widening, signed.
+Where the layers are split, and so how many machines share them, is not a
+visitor's to know; the admin entry node runs its whole request anyway.
 
 A visitor's own `Announce` never travels where another visitor could read it.
 The gossip topic is shared by every network, so a visitor does not publish on
@@ -143,7 +154,11 @@ it dialed through pkarr
 (`AnnounceCodec`), and the receiver handles it exactly like a gossip announce.
 Over UDP it skips the LAN broadcast and announces only to the peers it keeps.
 It stays subscribed to the topic, which is how it hears the admins; a worker's
-announce that arrives there finds admission closed.
+announce that arrives there finds admission closed. **That closed admission
+is the visitor's own code, not a guarantee** (see "Defects noted" below): the
+topic is shared by every network and its seal is a signature, not
+encryption, so a node running other code that joins it reads every member's
+full announce.
 
 - On a private network, a non-empty `connection_key` selects the proof through
   `/handshake`. The key never leaves the node: it sends its identity and a
@@ -1935,3 +1950,13 @@ with a live cluster endpoint.
   It moves no address and grants nothing, and no code path emits it today
   (the signed `Announce` plays that role), so it is only a nuisance. Dropping
   the variant or signing it like the `Announce` fixes it.
+- **DEFECT NOTED: the gossip topic is readable by anyone who joins it** (noted 2026-11-18).
+  `discovery::seal_announce` signs the announce and does not encrypt it, and
+  `GOSSIP_TOPIC` is one topic for every network. Every member's announce -
+  node id, host name, addresses, endpoint id, model and layer range - is
+  readable by any node on the topic, a visitor of the network or not. The
+  visitor view (`Network::hides`) only stops an honest visitor from storing
+  them. Closing it needs a topic per network and announces encrypted with a
+  secret visitors do not hold (they hold the connection key), so that a
+  worker's announce never reaches a visitor at all. The LAN broadcast
+  (`broadcast_local`) has the same exposure on a shared LAN.

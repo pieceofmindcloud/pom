@@ -402,6 +402,15 @@ async fn push_revocations(state: &GatewayState, entries: Vec<crate::membership::
         if peer.node_id == state.network.node_id || peer.gateway_port.is_none() {
             continue;
         }
+        let entries = if crate::gateway::peer_is_visitor(state, &peer) {
+            let own = revocations_for_visitor(entries.clone(), Some(&peer.node_id));
+            if own.is_empty() {
+                continue;
+            }
+            own
+        } else {
+            entries.clone()
+        };
         let sent = crate::admin::post_internal_json(
             state,
             &peer,
@@ -421,13 +430,42 @@ async fn push_revocations(state: &GatewayState, entries: Vec<crate::membership::
 /// signature and is checked on its own, so whoever sends them does not
 /// matter.
 pub(crate) async fn internal_revocations(
-    _auth: InternalNodeAuth,
+    auth: InternalNodeAuth,
     State(state): State<GatewayState>,
     Json(entries): Json<Vec<crate::membership::Revocation>>,
 ) -> Response {
     let added = state.admin_trust.merge_revocations(entries);
     on_revoked(&state, &added).await;
-    Json(state.admin_trust.revocations()).into_response()
+    let caller = auth.principal().map(|p| p.node_id.clone());
+    let all = state.admin_trust.revocations();
+    if crate::visitor_view::caller_is_visitor(&state, caller.as_deref()).await {
+        return Json(revocations_for_visitor(all, caller.as_deref())).into_response();
+    }
+    Json(all).into_response()
+}
+
+/// What a visitor may read of the ban list: its own ban, nothing else. The
+/// other entries name members a visitor never learns of (`visitor_view`).
+fn revocations_for_visitor(
+    all: Vec<crate::membership::Revocation>,
+    visitor: Option<&str>,
+) -> Vec<crate::membership::Revocation> {
+    all.into_iter()
+        .filter(|r| Some(r.sub.as_str()) == visitor)
+        .collect()
+}
+
+/// What a visitor may read of the roster vouches: the vouch that names it,
+/// nothing else. The others name every worker and visitor of the network,
+/// which a visitor never learns of (`visitor_view`); it proves its own
+/// membership with its own vouch alone.
+fn vouches_for_visitor(
+    all: Vec<crate::membership::Vouch>,
+    visitor: Option<&str>,
+) -> Vec<crate::membership::Vouch> {
+    all.into_iter()
+        .filter(|v| Some(v.sub.as_str()) == visitor)
+        .collect()
 }
 
 /// Signs this admin's vouches for every approved admission it sees - its
@@ -557,6 +595,15 @@ pub(crate) async fn publish_vouches(state: &GatewayState) {
         if peer.node_id == state.network.node_id || peer.gateway_port.is_none() {
             continue;
         }
+        let entries = if crate::gateway::peer_is_visitor(state, &peer) {
+            let own = vouches_for_visitor(entries.clone(), Some(&peer.node_id));
+            if own.is_empty() {
+                continue;
+            }
+            own
+        } else {
+            entries.clone()
+        };
         if let Err(error) = crate::admin::post_internal_json(
             state,
             &peer,
@@ -577,12 +624,17 @@ pub(crate) async fn publish_vouches(state: &GatewayState) {
 /// node that never met the principal still holds the roster's word for its
 /// own decisions (phase C).
 pub(crate) async fn internal_vouches(
-    _auth: InternalNodeAuth,
+    auth: InternalNodeAuth,
     State(state): State<GatewayState>,
     Json(entries): Json<Vec<crate::membership::Vouch>>,
 ) -> Response {
     state.admin_trust.merge_vouches(entries);
-    Json(state.admin_trust.vouches()).into_response()
+    let caller = auth.principal().map(|p| p.node_id.clone());
+    let all = state.admin_trust.vouches();
+    if crate::visitor_view::caller_is_visitor(&state, caller.as_deref()).await {
+        return Json(vouches_for_visitor(all, caller.as_deref())).into_response();
+    }
+    Json(all).into_response()
 }
 
 /// Keeps the roster vouches fresh on every node (phase C). An admin
@@ -1493,5 +1545,156 @@ mod vouch_tests {
             testkit::body_of(response).await["reason"],
             "admins_sign_their_own_passes"
         );
+    }
+}
+
+#[cfg(test)]
+mod visitor_roster_tests {
+    use super::*;
+    use crate::config::EnrollmentRole;
+    use crate::gateway::testkit;
+
+    fn key(seed: u8) -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn id_of(k: &ed25519_dalek::SigningKey) -> String {
+        metering_core::node_id_of_pubkey_hex(&hex::encode(k.verifying_key().as_bytes())).unwrap()
+    }
+
+    fn signed(k: &ed25519_dalek::SigningKey) -> InternalNodeAuth {
+        InternalNodeAuth {
+            principal: Some(crate::admin_trust::AuthorityPrincipal {
+                node_id: id_of(k),
+                peer_id: String::new(),
+                pubkey: hex::encode(k.verifying_key().as_bytes()),
+            }),
+        }
+    }
+
+    /// A node holding the vouches of one visitor and two workers, all three
+    /// in its peer table.
+    async fn roster() -> (GatewayState, [ed25519_dalek::SigningKey; 3]) {
+        let keys = [key(61), key(62), key(63)];
+        let roles = [
+            EnrollmentRole::Visitor,
+            EnrollmentRole::Worker,
+            EnrollmentRole::Worker,
+        ];
+        let peers = keys
+            .iter()
+            .zip(roles)
+            .map(|(k, role)| {
+                let mut peer = testkit::peer(&id_of(k), "machine", 9);
+                peer.profile = match role {
+                    EnrollmentRole::Visitor => crate::profile::NodeProfile::Visitor,
+                    _ => crate::profile::NodeProfile::Worker,
+                };
+                peer
+            })
+            .collect();
+        let state = testkit::state_with("principal", peers).await;
+        let now = chrono::Utc::now().timestamp();
+        let vouches = keys
+            .iter()
+            .zip(roles)
+            .map(|(k, role)| {
+                crate::membership::sign_vouch(
+                    &state.authority_signing_key,
+                    &state.authority_principal,
+                    &state.admin_trust.document(),
+                    &id_of(k),
+                    role,
+                    now - 5,
+                    now,
+                )
+                .unwrap()
+            })
+            .collect();
+        state.admin_trust.merge_vouches(vouches);
+        (state, keys)
+    }
+
+    async fn subjects(response: Response) -> Vec<String> {
+        let body = testkit::body_of(response).await;
+        let mut subs: Vec<String> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["sub"].as_str().unwrap().to_string())
+            .collect();
+        subs.sort();
+        subs
+    }
+
+    /// A visitor reads only the vouch that names it: the others name every
+    /// worker of the network. A worker still reads the whole roster.
+    #[tokio::test]
+    async fn a_visitor_reads_only_its_own_vouch() {
+        let (state, [visitor, worker, _]) = roster().await;
+        let seen =
+            subjects(internal_vouches(signed(&visitor), State(state.clone()), Json(vec![])).await)
+                .await;
+        assert_eq!(seen, vec![id_of(&visitor)]);
+        let seen =
+            subjects(internal_vouches(signed(&worker), State(state.clone()), Json(vec![])).await)
+                .await;
+        assert_eq!(seen.len(), 3);
+        // A caller this node cannot place learns nothing it would not tell a
+        // visitor.
+        let stranger = key(70);
+        let seen =
+            subjects(internal_vouches(signed(&stranger), State(state.clone()), Json(vec![])).await)
+                .await;
+        assert!(seen.is_empty(), "{seen:?} reached {}", id_of(&stranger));
+        let seen = subjects(
+            internal_vouches(
+                InternalNodeAuth { principal: None },
+                State(state),
+                Json(vec![]),
+            )
+            .await,
+        )
+        .await;
+        assert!(seen.is_empty());
+    }
+
+    /// The ban list names removed members: a visitor reads only its own ban.
+    #[tokio::test]
+    async fn a_visitor_reads_only_its_own_ban() {
+        let (state, [visitor, worker, _]) = roster().await;
+        let now = chrono::Utc::now().timestamp();
+        let banned = crate::membership::revoke(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            "a-removed-worker",
+            now,
+        )
+        .unwrap();
+        state.admin_trust.merge_revocations(vec![banned]);
+        let seen = subjects(
+            internal_revocations(signed(&visitor), State(state.clone()), Json(vec![])).await,
+        )
+        .await;
+        assert!(seen.is_empty(), "{seen:?}");
+        let seen = subjects(
+            internal_revocations(signed(&worker), State(state.clone()), Json(vec![])).await,
+        )
+        .await;
+        assert_eq!(seen, vec!["a-removed-worker".to_string()]);
+        let own = crate::membership::revoke(
+            &state.authority_signing_key,
+            &state.authority_principal,
+            &state.admin_trust.document(),
+            &id_of(&visitor),
+            now,
+        )
+        .unwrap();
+        state.admin_trust.merge_revocations(vec![own]);
+        let seen =
+            subjects(internal_revocations(signed(&visitor), State(state), Json(vec![])).await)
+                .await;
+        assert_eq!(seen, vec![id_of(&visitor)]);
     }
 }

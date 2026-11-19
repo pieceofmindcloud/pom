@@ -697,9 +697,10 @@ dedicated or member, with iroh's hole punching), are in
 
 ## The visitor view (the admin-hub shape)
 
-`Network::set_visitor_view` is set once at startup by
-`payments::runtime::install` to "admin entry nodes only" - the one shape the
-product has, since decision 5 of 2026-11-15 deleted the access-mode knobs
+`Network::visitor_view` starts at "admin entry nodes only" when the
+`Network` is built, and `payments::runtime::install` sets it again (the
+legacy shapes `set_visitor_view(None | Some(false))` are for tests) - the one
+shape the product has, since decision 5 of 2026-11-15 deleted the access-mode knobs
 (phase A of
 `docs/superpowers/specs/2026-11-14-admin-hub-routing-design.md`). It narrows
 what visitors learn, on both sides: `peer_list_for` a visitor lists only the
@@ -708,7 +709,14 @@ admitting a worker or another visitor (`insert_admitted_peer` refuses, the
 announce loop, `PeerRequest` targets and `alive_peers` never name one), so a
 visitor's table holds only admins; and a node kept from visitors
 (`self_withheld_from_visitors`) neither announces to them nor answers their
-`PeerRequest`. See `docs/subsystems/payments.md`.
+`PeerRequest`. What a visitor is told of an admin is cut by the teller:
+`peer_list_for` hands a visitor each entry as `PeerInfo::for_visitor` and the
+announce round and the `PeerRequest` answer send a visitor
+`visitor_announce` - the layer range widened to the whole model, no memory,
+disk, API key count or tensor parallel group. `hides` is the visitor's own
+code and is no guarantee: the gossip topic carries every member's announce in
+clear (`docs/subsystems/p2p-network.md`, 7). See
+`docs/subsystems/payments.md` and `docs/subsystems/security-model.md`.
 
 ## Maintaining this file
 

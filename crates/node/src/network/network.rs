@@ -704,6 +704,68 @@ fn announce_signing_bytes(announce: &P2PMessage) -> Option<Vec<u8>> {
 }
 
 /// Signs `announce` with the node key. Anything else is left as it is.
+/// The layer range a visitor reads for a machine that serves part of a
+/// model: the whole model. Where the layers are split, and so how many
+/// machines share them, is the network's to know, not a visitor's
+/// (`crate::visitor_view`). The admin entry node runs the whole request for
+/// the visitor anyway.
+fn whole_range(total_layers: u32) -> (u32, u32) {
+    (0, total_layers.saturating_sub(1))
+}
+
+impl PeerInfo {
+    /// This peer as a visitor may read it (`Network::peer_list_for`): the
+    /// layer range widened to the whole model, and no memory, disk, tensor
+    /// parallel group or capability that would tell the split.
+    pub(crate) fn for_visitor(mut self) -> Self {
+        let (start, end) = whole_range(self.total_layers);
+        self.start_layer = start;
+        self.end_layer = end;
+        self.memory_mb = 0.0;
+        self.disk_total_mb = 0;
+        self.disk_free_mb = 0;
+        self.api_keys_active = 0;
+        self.tp = None;
+        for capability in &mut self.capabilities {
+            let total = capability.total_layers.unwrap_or(self.total_layers);
+            let (start, end) = whole_range(total);
+            capability.start_layer = start;
+            capability.end_layer = end;
+        }
+        self
+    }
+}
+
+/// An announce as a visitor may read it, before it is signed: the same
+/// widening as [`PeerInfo::for_visitor`].
+fn announce_for_visitor(announce: &mut P2PMessage) {
+    if let P2PMessage::Announce {
+        start_layer,
+        end_layer,
+        total_layers,
+        memory_mb,
+        disk_total_mb,
+        disk_free_mb,
+        tp,
+        capabilities,
+        ..
+    } = announce
+    {
+        let (start, end) = whole_range(*total_layers);
+        *start_layer = start;
+        *end_layer = end;
+        *memory_mb = 0.0;
+        *disk_total_mb = 0;
+        *disk_free_mb = 0;
+        *tp = None;
+        for capability in capabilities.iter_mut() {
+            let (start, end) = whole_range(capability.total_layers.unwrap_or(*total_layers));
+            capability.start_layer = start;
+            capability.end_layer = end;
+        }
+    }
+}
+
 pub(crate) fn sign_announce(announce: &mut P2PMessage, key: &ed25519_dalek::SigningKey) {
     use ed25519_dalek::Signer;
     let Some(bytes) = announce_signing_bytes(announce) else {
@@ -1498,7 +1560,9 @@ pub struct Network {
     /// second HTTP round-trip.
     /// What a visitor may learn of this network (`set_visitor_view`):
     /// 0 everyone, 1 entry nodes only, 2 admin entry nodes only. Since phase
-    /// A of the admin-hub routing every node holds 2 (`payments::runtime::install`).
+    /// A of the admin-hub routing every node holds 2, from construction on
+    /// (`payments::runtime::install` sets it again); 0 and 1 are kept for
+    /// tests only.
     visitor_view: Arc<std::sync::atomic::AtomicU8>,
     /// A worker admitted as a validator (`set_validator`).
     validator: Arc<std::sync::atomic::AtomicBool>,
@@ -2056,7 +2120,7 @@ impl Network {
             gateway_quic_port: init.gateway_quic_port,
             public_discovery: Arc::new(RwLock::new(HashMap::new())),
             profile: Arc::new(std::sync::RwLock::new(crate::profile::NodeProfile::Worker)),
-            visitor_view: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            visitor_view: Arc::new(std::sync::atomic::AtomicU8::new(2)),
             validator: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             direct_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hostname: std::sync::RwLock::new(String::new()),
@@ -2743,6 +2807,18 @@ impl Network {
         announce
     }
 
+    /// The announce this node sends a visitor: [`announce_for_visitor`],
+    /// signed like any other.
+    fn visitor_announce(&self, assignment: Option<&LayerAssignment>) -> P2PMessage {
+        let mut announce = self.unsigned_announce(assignment);
+        announce_for_visitor(&mut announce);
+        let key = self.announce_key.read().ok().and_then(|key| key.clone());
+        if let Some(key) = key {
+            sign_announce(&mut announce, &key);
+        }
+        announce
+    }
+
     fn unsigned_announce(&self, assignment: Option<&LayerAssignment>) -> P2PMessage {
         // The enumeration is deliberately done here, on each announce. Gossip
         // announces every 5 s; the operation is only a local read of
@@ -3385,6 +3461,9 @@ impl Network {
                 if !lists_visitors {
                     p.anon_tunnel = None;
                 }
+                if to_visitor {
+                    p = p.for_visitor();
+                }
                 p
             })
             .collect()
@@ -3503,6 +3582,7 @@ impl Network {
             return Ok(());
         }
         let msg = self.self_announce(assignment);
+        let to_visitors = self.visitor_announce(assignment);
 
         // Announce to bootstrap nodes
         for bootstrap in &self.bootstrap_nodes {
@@ -3515,7 +3595,12 @@ impl Network {
         for peer in peers.values() {
             if peer.is_alive() && !self.hides(peer) && !(withheld && self.peer_is_visitor(peer)) {
                 let addresses = peer.dialable_addrs();
-                self.send_to_candidates(&msg, &addresses).await?;
+                let msg = if self.peer_is_visitor(peer) {
+                    &to_visitors
+                } else {
+                    &msg
+                };
+                self.send_to_candidates(msg, &addresses).await?;
             }
         }
 
@@ -4123,7 +4208,17 @@ impl Network {
                 // with no assignment — see `self_announce`.
                 {
                     let asgn = assignment.read().await.clone();
-                    let announce = self.self_announce(asgn.as_ref());
+                    let to_visitor = self
+                        .peers
+                        .read()
+                        .await
+                        .get(&from)
+                        .is_some_and(|p| self.peer_is_visitor(p));
+                    let announce = if to_visitor {
+                        self.visitor_announce(asgn.as_ref())
+                    } else {
+                        self.self_announce(asgn.as_ref())
+                    };
                     let _ = self.send_to(&announce, &src.to_string()).await;
                 }
 
@@ -7030,6 +7125,9 @@ mod tests {
             .await
             .unwrap();
         *visitor.profile.write().unwrap() = NodeProfile::Visitor;
+        // The legacy view, where a visitor may learn a worker: what this test
+        // pins is that visitors never learn of each other, in any view.
+        visitor.set_visitor_view(None);
         assert!(!visitor.admit_peer(&visitor_b).await);
         assert!(visitor.admit_peer(&worker).await);
         // One that entered the table before this node knew its own role.
@@ -7048,6 +7146,7 @@ mod tests {
             .await
             .unwrap();
         *admin.profile.write().unwrap() = NodeProfile::Admin;
+        admin.set_visitor_view(None);
         let visitor_a = as_role("visitor-a", NodeProfile::Visitor);
         for peer in [&visitor_a, &visitor_b, &worker] {
             admin
@@ -7104,6 +7203,9 @@ mod tests {
             ids.sort();
             ids
         };
+        // A node holds the admins-only view from construction on.
+        assert_eq!(ids(admin.peer_list_for("visitor").await), vec!["admin-b"]);
+        admin.set_visitor_view(None);
         assert_eq!(
             ids(admin.peer_list_for("visitor").await),
             vec!["admin-b", "worker-entry", "worker-plain"]
@@ -7115,6 +7217,31 @@ mod tests {
         );
         admin.set_visitor_view(Some(true));
         assert_eq!(ids(admin.peer_list_for("visitor").await), vec!["admin-b"]);
+        // The admin a visitor learns of serves the whole model as far as the
+        // visitor can tell: no split, no memory, no tensor parallel group.
+        {
+            let mut peers = admin.peers.write().await;
+            let b = peers.get_mut("admin-b").unwrap();
+            b.start_layer = 10;
+            b.end_layer = 19;
+            b.total_layers = 40;
+            b.memory_mb = 9000.0;
+            b.disk_free_mb = 5;
+            b.tp = serde_json::from_value(serde_json::json!({
+                "role": "primary", "group_id": "g", "size": 2, "rank": 0
+            }))
+            .ok();
+            assert!(b.tp.is_some(), "the fixture's tensor parallel group");
+        }
+        let seen = admin.peer_list_for("visitor").await;
+        assert_eq!((seen[0].start_layer, seen[0].end_layer), (0, 39));
+        assert_eq!(seen[0].memory_mb, 0.0);
+        assert_eq!(seen[0].disk_free_mb, 0);
+        assert!(seen[0].tp.is_none());
+        // A member reads the real range.
+        let seen = admin.peer_list_for("worker-entry").await;
+        let b = seen.iter().find(|p| p.node_id == "admin-b").unwrap();
+        assert_eq!((b.start_layer, b.end_layer), (10, 19));
         // A member still learns everyone.
         assert_eq!(ids(admin.peer_list_for("worker-entry").await).len(), 4);
         assert!(!admin.self_withheld_from_visitors());
@@ -7255,6 +7382,9 @@ mod tests {
                 .await
                 .insert(peer.node_id.clone(), peer.clone());
         }
+        // The legacy view lists the worker to a visitor at all; the default
+        // one does not (`visitors_learn_only_admin_entry_nodes`).
+        admin.set_visitor_view(None);
         let to_visitor = admin.peer_list_for("visitor").await;
         assert_eq!(to_visitor.len(), 1);
         assert_eq!(to_visitor[0].anon_tunnel, None);

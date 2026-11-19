@@ -1533,7 +1533,9 @@ fn find_hf_folders(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         match entry.file_type() {
             Ok(kind) if kind.is_dir() && !name.starts_with('.') => children.push(entry.path()),
             Ok(_) if name == "config.json" => has_config = true,
-            Ok(_) if name.ends_with(".safetensors") => has_weights = true,
+            Ok(_) if name.ends_with(".safetensors") || name == "model.safetensors.index.json" => {
+                has_weights = true
+            }
             _ => {}
         }
     }
@@ -1544,6 +1546,24 @@ fn find_hf_folders(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     for child in children {
         find_hf_folders(&child, depth + 1, out);
     }
+}
+
+/// The size of the `*.safetensors` under a model folder: at its root or in
+/// the subfolders its index points into (one level, e.g. `tensors/`).
+fn safetensors_bytes(folder: &Path, depth: usize) -> u64 {
+    let Ok(entries) = std::fs::read_dir(folder) else { return 0 };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() && depth == 0 => safetensors_bytes(&entry.path(), 1),
+            Ok(kind)
+                if kind.is_file() && entry.file_name().to_string_lossy().ends_with(".safetensors") =>
+            {
+                entry.metadata().map(|meta| meta.len()).unwrap_or(0)
+            }
+            _ => 0,
+        })
+        .sum()
 }
 
 pub(crate) fn describe_hf_folder(library: &Path, folder: &Path) -> Option<DiscoveredModel> {
@@ -1558,13 +1578,7 @@ pub(crate) fn describe_hf_folder(library: &Path, folder: &Path) -> Option<Discov
             .and_then(|value| u32::try_from(value).ok())
     };
     let architecture = config.get("model_type").and_then(|value| value.as_str())?.to_string();
-    let size_bytes = std::fs::read_dir(folder)
-        .ok()?
-        .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".safetensors"))
-        .filter_map(|entry| entry.metadata().ok())
-        .map(|meta| meta.len())
-        .sum();
+    let size_bytes = safetensors_bytes(folder, 0);
     let name = folder
         .strip_prefix(library)
         .ok()
@@ -3571,6 +3585,22 @@ mod part_naming_tests {
         assert_eq!(model.quant.as_deref(), Some("modelopt"));
         assert_eq!(model.size_bytes, 2048);
         assert!(matches!(enrich_model(&mut found[0].clone()), EnrichResult::Ready));
+    }
+
+    #[test]
+    fn a_folder_whose_index_points_into_a_subfolder_is_found_with_its_size() {
+        let library = tempfile::tempdir().unwrap();
+        let folder = library.path().join("Model-FP4");
+        std::fs::create_dir_all(folder.join("tensors")).unwrap();
+        std::fs::write(folder.join("config.json"), r#"{"model_type":"qwen4_exp","text_config":{"num_hidden_layers":48}}"#).unwrap();
+        std::fs::write(folder.join("model.safetensors.index.json"), "{}").unwrap();
+        std::fs::write(folder.join("tensors/part-1.safetensors"), vec![0u8; 3000]).unwrap();
+        let mut found = Vec::new();
+        scan_hf_dir(library.path(), &mut found);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].architecture.as_deref(), Some("qwen4_exp"));
+        assert_eq!(found[0].total_layers, Some(48));
+        assert_eq!(found[0].size_bytes, 3000);
     }
 
 }

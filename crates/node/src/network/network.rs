@@ -819,6 +819,76 @@ pub(crate) fn verify_udp_announce(
     Ok(())
 }
 
+const PEER_REQUEST_SIGNATURE_LABEL: &[u8] = b"pom-peer-request/v1\n";
+
+/// What a `PeerRequest` signature covers: the request as serialized without
+/// its signature.
+fn peer_request_signing_bytes(request: &P2PMessage) -> Option<Vec<u8>> {
+    let mut unsigned = request.clone();
+    let P2PMessage::PeerRequest { signature, .. } = &mut unsigned else {
+        return None;
+    };
+    *signature = None;
+    let mut bytes = PEER_REQUEST_SIGNATURE_LABEL.to_vec();
+    bytes.extend(serde_json::to_vec(&unsigned).ok()?);
+    Some(bytes)
+}
+
+/// A `PeerRequest` from `from`, signed by `key` when there is one.
+pub(crate) fn signed_peer_request(
+    from: &str,
+    key: Option<&ed25519_dalek::SigningKey>,
+) -> P2PMessage {
+    use ed25519_dalek::Signer;
+    let Some(key) = key else {
+        return P2PMessage::PeerRequest {
+            from: from.to_string(),
+            pubkey: None,
+            timestamp: None,
+            signature: None,
+        };
+    };
+    let mut request = P2PMessage::PeerRequest {
+        from: from.to_string(),
+        pubkey: Some(hex::encode(key.verifying_key().as_bytes())),
+        timestamp: Some(Utc::now()),
+        signature: None,
+    };
+    if let Some(bytes) = peer_request_signing_bytes(&request) {
+        if let P2PMessage::PeerRequest { signature, .. } = &mut request {
+            *signature = Some(hex::encode(key.sign(&bytes).to_bytes()));
+        }
+    }
+    request
+}
+
+/// The requester a `PeerRequest` proves: its `from` and key when the
+/// signature verifies, the key yields `from` and the request is recent;
+/// `None` for an unsigned or forged one.
+pub(crate) fn verify_peer_request(msg: &P2PMessage, now: DateTime<Utc>) -> Option<(String, String)> {
+    use ed25519_dalek::Verifier;
+    let P2PMessage::PeerRequest {
+        from,
+        pubkey: Some(pubkey),
+        timestamp: Some(timestamp),
+        signature: Some(signature),
+    } = msg
+    else {
+        return None;
+    };
+    let raw: [u8; 32] = hex::decode(pubkey).ok()?.try_into().ok()?;
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&raw).ok()?;
+    if crate::identity::NodeId::from_pubkey(&key).0 != *from {
+        return None;
+    }
+    let signature = ed25519_dalek::Signature::from_slice(&hex::decode(signature).ok()?).ok()?;
+    key.verify(&peer_request_signing_bytes(msg)?, &signature).ok()?;
+    if (now - *timestamp).num_seconds().abs() > ANNOUNCE_FRESHNESS_SECS {
+        return None;
+    }
+    Some((from.clone(), pubkey.clone()))
+}
+
 /// Message types exchanged between nodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -954,8 +1024,20 @@ pub enum P2PMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
-    /// Request peer list from a known node
-    PeerRequest { from: String },
+    /// Request peer list from a known node. Signed since 2026-11-18: UDP
+    /// carries no authentication, and an unsigned `from` let anyone ask in a
+    /// member's name. The signature fields are optional so a released node's
+    /// unsigned request still parses; it is answered as a stranger's
+    /// (`Network::requester_is_member`).
+    PeerRequest {
+        from: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pubkey: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<DateTime<Utc>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
     /// Response with known peers
     PeerList { peers: Vec<PeerInfo> },
     /// Heartbeat to signal liveness
@@ -1814,7 +1896,7 @@ fn message_context(msg: &P2PMessage) -> String {
         P2PMessage::Announce { node_id, .. } => {
             format!("Announce node_id={}", short(node_id))
         }
-        P2PMessage::PeerRequest { from } => format!("PeerRequest from={}", short(from)),
+        P2PMessage::PeerRequest { from, .. } => format!("PeerRequest from={}", short(from)),
         P2PMessage::PeerList { peers } => format!("PeerList peers={}", peers.len()),
         P2PMessage::Heartbeat { node_id, .. } => {
             format!("Heartbeat node_id={}", short(node_id))
@@ -2819,6 +2901,49 @@ impl Network {
         announce
     }
 
+    /// The visitor form ([`announce_for_visitor`]) of a serialized announce
+    /// of this node, signed again: what an admin hands a visitor directly,
+    /// since a visitor is never a gossip neighbor (`discovery::MemberGossip`).
+    pub(crate) fn visitor_form_of(&self, announce: &[u8]) -> Option<Vec<u8>> {
+        let mut announce = serde_json::from_slice::<P2PMessage>(announce).ok()?;
+        if !matches!(announce, P2PMessage::Announce { .. }) {
+            return None;
+        }
+        announce_for_visitor(&mut announce);
+        if let P2PMessage::Announce { signature, .. } = &mut announce {
+            *signature = None;
+        }
+        let key = self.announce_key.read().ok().and_then(|key| key.clone());
+        if let Some(key) = key {
+            sign_announce(&mut announce, &key);
+        }
+        serde_json::to_vec(&announce).ok()
+    }
+
+    /// Whether this node hands its announce to visitors: an admin entry node
+    /// in the default view. A visitor, and a member kept from visitors,
+    /// does not.
+    pub(crate) fn announces_to_visitors(&self) -> bool {
+        !self.is_visitor() && !self.self_withheld_from_visitors()
+    }
+
+    /// The endpoints of the live visitors this node knows, for the direct
+    /// announce (`discovery`): they are never on the gossip topic.
+    pub(crate) async fn visitor_endpoints(
+        &self,
+    ) -> std::collections::HashMap<crate::p2p::EndpointId, Vec<String>> {
+        self.peers
+            .read()
+            .await
+            .values()
+            .filter(|peer| peer.is_alive() && self.peer_is_visitor(peer))
+            .filter_map(|peer| {
+                let id = crate::p2p::parse_endpoint_id(peer.endpoint_id.as_deref()?)?;
+                Some((id, peer.endpoint_dialable_addrs()))
+            })
+            .collect()
+    }
+
     fn unsigned_announce(&self, assignment: Option<&LayerAssignment>) -> P2PMessage {
         // The enumeration is deliberately done here, on each announce. Gossip
         // announces every 5 s; the operation is only a local read of
@@ -3438,6 +3563,42 @@ impl Network {
             && (self.peer_is_visitor(peer) || self.withheld_from_visitors(peer))
     }
 
+    /// This node's `PeerRequest`, signed with its node key.
+    pub(crate) fn peer_request(&self) -> P2PMessage {
+        let key = self.announce_key.read().ok().and_then(|key| key.clone());
+        signed_peer_request(&self.node_id, key.as_deref())
+    }
+
+    /// Whether a `PeerRequest` comes from a serving member - an admin or a
+    /// worker, proven by its signature and the chain or a vouch
+    /// (`may_gossip_key`). A test bench without admission does not judge.
+    async fn requester_is_member(&self, request: &P2PMessage) -> bool {
+        if self.admission.is_none() {
+            return true;
+        }
+        match verify_peer_request(request, Utc::now()) {
+            Some((node_id, pubkey)) => self.may_gossip_key(&node_id, &pubkey).await,
+            None => false,
+        }
+    }
+
+    /// The live peers a requester that is not a proven serving member is
+    /// answered with: what a visitor may learn (`peer_list_for` to a visitor).
+    async fn peer_list_for_visitor(&self) -> Vec<PeerInfo> {
+        self.peers
+            .read()
+            .await
+            .values()
+            .filter(|p| p.is_alive() && !self.hides(p) && !self.peer_is_visitor(p))
+            .filter(|p| !self.withheld_from_visitors(p))
+            .cloned()
+            .map(|mut p| {
+                p.anon_tunnel = None;
+                p.for_visitor()
+            })
+            .collect()
+    }
+
     /// The live peers a `PeerRequest` from `from` is answered with. Visitors
     /// are only listed to a requester known as an admin or a worker: a
     /// visitor, or a node not in the table, never learns of one from here.
@@ -3475,6 +3636,58 @@ impl Network {
         if self.peers.write().await.remove(node_id).is_some() {
             self.routes.invalidate(node_id);
             info!("peer {} removed: revoked", short(node_id));
+        }
+    }
+
+    /// Whether the endpoint may be a neighbor on the gossip topic: a serving
+    /// member - an admin of the chain, or a node a roster vouch names a
+    /// worker. A visitor, a stranger and a banned node never are, so no
+    /// member announce reaches them through gossip (`discovery::MemberGossip`).
+    ///
+    /// It reads the chain and the vouches only, never the peers table: the
+    /// endpoint id is the node's public key and the node id its hash, so the
+    /// proof binds the endpoint, and a worker whose announce only travels by
+    /// gossip is not locked out before it is heard. On a network open to
+    /// anyone with the anchor, a peer the table admitted that is not a
+    /// visitor passes too (the admin vouches it on its next round). A node
+    /// without admission (a test bench) answers yes. A ban needs no branch of
+    /// its own: it cuts the vouch and takes the peer out of the table.
+    pub(crate) async fn may_gossip(&self, endpoint: &crate::p2p::EndpointId) -> bool {
+        if self.admission.is_none() {
+            return true;
+        }
+        let pubkey = hex::encode(endpoint.as_bytes());
+        let Some(node_id) = metering_core::node_id_of_pubkey_hex(&pubkey) else {
+            return false;
+        };
+        self.may_gossip_key(&node_id, &pubkey).await
+    }
+
+    /// [`Self::may_gossip`] for a node id and its key (hex), already bound
+    /// to each other by the caller.
+    pub(crate) async fn may_gossip_key(&self, node_id: &str, pubkey: &str) -> bool {
+        let node_id = node_id.to_string();
+        let pubkey = pubkey.to_string();
+        let Some(admission) = self.admission.as_ref() else {
+            return true;
+        };
+        if node_id == self.node_id {
+            return true;
+        }
+        if crate::admin_trust::is_admin_key(&admission.trust.document(), &node_id, &pubkey) {
+            return true;
+        }
+        match admission
+            .trust
+            .vouched_role(&node_id, chrono::Utc::now().timestamp())
+        {
+            Some(role) => role == crate::config::EnrollmentRole::Worker,
+            None => self
+                .peers
+                .read()
+                .await
+                .get(&node_id)
+                .is_some_and(|peer| peer.pubkey == pubkey && !self.peer_is_visitor(peer)),
         }
     }
 
@@ -3606,8 +3819,12 @@ impl Network {
 
         // Broadcast locally, except on a visitor: the LAN may hold other
         // visitors, and they never learn of each other.
+        // The LAN carries a signed `PeerRequest`, not the announce: anyone
+        // on the LAN reads a broadcast, and the announce names the model,
+        // the layers and the host. A member that hears it asks back and gets
+        // the announce only once its own request proves it a serving member.
         if !self.is_visitor() {
-            self.broadcast_local(&msg).await?;
+            self.broadcast_local(&self.peer_request()).await?;
         }
 
         Ok(())
@@ -3622,9 +3839,7 @@ impl Network {
         if self.is_detached() {
             return Ok(());
         }
-        let msg = P2PMessage::PeerRequest {
-            from: self.node_id.clone(),
-        };
+        let msg = self.peer_request();
         for bootstrap in &self.bootstrap_nodes {
             info!("Contacting bootstrap node: {}", bootstrap);
             self.send_to(&msg, bootstrap).await?;
@@ -3647,9 +3862,7 @@ impl Network {
         if self.is_detached() || tick == 0 || tick % DISCOVERY_SWEEP_TICKS != 0 {
             return Ok(0);
         }
-        let msg = P2PMessage::PeerRequest {
-            from: self.node_id.clone(),
-        };
+        let msg = self.peer_request();
 
         for bootstrap in &self.bootstrap_nodes {
             self.send_to(&msg, bootstrap).await?;
@@ -3750,9 +3963,7 @@ impl Network {
             short(node_id)
         );
 
-        let question = P2PMessage::PeerRequest {
-            from: self.node_id.clone(),
-        };
+        let question = self.peer_request();
         for bootstrap in &self.bootstrap_nodes {
             let _ = self.send_to(&question, bootstrap).await;
         }
@@ -4187,20 +4398,30 @@ impl Network {
                 self.insert_announced_peer(peer).await;
             }
 
-            P2PMessage::PeerRequest { from } => {
+            P2PMessage::PeerRequest {
+                from,
+                pubkey,
+                timestamp,
+                signature,
+            } => {
                 if from == self.node_id {
                     return;
                 }
+                let request = P2PMessage::PeerRequest {
+                    from: from.clone(),
+                    pubkey,
+                    timestamp,
+                    signature,
+                };
+                let member = self.requester_is_member(&request).await;
+                let unknown = !self.peers.read().await.contains_key(&from);
 
-                // A node kept from visitors answers none of them.
-                if self.self_withheld_from_visitors()
-                    && self
-                        .peers
-                        .read()
-                        .await
-                        .get(&from)
-                        .is_some_and(|p| self.peer_is_visitor(p))
-                {
+                // Anything less than a proven serving member - a visitor, a
+                // released node's unsigned request, a forged `from` - reads
+                // what a visitor may: a node kept from visitors answers
+                // nothing, an admin entry node its visitor form and the
+                // admins (`visitor_view`).
+                if !member && self.self_withheld_from_visitors() {
                     return;
                 }
                 // Immediately send our own Announce so the requester learns about
@@ -4208,26 +4429,31 @@ impl Network {
                 // with no assignment — see `self_announce`.
                 {
                     let asgn = assignment.read().await.clone();
-                    let to_visitor = self
-                        .peers
-                        .read()
-                        .await
-                        .get(&from)
-                        .is_some_and(|p| self.peer_is_visitor(p));
-                    let announce = if to_visitor {
-                        self.visitor_announce(asgn.as_ref())
-                    } else {
+                    let announce = if member {
                         self.self_announce(asgn.as_ref())
+                    } else {
+                        self.visitor_announce(asgn.as_ref())
                     };
                     let _ = self.send_to(&announce, &src.to_string()).await;
                 }
 
                 // Also send the list of peers we know about, split so that no
                 // single datagram exceeds the path MTU.
-                let peer_list = self.peer_list_for(&from).await;
+                let peer_list = if member {
+                    self.peer_list_for(&from).await
+                } else {
+                    self.peer_list_for_visitor().await
+                };
                 for chunk in peer_list_chunks(peer_list) {
                     let reply = P2PMessage::PeerList { peers: chunk };
                     let _ = self.send_to(&reply, &src.to_string()).await;
+                }
+
+                // The LAN broadcast is a signed `PeerRequest` (`announce`):
+                // a requester this node has not heard of is asked back, so it
+                // answers with its own announce - gated the same way.
+                if unknown && !self.is_detached() {
+                    let _ = self.send_to(&self.peer_request(), &src.to_string()).await;
                 }
             }
 
@@ -4339,9 +4565,7 @@ impl Network {
                         IpAddr::V6(v6) => format!("[{}]:{}", v6, port),
                     };
                     info!("📡 Local discovery from {} — responding", src.ip());
-                    let req = P2PMessage::PeerRequest {
-                        from: self.node_id.clone(),
-                    };
+                    let req = self.peer_request();
                     let _ = self.send_to(&req, &reply_addr).await;
                 }
             }
@@ -8344,6 +8568,190 @@ mod tests {
     /// member with no token in its announce, binds to the announced key as
     /// a token does, and a ban cuts it - a re-admission after the ban vouches
     /// again and membership returns.
+    /// A network with an anchored primary, and the vouches of one worker and
+    /// one visitor, each named by its real key.
+    async fn gossip_fixture() -> (
+        Network,
+        ed25519_dalek::SigningKey,
+        ed25519_dalek::SigningKey,
+        ed25519_dalek::SigningKey,
+    ) {
+        let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let primary = crate::admin_trust::AuthorityPrincipal::from_signing_key(
+            &node_of(&primary_key),
+            crate::identity::trust_peer_id(primary_key.verifying_key().as_bytes()),
+            &primary_key,
+        );
+        let trust = Arc::new(
+            crate::admin_trust::AdminTrust::bootstrap_primary_in_memory(
+                "test-cluster",
+                primary.clone(),
+                &primary_key,
+            )
+            .unwrap(),
+        );
+        let net = Network::testkit("local".into(), "pk".into(), vec![], None, None)
+            .await
+            .unwrap()
+            .with_admission(
+                admission_config("key", crate::config::NetworkVisibility::Private),
+                trust.clone(),
+            );
+        let worker = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let visitor = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let now = chrono::Utc::now().timestamp();
+        for (key, role) in [
+            (&worker, crate::config::EnrollmentRole::Worker),
+            (&visitor, crate::config::EnrollmentRole::Visitor),
+        ] {
+            let vouch = crate::membership::sign_vouch(
+                &primary_key,
+                &primary,
+                &trust.document(),
+                &node_of(key),
+                role,
+                now - 5,
+                now,
+            )
+            .unwrap();
+            trust.merge_vouches(vec![vouch]);
+        }
+        (net, primary_key, worker, visitor)
+    }
+
+    fn node_of(key: &ed25519_dalek::SigningKey) -> String {
+        crate::identity::NodeId::from_pubkey(&key.verifying_key()).0
+    }
+
+    fn endpoint_of(key: &ed25519_dalek::SigningKey) -> crate::p2p::EndpointId {
+        crate::p2p::parse_endpoint_id(&hex::encode(key.verifying_key().as_bytes())).unwrap()
+    }
+
+    /// Only a serving member is a gossip neighbor: an admin of the chain or a
+    /// vouched worker, proven by the key the endpoint id is. A visitor and a
+    /// stranger are refused, even one the table admitted under a worker's
+    /// announced profile.
+    /// The announce an admin hands a visitor directly is the visitor form,
+    /// signed again so the visitor's check still holds.
+    #[tokio::test]
+    async fn the_visitor_form_of_an_announce_is_widened_and_signed() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[54; 32]);
+        let net = Network::testkit(
+            node_of(&key),
+            hex::encode(key.verifying_key().as_bytes()),
+            vec![],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        net.set_announce_key(Arc::new(key));
+        let assignment = LayerAssignment {
+            model: "m".into(),
+            start_layer: 10,
+            end_layer: 19,
+            total_layers: 40,
+            memory_used_mb: 9000.0,
+            deploy_id: String::new(),
+            deployment_name: String::new(),
+            layers_count: 10,
+            memory_allocated_mb: 9000.0,
+        };
+        let full = net.gossip_announce_bytes(Some(&assignment)).unwrap();
+        let form: P2PMessage =
+            serde_json::from_slice(&net.visitor_form_of(&full).unwrap()).unwrap();
+        assert_eq!(verify_udp_announce(&form, Utc::now()), Ok(()));
+        let P2PMessage::Announce {
+            start_layer,
+            end_layer,
+            memory_mb,
+            ..
+        } = form
+        else {
+            panic!("not an announce");
+        };
+        assert_eq!((start_layer, end_layer, memory_mb), (0, 39, 0.0));
+        assert!(net.visitor_form_of(b"{}").is_none());
+    }
+
+    #[tokio::test]
+    async fn only_admins_and_vouched_workers_may_gossip() {
+        let (net, primary, worker, visitor) = gossip_fixture().await;
+        assert!(net.may_gossip(&endpoint_of(&primary)).await);
+        assert!(net.may_gossip(&endpoint_of(&worker)).await);
+        assert!(!net.may_gossip(&endpoint_of(&visitor)).await);
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
+        assert!(!net.may_gossip(&endpoint_of(&stranger)).await);
+        // A visitor that announces itself a worker is still its vouch.
+        let mut posing = dummy_peer(&node_of(&visitor), "127.0.0.1:9");
+        posing.pubkey = hex::encode(visitor.verifying_key().as_bytes());
+        posing.profile = crate::profile::NodeProfile::Worker;
+        net.peers
+            .write()
+            .await
+            .insert(posing.node_id.clone(), posing);
+        assert!(!net.may_gossip(&endpoint_of(&visitor)).await);
+    }
+
+    /// A `PeerRequest` proves its requester only when signed by the key its
+    /// `from` is the hash of, and recently; a released node's unsigned one,
+    /// and one naming another node, prove nobody.
+    #[tokio::test]
+    async fn a_peer_request_proves_its_requester_only_when_signed() {
+        let (net, _, worker, visitor) = gossip_fixture().await;
+        let signed = signed_peer_request(&node_of(&worker), Some(&worker));
+        let wire: P2PMessage =
+            serde_json::from_slice(&serde_json::to_vec(&signed).unwrap()).unwrap();
+        assert_eq!(
+            verify_peer_request(&wire, Utc::now()).map(|(id, _)| id),
+            Some(node_of(&worker))
+        );
+        assert!(net.requester_is_member(&wire).await);
+        // The visitor's own signed request proves the visitor, not a member.
+        let as_visitor = signed_peer_request(&node_of(&visitor), Some(&visitor));
+        assert!(verify_peer_request(&as_visitor, Utc::now()).is_some());
+        assert!(!net.requester_is_member(&as_visitor).await);
+        // Asking in the worker's name with another key.
+        let forged = signed_peer_request(&node_of(&worker), Some(&visitor));
+        assert!(verify_peer_request(&forged, Utc::now()).is_none());
+        assert!(!net.requester_is_member(&forged).await);
+        // A released node's request: unsigned, and it still parses.
+        let old: P2PMessage =
+            serde_json::from_str(&format!(r#"{{"type":"PeerRequest","from":"{}"}}"#, node_of(&worker)))
+                .unwrap();
+        assert!(!net.requester_is_member(&old).await);
+        // Stale.
+        let later = Utc::now() + chrono::Duration::seconds(ANNOUNCE_FRESHNESS_SECS + 5);
+        assert!(verify_peer_request(&signed, later).is_none());
+    }
+
+    /// What a requester that is not a proven serving member reads: the admin
+    /// entry nodes in the visitor form, never a worker or a visitor.
+    #[tokio::test]
+    async fn a_non_member_requester_reads_only_admins_in_the_visitor_form() {
+        let (net, primary, _, _) = gossip_fixture().await;
+        let mut admin = dummy_peer(&node_of(&primary), "127.0.0.1:9");
+        admin.pubkey = hex::encode(primary.verifying_key().as_bytes());
+        admin.profile = crate::profile::NodeProfile::Admin;
+        admin
+            .inference_frame_capabilities
+            .push(crate::pipeline::CAP_GATEWAY_DELEGATE.into());
+        admin.start_layer = 0;
+        admin.end_layer = 9;
+        admin.total_layers = 40;
+        let mut worker = dummy_peer("worker", "127.0.0.1:10");
+        worker.profile = crate::profile::NodeProfile::Worker;
+        {
+            let mut peers = net.peers.write().await;
+            peers.insert(admin.node_id.clone(), admin.clone());
+            peers.insert("worker".into(), worker);
+        }
+        let seen = net.peer_list_for_visitor().await;
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].node_id, admin.node_id);
+        assert_eq!((seen[0].start_layer, seen[0].end_layer), (0, 39));
+    }
+
     #[tokio::test]
     async fn a_vouched_member_is_a_member_without_a_token() {
         let primary_key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);

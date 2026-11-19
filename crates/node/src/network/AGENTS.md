@@ -134,7 +134,13 @@ dedicated or member, with iroh's hole punching), are in
   node key on UDP `p2p_port + 10000` (n0's relays unless `--no-default-relays`, the
   dedicated `relay_peers` URLs, member relays added live), mDNS, iroh-gossip (one
   topic for every network, announces sealed with the node key's signature, since
-  iroh-gossip only authenticates the delivering neighbor), the embedded relay server
+  iroh-gossip only authenticates the delivering neighbor; its ALPN is served
+  through `MemberGossip`, which closes any connection `Network::may_gossip`
+  does not prove an admin or a vouched worker, so a visitor or a stranger never
+  reads the topic; a visitor neither subscribes nor is asked to join, and an
+  admin hands it the visitor form of its announce over the direct-announce
+  ALPN each round, while a worker also hands its announce to the admins;
+  `gossip_join_probe` is the `#[ignore]` live check), the embedded relay server
   on TCP on the same port (`GateAccess` asks `RelayGate`), the `Router` serving the
   tunnel, lobby, chat, logs, audit and direct announce ALPNs, and `link_tracker`, which follows every
   connection's selected path into `Network::note_link`. It puts peers into the
@@ -714,8 +720,12 @@ visitor's table holds only admins; and a node kept from visitors
 announce round and the `PeerRequest` answer send a visitor
 `visitor_announce` - the layer range widened to the whole model, no memory,
 disk, API key count or tensor parallel group. `hides` is the visitor's own
-code and is no guarantee: the gossip topic carries every member's announce in
-clear (`docs/subsystems/p2p-network.md`, 7). See
+code and no guarantee; what is guaranteed is that no worker announce reaches
+a visitor: the gossip gate (`may_gossip`, below), the signed `PeerRequest`
+(`signed_peer_request`, `verify_peer_request`, `requester_is_member`: anyone
+less than a proven serving member gets `peer_list_for_visitor` from an admin
+and nothing from a worker) and the LAN broadcast of a signed request instead
+of the announce. See
 `docs/subsystems/payments.md` and `docs/subsystems/security-model.md`.
 
 ## Maintaining this file

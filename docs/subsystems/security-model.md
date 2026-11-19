@@ -75,9 +75,17 @@ are either workers or visitors.
     no memory, disk or tensor parallel group (`PeerInfo::for_visitor`,
     `Network::visitor_announce`; `p2p-network.md`).
   The trust chain (`/api/internal/admin-trust/chain`) still reaches a
-  visitor: it names admins, which a visitor knows anyway. **Not closed**: the
-  gossip topic and the LAN broadcast carry every member's announce in clear
-  to whoever listens (`p2p-network.md`, "Defects noted").
+  visitor: it names admins, which a visitor knows anyway.
+  - the gossip topic: only an admin or a vouched worker is a neighbor
+    (`discovery::MemberGossip`, `Network::may_gossip`), so no member
+    announce reaches a visitor or a stranger by gossip; a visitor hears its
+    admins through their direct announce, in the visitor form;
+  - `PeerRequest` is signed, and only a proven serving member reads the full
+    announce and peer list; the LAN broadcast is a signed request, not the
+    announce (`p2p-network.md`, "Only serving members are gossip
+    neighbors"). Still visible: a node on the same LAN sees that a node with
+    a given id is there, and a released member, until upgraded, lets anyone
+    join the mesh through it.
 - Since phase B of the admin-hub routing a **worker** delegates its generation
   requests to an admin entry node too - by default, with the network's
   `worker_delegation = false` as the escape hatch for networks whose workers

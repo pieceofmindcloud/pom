@@ -132,6 +132,46 @@ pub(crate) async fn direct_announce_targets(
     targets.into_iter().collect()
 }
 
+/// The gossip ALPN behind a gate: only a serving member - an admin of the
+/// chain or a worker a roster vouch names (`Network::may_gossip`) - becomes a
+/// neighbor. The topic is one for every network, and announces travel on it
+/// signed, not encrypted: before this gate anyone who asked a member to join
+/// read every member's announce, a visitor of the network or not. QUIC already
+/// encrypts each hop, so who may be a neighbor is the whole guarantee.
+#[derive(Clone)]
+pub(crate) struct MemberGossip {
+    gossip: Gossip,
+    network: Arc<Network>,
+}
+
+impl std::fmt::Debug for MemberGossip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MemberGossip")
+    }
+}
+
+impl iroh::protocol::ProtocolHandler for MemberGossip {
+    async fn accept(&self, connection: Connection) -> Result<(), iroh::protocol::AcceptError> {
+        let remote = connection.remote_id();
+        if !self.network.may_gossip(&remote).await {
+            debug!("gossip: refused {}: not a serving member", remote.fmt_short());
+            connection.close(GOSSIP_REFUSED.into(), b"not a serving member");
+            return Ok(());
+        }
+        self.gossip
+            .handle_connection(connection)
+            .await
+            .map_err(iroh::protocol::AcceptError::from_err)
+    }
+
+    async fn shutdown(&self) {
+        iroh::protocol::ProtocolHandler::shutdown(&self.gossip).await;
+    }
+}
+
+/// The QUIC close code of a refused gossip neighbor.
+const GOSSIP_REFUSED: u32 = 403;
+
 fn topic_id() -> TopicId {
     TopicId::from_bytes(Sha256::digest(GOSSIP_TOPIC.as_bytes()).into())
 }
@@ -527,7 +567,9 @@ impl Discovery {
         // subscription, publishes nothing on the topic, and asks nobody to
         // join it (`--no-iroh`, spec 2026-11-15). Its announces go to the
         // peers it dialed, the way a visitor's already do.
-        let (gossip_tx, gossip_rx) = if direct_only {
+        // Nor is a visitor: no member admits it as a neighbor
+        // (`MemberGossip`), and its admins hand it their announce directly.
+        let (gossip_tx, gossip_rx) = if direct_only || network.is_visitor() {
             (None, None)
         } else {
             let topic = gossip
@@ -759,7 +801,13 @@ impl Discovery {
             .on_connection(tracker)
         };
         iroh::protocol::Router::builder(endpoint.clone())
-            .accept(iroh_gossip::ALPN, gossip.clone())
+            .accept(
+                iroh_gossip::ALPN,
+                MemberGossip {
+                    gossip: gossip.clone(),
+                    network: ctx.network.clone(),
+                },
+            )
             .accept(InferTunnelCodec::PROTOCOL.as_bytes(), tunnel)
             .accept(
                 infer_tunnel::INFER_TUNNEL_STREAM_PROTOCOL.as_bytes(),
@@ -850,32 +898,66 @@ impl Discovery {
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
                     let sealed = seal_announce(&secret, &data);
+                    // A visitor is never a gossip neighbor (`MemberGossip`):
+                    // an admin entry node hands it its announce directly, in
+                    // the visitor form, and a member kept from visitors
+                    // hands it nothing.
+                    let to_visitors = network.announces_to_visitors();
+                    let visitor_sealed = network
+                        .visitor_form_of(&data)
+                        .map(|form| seal_announce(&secret, &form));
+                    let visitors = network.visitor_endpoints().await;
+                    let mut direct: Vec<(EndpointId, Vec<String>, Vec<u8>)> = Vec::new();
                     if network.is_visitor() || network.is_direct_only() {
-                        // The topic is shared by every network: a visitor's
-                        // announce goes only to its admins and workers. A
-                        // direct-only node has no topic either: the same
-                        // sealed direct announce, to every peer it dialed
-                        // (`--no-iroh`).
+                        // A visitor's announce goes only to its admins; a
+                        // direct-only node has no topic either: the same sealed
+                        // direct announce, to every peer it dialed (`--no-iroh`).
                         for (peer_id, addrs) in
                             direct_announce_targets(&network, endpoint.id(), &policy.dialed).await
                         {
-                            if ctx.p2p.backing_off(&peer_id) && !ctx.p2p.is_connected(&peer_id) {
-                                continue;
-                            }
-                            let transport = ctx.p2p.clone();
-                            let sealed = sealed.clone();
-                            tokio::spawn(async move {
-                                if let Err(error) =
-                                    transport.call(AnnounceCodec, peer_id, &addrs, sealed).await
-                                {
-                                    debug!("announce to {}: {error}", peer_id.fmt_short());
+                            if visitors.contains_key(&peer_id) {
+                                if let (true, Some(form)) = (to_visitors, &visitor_sealed) {
+                                    direct.push((peer_id, addrs, form.clone()));
                                 }
-                            });
+                            } else {
+                                direct.push((peer_id, addrs, sealed.clone()));
+                            }
                         }
-                    } else if let Some(gossip_tx) = &gossip_tx {
-                        if let Err(error) = gossip_tx.broadcast(sealed.into()).await {
-                            debug!("gossip broadcast: {error}");
+                    } else {
+                        if let Some(gossip_tx) = &gossip_tx {
+                            if let Err(error) = gossip_tx.broadcast(sealed.clone().into()).await {
+                                debug!("gossip broadcast: {error}");
+                            }
                         }
+                        if let (true, Some(form)) = (to_visitors, &visitor_sealed) {
+                            for (peer_id, addrs) in visitors {
+                                direct.push((peer_id, addrs, form.clone()));
+                            }
+                        }
+                        // A member that is neither an admin nor a visitor also
+                        // hands its announce to the admins directly: on a
+                        // network open to anyone with the anchor, the gossip
+                        // gate lets it in only once an admin heard it.
+                        if !to_visitors && !network.is_visitor() {
+                            for (peer_id, addrs) in network.admin_peers().await {
+                                if peer_id != endpoint.id() {
+                                    direct.push((peer_id, addrs, sealed.clone()));
+                                }
+                            }
+                        }
+                    }
+                    for (peer_id, addrs, payload) in direct {
+                        if ctx.p2p.backing_off(&peer_id) && !ctx.p2p.is_connected(&peer_id) {
+                            continue;
+                        }
+                        let transport = ctx.p2p.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) =
+                                transport.call(AnnounceCodec, peer_id, &addrs, payload).await
+                            {
+                                debug!("announce to {}: {error}", peer_id.fmt_short());
+                            }
+                        });
                     }
                 }
                 addr = dial_rx.recv() => {
@@ -1285,9 +1367,11 @@ async fn apply_policy(
                 continue;
             }
             ctx.p2p.learn(id, &peer.endpoint_dialable_addrs());
-            if !direct_only {
-                join_gossip(gossip.as_ref(), policy, id).await;
+            // A visitor is never a neighbor, and never asks to be one.
+            if direct_only || network.is_visitor() || network.peer_is_visitor(peer) {
+                continue;
             }
+            join_gossip(gossip.as_ref(), policy, id).await;
             admitted.push(id);
         }
         let now = std::time::Instant::now();
@@ -2245,6 +2329,74 @@ async fn relay_chat(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Live probe of the gossip gate, run by hand against real nodes: a
+    /// node running code of its own that subscribes to the topic and asks a
+    /// member to be its neighbor, as a visitor or a stranger could.
+    ///
+    /// `POM_GOSSIP_PROBE=<endpoint-id>@<addr>[,<addr>]` names the member;
+    /// `POM_GOSSIP_PROBE_KEY=<path>` an optional node key file (a visitor's
+    /// `.pom-node.key`), else a fresh key. It listens for 30 s and prints how
+    /// many neighbors came up and which nodes' announces it read. Against a
+    /// gated member it must print `neighbors=0 announces=0`.
+    #[tokio::test]
+    #[ignore = "needs a live member; see the test doc"]
+    async fn gossip_join_probe() {
+        let target = std::env::var("POM_GOSSIP_PROBE").expect("set POM_GOSSIP_PROBE");
+        let (id, addrs) = target.split_once('@').unwrap_or((target.as_str(), ""));
+        let peer = p2p::parse_endpoint_id(id).expect("invalid endpoint id");
+        let addrs: Vec<String> = addrs.split(',').filter(|a| !a.is_empty()).map(str::to_string).collect();
+        let secret = match std::env::var("POM_GOSSIP_PROBE_KEY") {
+            Ok(path) => {
+                let text = std::fs::read_to_string(path).expect("read the key file");
+                let seed: [u8; 32] = hex::decode(text.trim()).unwrap().try_into().unwrap();
+                SecretKey::from_bytes(&seed)
+            }
+            Err(_) => SecretKey::generate(),
+        };
+        let book = iroh::address_lookup::MemoryLookup::new();
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+            .secret_key(secret)
+            .address_lookup(book.clone())
+            .bind()
+            .await
+            .expect("bind a probe endpoint");
+        let probe = p2p::P2p::new(endpoint.clone(), book);
+        probe.learn(peer, &addrs);
+        let gossip = Gossip::builder()
+            .max_message_size(GOSSIP_MAX_MESSAGE_BYTES)
+            .spawn(endpoint.clone());
+        let _router = iroh::protocol::Router::builder(endpoint.clone())
+            .accept(iroh_gossip::ALPN, gossip.clone())
+            .spawn();
+        let mut topic = gossip.subscribe(topic_id(), vec![peer]).await.expect("subscribe");
+        let mut neighbors = 0usize;
+        let mut authors = std::collections::BTreeSet::new();
+        let mut announces = 0usize;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let next = tokio::time::timeout_at(deadline, topic.next()).await;
+            match next {
+                Err(_) | Ok(None) => break,
+                Ok(Some(Ok(GossipEvent::NeighborUp(_)))) => neighbors += 1,
+                Ok(Some(Ok(GossipEvent::Received(message)))) => {
+                    announces += 1;
+                    if let Some(Ok(P2PMessage::Announce { node_id, hostname, .. })) = message
+                        .content
+                        .get(64..)
+                        .map(serde_json::from_slice::<P2PMessage>)
+                    {
+                        authors.insert(format!("{}({hostname})", &node_id[..12.min(node_id.len())]));
+                    }
+                }
+                Ok(Some(_)) => {}
+            }
+        }
+        println!(
+            "[gossip-probe] as {} neighbors={neighbors} announces={announces} authors={authors:?}",
+            endpoint.id().fmt_short()
+        );
+    }
 
     fn key(seed: u8) -> SecretKey {
         SecretKey::from_bytes(&[seed; 32])

@@ -145,20 +145,62 @@ node sends a visitor over UDP - its round, and its answer to a
 Where the layers are split, and so how many machines share them, is not a
 visitor's to know; the admin entry node runs its whole request anyway.
 
-A visitor's own `Announce` never travels where another visitor could read it.
-The gossip topic is shared by every network, so a visitor does not publish on
-it: each announce round it sends the sealed announce straight to every admin
-in its `alive_peers` (the default view holds only admins) and to the endpoints
-it dialed through pkarr
+**Only serving members are gossip neighbors** (2026-11-18). The topic is one
+for every network (`GOSSIP_TOPIC`) and its seal is a signature, not
+encryption; what keeps announces in the network is who may be a neighbor.
+Every node serves the gossip ALPN through `discovery::MemberGossip`, which
+closes a connection (QUIC code 403) unless `Network::may_gossip` proves the
+remote endpoint a serving member: an admin of the chain, or a node a roster
+vouch names a worker. The proof reads the chain and the vouches, never the
+peers table - the endpoint id is the node's public key and the node id its
+hash - so a worker whose announce only travels by gossip is not locked out
+before it is heard; on a network open to anyone with the anchor, a peer the
+table admitted that is not a visitor passes too. Each hop is QUIC, encrypted
+end to end, so no relay reads the topic either. A visitor, a stranger, a
+banned node and a node of another network never receive a gossip message,
+whatever code they run.
+
+A visitor is therefore never on the topic: it does not subscribe, and no
+member asks it to join (`apply_policy` skips visitors). Each announce round it
+sends the sealed announce straight to every admin in its `alive_peers` (the
+default view holds only admins) and to the endpoints it dialed through pkarr
 (`discovery::direct_announce_targets`), over the `pom/announce-direct/1` ALPN
 (`AnnounceCodec`), and the receiver handles it exactly like a gossip announce.
-Over UDP it skips the LAN broadcast and announces only to the peers it keeps.
-It stays subscribed to the topic, which is how it hears the admins; a worker's
-announce that arrives there finds admission closed. **That closed admission
-is the visitor's own code, not a guarantee** (see "Defects noted" below): the
-topic is shared by every network and its seal is a signature, not
-encryption, so a node running other code that joins it reads every member's
-full announce.
+The admins answer in kind: an admin entry node hands each live visitor its
+announce in the visitor form over the same ALPN every round
+(`Network::visitor_form_of`, `visitor_endpoints`), and a member kept from
+visitors hands it nothing. A member that is neither an admin nor a visitor
+also hands its full announce to the admins directly, which is what opens the
+gate for it on an open network. Over UDP a visitor skips the LAN broadcast
+and announces only to the peers it keeps.
+
+**`PeerRequest` is signed, and only a serving member reads the full answer.**
+UDP carries no authentication, and the bare `from` it used to carry let anyone
+ask in an admin's name. A request now carries `pubkey`, `timestamp` and an
+Ed25519 `signature` (`signed_peer_request`, `verify_peer_request`: the key
+must hash to `from` and the request be within 5 minutes). The answer depends
+on the proven requester (`Network::requester_is_member`): a serving member
+gets the full announce and `peer_list_for`; anyone else - a visitor, a forged
+request, a released node's unsigned one - gets nothing from a member kept
+from visitors, and from an admin entry node its visitor form and the admins
+only (`peer_list_for_visitor`). A test bench without admission does not judge.
+
+**The LAN broadcast carries a signed `PeerRequest`, not the announce.** Anyone
+on the LAN reads a broadcast, and the announce names the host, the model and
+the layers. A node that hears a request from a node it does not know answers
+it (gated as above) and asks back with its own signed request, so two members
+on a LAN still find each other in one exchange. What the LAN still learns is
+that a node with that id and address is there; iroh's mDNS lookup advertises
+endpoint ids on the LAN the same way.
+
+**Mixed versions.** A released visitor keeps working: it still subscribes and
+asks its admins to join, the gate refuses it, and it hears its admins through
+the direct announce it already served. A released member passes the gate and
+stays in the mesh, but its own gossip ALPN is not gated, so a node that joins
+the topic through it still reads the mesh until every member is upgraded.
+A released node's unsigned `PeerRequest` is answered as a stranger's, and it
+no longer learns a new node from the LAN broadcast; it still learns it through
+gossip, the bootstrap nodes and pkarr.
 
 - On a private network, a non-empty `connection_key` selects the proof through
   `/handshake`. The key never leaves the node: it sends its identity and a
@@ -257,7 +299,9 @@ A JSON tagged enum (`serde(tag = "type")`) over UDP:
   id and tunnel capability. `idle` says this peer is alive with the model
   unloaded; it does not mean the deployment went offline. New fields have
   `serde(default)` so an old node stays parseable in a mixed-version cluster.
-- **`PeerRequest`** - asks a known node for its peer list.
+- **`PeerRequest`** - asks a known node for its peer list. Signed by the
+  requester's node key (optional fields, so a released node's unsigned one
+  still parses); see "Only serving members are gossip neighbors".
 - **`PeerList`** - answer with `Vec<PeerInfo>`, sliced by MTU (see below).
 - **`Heartbeat`** - liveness; updates `last_seen`. Defined and handled on
   receipt, but no code path emits it today (the 5 s `Announce` plays that
@@ -389,8 +433,10 @@ handshake sessions and the sensitive material.
   `merge_observed` only when the announcement did not bring an explicit list.
   With `advertise_addr`, the announced list is authoritative and gets no LAN,
   bridge or observed address as an extra candidate.
-- `PeerRequest` answers with an immediate `Announce` (even without an
-  assignment) and with the `PeerList` of live peers, sliced to fit
+- `PeerRequest` answers a proven serving member with an immediate `Announce`
+  (even without an assignment) and with the `PeerList` of live peers (anyone
+  else gets the visitor form and the admins from an admin, nothing from a
+  worker), sliced to fit
   `MAX_DATAGRAM_PAYLOAD` (1200 B, the floor IPv6 guarantees; `PeerList` grows
   ~530 B per peer).
 - A `PeerList` is also a state update: if the snapshot's `last_seen` is newer,
@@ -1950,13 +1996,3 @@ with a live cluster endpoint.
   It moves no address and grants nothing, and no code path emits it today
   (the signed `Announce` plays that role), so it is only a nuisance. Dropping
   the variant or signing it like the `Announce` fixes it.
-- **DEFECT NOTED: the gossip topic is readable by anyone who joins it** (noted 2026-11-18).
-  `discovery::seal_announce` signs the announce and does not encrypt it, and
-  `GOSSIP_TOPIC` is one topic for every network. Every member's announce -
-  node id, host name, addresses, endpoint id, model and layer range - is
-  readable by any node on the topic, a visitor of the network or not. The
-  visitor view (`Network::hides`) only stops an honest visitor from storing
-  them. Closing it needs a topic per network and announces encrypted with a
-  secret visitors do not hold (they hold the connection key), so that a
-  worker's announce never reaches a visitor at all. The LAN broadcast
-  (`broadcast_local`) has the same exposure on a shared LAN.

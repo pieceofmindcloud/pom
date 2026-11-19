@@ -1305,6 +1305,9 @@ enum EnrichResult {
 fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     if model.format.is_some() {
         // A Hugging Face folder: described from its config.json at discovery.
+        // Its identity is the folder's own (`current_metadata_identity`), so
+        // the catalog sees it as current and does not enrich it again.
+        model.metadata_identity = current_metadata_identity(model);
         return EnrichResult::Ready;
     }
     let path = PathBuf::from(&model.path);
@@ -3584,7 +3587,9 @@ mod part_naming_tests {
         assert_eq!(model.context_length, Some(262144));
         assert_eq!(model.quant.as_deref(), Some("modelopt"));
         assert_eq!(model.size_bytes, 2048);
-        assert!(matches!(enrich_model(&mut found[0].clone()), EnrichResult::Ready));
+        let mut enriched = found[0].clone();
+        assert!(matches!(enrich_model(&mut enriched), EnrichResult::Ready));
+        assert!(metadata_is_current(&enriched), "an enriched folder is current, never enriched again");
     }
 
     #[test]

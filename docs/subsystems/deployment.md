@@ -410,7 +410,12 @@ the quantization method, the weights' size) with `format: "safetensors"`.
 Only a plugin service whose `hf_architectures` names that `model_type` runs
 it, whole, with the folder as `model_path`; the Deploy screen hides folders
 from llama.cpp (`defaultEngineRunsModel`) and matches them by
-`hf_architectures` (`serviceRunsModel`). A folder is never sliced.
+`hf_architectures` (`serviceRunsModel`). A folder is never sliced (the
+slicing screen leaves it out) and the Models screen shows it with a
+`safetensors` badge, without the GGUF actions. The model provider downloads
+one with `folder: true` on `POST /api/ui/model-provider/downloads`: the
+folder's files (`model_provider::is_folder_file`) land in
+`<models folder>/<repo_id>/`.
 
 ## 1.7 Image model components
 

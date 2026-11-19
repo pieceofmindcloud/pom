@@ -16,6 +16,8 @@ export interface InferenceServiceEntry {
   code: string;
   name: string;
   architectures: string[];
+  /** Hugging Face `model_type`s whose folders (safetensors) it runs whole. */
+  hfArchitectures: string[];
   /** The settings its engine takes (the first machine that publishes them). */
   settings: EngineSetting[];
   /** The POM deployment settings that apply to its engine, as it declares them. */
@@ -55,6 +57,7 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
         code: service.plugin_code,
         name: service.name,
         architectures: [],
+        hfArchitectures: [],
         settings: [],
         pomSettings: [],
         nodeIds: [],
@@ -79,6 +82,9 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
       for (const setting of service.pom_settings ?? []) {
         if (!entry.pomSettings.includes(setting)) entry.pomSettings.push(setting);
       }
+      for (const architecture of service.hf_architectures ?? []) {
+        if (!entry.hfArchitectures.includes(architecture)) entry.hfArchitectures.push(architecture);
+      }
       for (const architecture of service.architectures ?? []) {
         if (!entry.architectures.includes(architecture)) entry.architectures.push(architecture);
       }
@@ -93,8 +99,19 @@ export function inferenceServiceCatalog(peers: PeerView[] | undefined): Inferenc
 
 /** Whether a whole model can run on the service: its architecture is one the
  *  engine declares. A model whose header gave no architecture is not offered. */
-export function serviceRunsModel(service: InferenceServiceEntry, architecture: string | null): boolean {
-  return architecture != null && service.architectures.includes(architecture);
+export function serviceRunsModel(
+  service: InferenceServiceEntry,
+  architecture: string | null,
+  format: string | null = null,
+): boolean {
+  if (architecture == null) return false;
+  if (format === "safetensors") return service.hfArchitectures.includes(architecture);
+  return service.architectures.includes(architecture);
+}
+
+/** Whether POM's own engine (llama.cpp) runs a whole model: GGUF files only. */
+export function defaultEngineRunsModel(format: string | null): boolean {
+  return format == null || format === "gguf";
 }
 
 /** Whether a slice set of `architecture` can run on the service as layer slices: it runs stages, and its

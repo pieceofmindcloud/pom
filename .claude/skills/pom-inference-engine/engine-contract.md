@@ -12,6 +12,7 @@ by the plugin code.
 {"id": "<code>", "kind": "inference", "name": "<Display>", "status": "ready|starting|installing|waiting|error",
  "version": "<runtime version>", "detail": "<= 190 chars, no secret>",
  "architectures": ["<GGUF general.architecture>", "..."],
+ "hf_architectures"?: ["<Hugging Face config.json model_type>", "..."],
  "settings": [{"key", "type": "number|integer|boolean|select", "label": {"en","pt-BR"},
                "description": {"en","pt-BR"}, "min"?, "max"?, "options"?, "placement"?: "pom"}],
  "stages"?: true, "vision"?: true,
@@ -20,7 +21,11 @@ by the plugin code.
 ```
 
 The deploy screen offers the service only for a model whose architecture is
-listed and only on machines that publish it. `settings` are the engine's, drawn
+listed and only on machines that publish it. `hf_architectures` opts the
+engine into Hugging Face model folders (`config.json` + `*.safetensors`,
+cataloged with `format: "safetensors"` and `architecture` = the folder's
+`model_type`): `engine.load.model_path` is then the folder. llama.cpp never
+gets a folder. `settings` are the engine's, drawn
 in the inspector and sent back in `engine.load.settings`; `pom_settings` names
 POM settings that apply to this engine's deployments.
 

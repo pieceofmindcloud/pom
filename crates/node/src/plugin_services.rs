@@ -74,6 +74,11 @@ pub(crate) struct PluginService {
     /// Kind `inference`: the model architectures whose drafter file its engine takes from the deployment.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub draft_architectures: Vec<String>,
+    /// Kind `inference`: the Hugging Face `model_type`s whose model folders
+    /// (safetensors, `catalog::describe_hf_folder`) its engine runs whole.
+    /// Empty: it runs GGUF files only (`architectures`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hf_architectures: Vec<String>,
     /// For a service of kind `inference`: its engine reads images through the
     /// deployment's vision projector (`mmproj_path`), so the deploy screen
     /// offers the projector for it.
@@ -513,6 +518,15 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
                 })
                 .unwrap_or_default(),
             settings: parse_settings(&entry["settings"]),
+            hf_architectures: entry["hf_architectures"]
+                .as_array()
+                .map(|list| {
+                    list.iter()
+                        .filter_map(slug)
+                        .take(MAX_ARCHITECTURES)
+                        .collect()
+                })
+                .unwrap_or_default(),
             draft_architectures: entry["draft_architectures"]
                 .as_array()
                 .map(|list| {

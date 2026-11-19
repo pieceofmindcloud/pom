@@ -1252,6 +1252,8 @@ pub(super) async fn run_apply(
             );
             Some(path.to_string())
         }
+        // A Hugging Face model folder carries its own MTP head; no GGUF sibling.
+        None if std::path::Path::new(&model_path).is_dir() => None,
         None => crate::catalog::find_mtp_draft_sibling(std::path::Path::new(&model_path)),
     };
 

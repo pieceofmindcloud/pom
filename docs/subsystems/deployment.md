@@ -401,6 +401,17 @@ difference is on the target, where the runtime asks the plugin to load the
 model instead of starting llama.cpp (`inference.md`, section 7.1); undeploying
 or removing the machine stops the runtime, which asks the plugin to unload.
 
+### 1.6.1 Hugging Face model folders
+
+The catalog also lists a folder holding `config.json` and `*.safetensors`
+(`catalog::scan_hf_dir`, read from the config alone: `model_type` as the
+architecture, layers and context at the top level or under `text_config`,
+the quantization method, the weights' size) with `format: "safetensors"`.
+Only a plugin service whose `hf_architectures` names that `model_type` runs
+it, whole, with the folder as `model_path`; the Deploy screen hides folders
+from llama.cpp (`defaultEngineRunsModel`) and matches them by
+`hf_architectures` (`serviceRunsModel`). A folder is never sliced.
+
 ## 1.7 Image model components
 
 An image model (a diffusion model, a text encoder and a VAE) is served by

@@ -2617,6 +2617,7 @@ mod tests {
             tp_rank: None,
             tp_size: None,
             capabilities: None,
+            format: None,
         }
     }
 

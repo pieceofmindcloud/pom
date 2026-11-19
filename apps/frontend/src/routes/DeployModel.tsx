@@ -74,7 +74,8 @@ import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
 import { fileSourceOn, tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
 import { evenSplit, isWholeRangeSplit, splitOverMarked, validEnds, wholeRangesOf, type SplitBalance } from "../lib/wholeRanges";
-import { inferenceServicesOf, serviceRunsModel, serviceCutsRanges,
+import { inferenceServicesOf, serviceRunsModel, defaultEngineRunsModel,
+  serviceCutsRanges,
   serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
   Badge,
@@ -438,7 +439,10 @@ export function DeployModel() {
    *  inference service, only the models its engine runs. */
   const allWholes = useMemo(() => wholeModelsOf(cluster.data?.peers), [cluster.data]);
   const wholes = useMemo(
-    () => (service ? allWholes.filter((entry) => serviceRunsModel(service, entry.architecture)) : allWholes),
+    () =>
+      service
+        ? allWholes.filter((entry) => serviceRunsModel(service, entry.architecture, entry.format))
+        : allWholes.filter((entry) => defaultEngineRunsModel(entry.format)),
     [allWholes, service],
   );
   /** The slicing rounds on offer - with an inference service, only those of

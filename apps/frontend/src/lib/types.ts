@@ -821,6 +821,8 @@ export interface PluginService {
   stage_ranges?: string[];
   /** Kind `inference`: the model architectures whose drafter file its engine takes from the deployment. */
   draft_architectures?: string[];
+  /** Kind `inference`: the Hugging Face `model_type`s whose model folders its engine runs whole. */
+  hf_architectures?: string[];
   /** Kind `inference`: the POM deployment settings that apply to its engine. */
   pom_settings?: PomSetting[];
   /** Kind `inference`: its engine reads images through the deployment's vision projector (`mmproj`). */
@@ -1149,6 +1151,9 @@ export interface MultipartPart {
 
 export interface DiscoveredModel {
   id: string;
+  /** `"safetensors"` for a Hugging Face model folder (`path` is the folder,
+   *  `architecture` its `model_type`); absent for a GGUF. */
+  format?: string | null;
   name: string;
   source: ModelSource;
   source_label: string;

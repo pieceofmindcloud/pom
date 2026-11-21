@@ -805,7 +805,7 @@ pub struct DirectoryBoard {
 
 /// What the board has for one request.
 #[derive(Debug, PartialEq)]
-pub enum BoardAnswer {
+pub(crate) enum BoardAnswer {
     Ready(Listed),
     /// Not filled yet (or too old to serve); a refresh was requested.
     Pending,
@@ -840,7 +840,7 @@ impl DirectoryBoard {
         at.is_none_or(|at| at.elapsed() >= INFO_REFRESH)
     }
 
-    pub fn own(&self) -> BoardAnswer {
+    pub(crate) fn own(&self) -> BoardAnswer {
         let slot = self.own.lock().expect("directory board own lock").clone();
         if Self::stale(slot.as_ref().map(|(at, _)| *at)) {
             self.wanted.notify_one();
@@ -853,7 +853,7 @@ impl DirectoryBoard {
 
     /// Keeps a network its principal published (already validated). Refused
     /// by a node that does not answer directory queries, or when full.
-    pub fn accept_publication(&self, network: crate::gateway::PublicNetworkView) -> bool {
+    pub(crate) fn accept_publication(&self, network: crate::gateway::PublicNetworkView) -> bool {
         let gathers = matches!(
             self.known
                 .lock()
@@ -894,7 +894,7 @@ impl DirectoryBoard {
         listed
     }
 
-    pub fn known(&self) -> BoardAnswer {
+    pub(crate) fn known(&self) -> BoardAnswer {
         let slot = self
             .known
             .lock()
@@ -929,7 +929,7 @@ impl DirectoryBoard {
 
     /// Stores a fresh board. `known` is `None` when this node does not answer
     /// directory queries. The list is cut to what one answer can carry.
-    pub fn publish(&self, own: Listed, known: Option<Listed>) {
+    pub(crate) fn publish(&self, own: Listed, known: Option<Listed>) {
         let now = Instant::now();
         *self.own.lock().expect("directory board own lock") = Some((now, own));
         *self.known.lock().expect("directory board known lock") =

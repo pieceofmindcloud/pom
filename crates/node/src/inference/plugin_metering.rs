@@ -214,6 +214,7 @@ impl StageMeter {
 
     /// A request this machine's engine served, with its answer rows as the
     /// later machine decodes them. `first` says this machine holds layer 0.
+    #[cfg(test)]
     pub(crate) fn served(
         &mut self,
         request: &Request,

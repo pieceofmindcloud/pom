@@ -283,8 +283,8 @@ pub fn forced_return_mode() -> Option<ReturnMode> {
         .to_ascii_lowercase()
         .as_str()
     {
-        "direct" | "direct" => Some(ReturnMode::Direct),
-        "ring" | "ring" => Some(ReturnMode::Ring),
+        "direct" => Some(ReturnMode::Direct),
+        "ring" => Some(ReturnMode::Ring),
         _ => None,
     }
 }

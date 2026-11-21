@@ -1,9 +1,11 @@
 name: Tests
 
-# Runs the test suites on every push to develop/main and on every pull request, on a
-# GitHub-hosted Ubuntu runner (CPU only, no GPU). The engine (pom-plugin-llama.cpp) and the
-# llama.cpp fork are public and fetched over HTTPS, so no secret is needed. Route tests use
-# `gateway::testkit`, never real UDP, so the suite is safe on a shared network.
+# Runs the test suites on pushes to develop/main and on pull requests, on a
+# GitHub-hosted Ubuntu runner (CPU only, no GPU). Each suite runs only when the change
+# touches something it depends on (the `changes` job); a manual run runs both. The
+# engine (pom-plugin-llama.cpp) and the llama.cpp fork are public and fetched over
+# HTTPS, so no secret is needed. Route tests use `gateway::testkit`, never real UDP,
+# so the suite is safe on a shared network.
 on:
   push:
     branches: [develop, main]
@@ -18,8 +20,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # What changed decides which suites run. The Rust build embeds no Markdown (only
+  # brand.json and files under assets/), so documentation alone never runs it. The
+  # frontend build embeds the guides, every AGENTS.md, the README and the subsystem docs
+  # (apps/frontend/scripts/build-docs.mjs), so those run the frontend suite.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust == 'true' }}
+      frontend: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.frontend == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'crates/**/!(*.md)'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain*'
+              - '.cargo/**'
+              - 'brand.json'
+              - 'assets/brand/**'
+              - 'assets/geo/**'
+              - '.github/workflows/test.yml'
+              - '.github/actions/llama-cache/**'
+            frontend:
+              - 'apps/frontend/**'
+              - 'docs/guides/**'
+              - 'docs/human/**'
+              - 'docs/subsystems/**'
+              - '**/AGENTS.md'
+              - 'README.md'
+              - 'brand.json'
+              - 'assets/brand/**'
+              - '.github/workflows/test.yml'
+
   rust:
     name: cargo test (workspace)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -49,6 +90,8 @@ jobs:
 
   frontend:
     name: frontend tests
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

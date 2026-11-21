@@ -116,10 +116,7 @@ impl AdminSessionStore {
         id
     }
 
-    pub(crate) fn validate(&mut self, session_id: &str, token: &str) -> bool {
-        self.validate_at(session_id, token, Instant::now())
-    }
-
+    #[cfg(test)]
     pub(crate) fn validate_at(&mut self, session_id: &str, token: &str, now: Instant) -> bool {
         self.principal_at(session_id, token, now).is_some()
     }

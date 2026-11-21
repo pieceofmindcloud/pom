@@ -651,15 +651,8 @@ async fn serve_connection(connection: quinn::Connection, router: axum::Router) -
             let mut router = router;
             let response = match tower::Service::call(&mut router, request).await {
                 Ok(response) => response,
-                Err(error) => {
-                    let mut send = send;
-                    let _ = send
-                        .send_response(http::Response::builder().status(500).body(()).unwrap())
-                        .await;
-                    let _ = send.send_data(Bytes::from(error.to_string())).await;
-                    let _ = send.finish().await;
-                    return;
-                }
+                // The router's error type is `Infallible`: it answers every request.
+                Err(error) => match error {},
             };
             let status = response.status();
             let headers = response.headers().clone();

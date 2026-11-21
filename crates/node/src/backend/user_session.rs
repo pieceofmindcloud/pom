@@ -49,13 +49,6 @@ impl SessionPrincipal {
     pub fn is_user(&self) -> bool {
         matches!(self, SessionPrincipal::User(_))
     }
-
-    pub fn user(&self) -> Option<&UserIdentity> {
-        match self {
-            SessionPrincipal::User(user) => Some(user),
-            SessionPrincipal::Operator => None,
-        }
-    }
 }
 
 /// The person, as the plugin that signed them in describes them.

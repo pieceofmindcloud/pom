@@ -119,12 +119,19 @@ impl IpcConnection {
         payload: Value,
         request_timeout: Duration,
     ) -> Result<Value> {
-        let id = self
-            .next_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-                next.checked_add(1)
-            })
-            .map_err(|_| anyhow::anyhow!("plugin host IPC identifiers exhausted"))?;
+        let mut id = self.next_id.load(Ordering::Relaxed);
+        loop {
+            let next = id
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("plugin host IPC identifiers exhausted"))?;
+            match self
+                .next_id
+                .compare_exchange_weak(id, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => break,
+                Err(current) => id = current,
+            }
+        }
         let (response_tx, mut response_rx) = oneshot::channel();
         lock_pending(&self.pending).insert(id, response_tx);
         let _pending_request = PendingRequest {

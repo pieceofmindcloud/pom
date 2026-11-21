@@ -1550,7 +1550,6 @@ struct P2pStackArgs {
 struct P2pStack {
     net: Arc<Network>,
     authority_signing_key: ed25519_dalek::SigningKey,
-    endpoint_id: String,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     network_chat: Arc<network_chat::NetworkChat>,
     tunnel_tx: mpsc::Sender<infer_tunnel::TunnelOutbound>,
@@ -1768,7 +1767,6 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     Ok(P2pStack {
         net,
         authority_signing_key,
-        endpoint_id,
         cluster_logs,
         network_chat,
         tunnel_tx,

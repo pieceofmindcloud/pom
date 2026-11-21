@@ -264,16 +264,6 @@ async fn require_signed_admin(
     })
 }
 
-/// A mutation that governs the network is signed by the principal itself. A
-/// secondary admin deploys models and nothing else.
-async fn require_signed_principal(
-    state: &crate::gateway::GatewayState,
-    auth: &InternalNodeAuth,
-) -> bool {
-    auth.principal()
-        .is_some_and(|issuer| crate::gateway::issuer_is_principal(state, issuer))
-}
-
 #[derive(Debug, Serialize)]
 struct AuthorityMemberView {
     node_id: String,
@@ -2093,7 +2083,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let lab = chain_lab();
         // A node that was away holds the chain from before the promotion.
-        let mut away = lab.node(&lab.other, NodeProfile::Worker).await;
+        let away = lab.node(&lab.other, NodeProfile::Worker).await;
         let old = away.admin_trust.chain_version();
         lab.promote(&lab.member.1);
         let new = lab.trust.chain_version();

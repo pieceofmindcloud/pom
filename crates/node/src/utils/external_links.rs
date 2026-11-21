@@ -27,6 +27,10 @@ pub fn is_external(url: &str) -> bool {
 
 /// Opens `url` in the system's default browser. Only web and mail addresses
 /// are handed over, never a local file or another scheme.
+#[cfg_attr(
+    not(any(windows, all(target_os = "linux", feature = "desktop"))),
+    allow(dead_code)
+)]
 pub fn open_in_browser(url: &str) {
     let Ok(parsed) = url::Url::parse(url) else {
         return;

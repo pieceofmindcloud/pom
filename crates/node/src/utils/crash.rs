@@ -104,7 +104,7 @@ mod imp {
         for (signal, _) in SIGNALS {
             unsafe {
                 let mut action: libc::sigaction = std::mem::zeroed();
-                action.sa_sigaction = on_fatal as usize;
+                action.sa_sigaction = on_fatal as *const () as usize;
                 action.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
                 libc::sigemptyset(&mut action.sa_mask);
                 libc::sigaction(signal, &action, std::ptr::null_mut());

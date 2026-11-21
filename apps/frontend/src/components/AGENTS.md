@@ -1114,10 +1114,7 @@ Backend endpoints touched directly: `POST /api/ui/unload`, `POST /api/ui/leave`,
 
 ## Defects noted
 
-- `PluginScreen.test.tsx` ("opens as soon as the plugin signals it finished
-  rendering") fails now and then in the full parallel `npx vitest run` and
-  passes when the file runs alone (seen twice on 2026-11-08, then 3 of 3 alone
-  each time): a timing assumption that does not hold under load.
+None at the moment.
 
 ## Maintaining this file
 

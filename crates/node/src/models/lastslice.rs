@@ -91,6 +91,7 @@ fn path_for(config_path: &Path) -> PathBuf {
 }
 
 /// Records the slice, and at which point of its life.
+#[cfg(test)]
 pub fn save(cfg: &NodeConfig, state: SliceState) -> Result<()> {
     save_at(&path(), cfg, state)
 }
@@ -138,10 +139,6 @@ fn write_annotation(p: &Path, annotation: &Annotation) -> Result<()> {
 /// leaving the network, stopping to reconfigure). Without this, a node emptied
 /// on request would come back serving on the next startup, undoing the
 /// decision of whoever emptied it.
-pub fn clear() {
-    clear_at(&path());
-}
-
 pub(crate) fn clear_at(p: &Path) {
     let _ = std::fs::remove_file(p);
     let _ = std::fs::remove_file(disable_path(p));
@@ -173,10 +170,6 @@ pub(crate) fn auto_resume_disabled_at(p: &Path) -> bool {
 
 /// Starts an explicit deployment and records the first attempt before any
 /// call to the supervisor or the native server.
-pub fn begin_new_attempt(cfg: &NodeConfig) -> Result<u32> {
-    begin_new_attempt_at(&path(), cfg)
-}
-
 pub(crate) fn begin_new_attempt_at(p: &Path, cfg: &NodeConfig) -> Result<u32> {
     let _ = std::fs::remove_file(disable_path(p));
     let annotation = Annotation {

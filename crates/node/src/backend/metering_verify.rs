@@ -430,7 +430,7 @@ async fn prompt_rows(port: u16, token: &str, tokens: &[i32]) -> Result<(Vec<f32>
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .map_err(|e| e.to_string())?;
-    let mut call = |payload: Vec<u8>| {
+    let call = |payload: Vec<u8>| {
         let mut frame = vec![1u8];
         frame.extend(payload);
         frame

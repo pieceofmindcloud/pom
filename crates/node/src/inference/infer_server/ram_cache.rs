@@ -217,6 +217,7 @@ impl KvRamCache {
         self.room_needed(bytes).is_some()
     }
 
+    #[cfg(test)]
     pub(super) fn contains(&self, sid: &str) -> bool {
         self.entries.contains_key(sid)
     }

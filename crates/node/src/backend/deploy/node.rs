@@ -1328,15 +1328,6 @@ pub(super) async fn refusal(response: Response) -> String {
     }
 }
 
-pub(super) async fn gateway_of(state: &GatewayState, node_id: &str) -> Option<String> {
-    state
-        .all_peers()
-        .await
-        .iter()
-        .find(|p| p.node_id == node_id)
-        .and_then(|p| state.gateway_base(p))
-}
-
 pub(super) async fn peer_of(
     state: &GatewayState,
     node_id: &str,

@@ -1133,6 +1133,7 @@ impl AdminTrust {
     }
 
     /// Adopts `incoming` as the principal's own copy would be adopted.
+    #[cfg(test)]
     pub(crate) fn reconcile(&self, incoming: AdminTrustDocument) -> Result<()> {
         self.reconcile_from(incoming, true).map(|_| ())
     }

@@ -771,8 +771,16 @@ flags on the command line.
 
 ## Tests in CI
 
-`.github/workflows/test.yml` runs on every push to `develop` and `main` and on every
-pull request, on a GitHub-hosted Ubuntu runner. The `rust` job installs `cmake`,
+`.github/workflows/test.yml` runs on pushes to `develop` and `main` and on pull
+requests, on a GitHub-hosted Ubuntu runner. A first `changes` job
+(`dorny/paths-filter`) decides which suites the change needs: the Rust job runs when
+something under `crates/` other than Markdown changes, or `Cargo.toml`/`Cargo.lock`,
+`.cargo/`, `brand.json`, `assets/brand/`, `assets/geo/` (the files the build embeds) or
+the workflow itself. The frontend job runs for `apps/frontend/`, the guides
+(`docs/guides/`, `docs/human/`), `docs/subsystems/`, any `AGENTS.md`, `README.md`,
+`brand.json` and `assets/brand/`, because `build-docs.mjs` embeds them in the bundle the
+tests import. Other documentation runs neither. A manual run (`workflow_dispatch`) runs
+both. A skipped job counts as passed. The `rust` job installs `cmake`,
 `clang`, `mold` and `libclang-dev`, prepares the llama.cpp fork through
 `.github/actions/llama-cache` (branch `pom`) and runs `cargo test --workspace --locked`
 on the CPU, with no feature flags. The `frontend` job runs `npm test` (vitest) in

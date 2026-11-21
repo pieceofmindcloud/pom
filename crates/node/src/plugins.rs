@@ -1206,6 +1206,7 @@ impl PluginRuntime {
         status
     }
 
+    #[cfg(test)]
     pub(crate) async fn persisted_state(&self) -> Option<PersistedPluginState> {
         self.persisted.lock().await.clone()
     }
@@ -3316,10 +3317,6 @@ impl PluginManager {
 
     pub(crate) fn fingerprint(&self) -> &Fingerprint {
         &self.fingerprint
-    }
-
-    pub(crate) fn service(&self) -> Arc<dyn LicenseService> {
-        self.service.clone()
     }
 
     /// Replaces the context handed to the plugin hosts and hands it again to those

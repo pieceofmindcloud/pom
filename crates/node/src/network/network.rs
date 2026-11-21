@@ -199,7 +199,7 @@ impl RelayGate {
     }
 
     /// Relays for pass holders too, checked against `trust`.
-    pub fn with_anonymous(
+    pub(crate) fn with_anonymous(
         self,
         anonymous: bool,
         trust: Arc<crate::admin_trust::AdminTrust>,

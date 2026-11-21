@@ -1138,6 +1138,7 @@ mod tests {
             pom_settings: Vec::new(),
             components: Vec::new(),
             workflows: Vec::new(),
+            acp: None,
         };
         assert_eq!(rag_plugin(&[service("rag", "ready")]), Some("qdrant"));
         assert_eq!(rag_plugin(&[service("rag", "starting")]), None);

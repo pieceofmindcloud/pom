@@ -484,6 +484,26 @@ under the machine's card with a connecting line, and in the machine's detail
 card (`components/PluginServices.tsx`). A plugin that does not know the
 operation answers with an error, which is ignored.
 
+A service of kind `acp_agent` announces an agent the Chat can talk to over
+the Agent Client Protocol (`pom-plugin-goose` is the first):
+
+```json
+{"id": "goose", "kind": "acp_agent", "name": "Goose", "status": "ready",
+ "version": "1.57.0", "acp": {"path": "/acp", "protocol_version": 1}}
+```
+
+`acp.path` is a path on the plugin's own upstream (`ui.upstream`), reached by
+the browser as `/api/ui/plugins/<code>/proxy<path>`: letters, digits and
+`/._-`, starting with `/`, no `..` segment, 2 to 128 bytes;
+`protocol_version` is the ACP major version (>= 1). An `acp_agent` entry
+without a valid `acp` is dropped; `acp` on any other kind is ignored. The node
+saves each running plugin's agents (`plugin_acp_agents:<code>` in `pom.db`,
+`PluginManager::acp_agents`) so the Chat keeps offering them while an
+on-demand plugin is stopped, with `status: "stopped"` (a value only this
+listing produces); choosing one opens the plugin. A plugin that is not
+installed has no agents, whatever was saved, and uninstalling it deletes the
+saved list. The pure merge is `plugin_services::chat_agents`.
+
 A service of kind `image` (the ComfyUI plugin's) also lists the image model
 components it serves now, `components: [{deploy_id, name, component, files,
 status, in_flight?}]`: `component` is `diffusion`, `text_encoder` or `vae`,

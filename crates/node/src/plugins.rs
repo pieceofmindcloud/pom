@@ -66,6 +66,9 @@ const DEVELOPMENT_INSTALL_SETTING_PREFIX: &str = "plugin_dev_install:";
 const GITHUB_REPOSITORIES_SETTING: &str = "plugin_github_repositories";
 const PREFERENCES_SETTING_PREFIX: &str = "plugin_preferences:";
 const UI_MANIFEST_SETTING_PREFIX: &str = "plugin_ui_manifest:";
+/// The last ACP agents a plugin announced, kept so the Chat can offer them
+/// (and wake the plugin) while its on-demand process is stopped.
+const ACP_AGENTS_SETTING_PREFIX: &str = "plugin_acp_agents:";
 /// `plugin_ui_asset:<code>:<path>`: the last copy of an asset the shell needs
 /// while the plugin's process is down (its i18n catalogs and menu icon), as the
 /// host answered `ui.asset`. See `PluginRuntime::shell_asset`.
@@ -3877,7 +3880,9 @@ impl PluginManager {
         })?;
         // Uninstalling a bundled plugin is the operator's choice: it is not put back.
         self.note_bundled_uninstall(code).await;
-        runtime.deactivate().await
+        runtime.deactivate().await?;
+        self.forget_acp_agents(code);
+        Ok(())
     }
 
     pub(crate) async fn refresh(&self, code: &str) -> Result<(), LicenseClientError> {
@@ -4116,6 +4121,57 @@ impl PluginManager {
                 running: status.running,
             })
             .collect()
+    }
+}
+
+impl PluginManager {
+    /// The ACP agents of this machine's plugins for the Chat
+    /// (`plugin_services::chat_agents`). Saves each running plugin's agents
+    /// when they change, and reads them back for stopped on-demand plugins.
+    pub(crate) async fn acp_agents(&self) -> Vec<crate::plugin_services::PluginService> {
+        let installed = self.installed_summaries().await;
+        let live = crate::plugin_services::node_services(self).await;
+        let mut saved = std::collections::BTreeMap::new();
+        for plugin in &installed {
+            let key = format!("{ACP_AGENTS_SETTING_PREFIX}{}", plugin.code);
+            if plugin.running {
+                let current: Vec<_> = crate::plugin_services::saved_agents(
+                    &live
+                        .iter()
+                        .filter(|s| s.plugin_code == plugin.code)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                );
+                if let Some(database) = &self.database {
+                    let stored = database
+                        .local_setting_json(&key)
+                        .ok()
+                        .flatten()
+                        .and_then(|text| serde_json::from_str::<Vec<crate::plugin_services::SavedAgent>>(&text).ok());
+                    if stored.as_ref() != Some(&current) {
+                        if let Err(error) = database.save_local_setting(&key, &current) {
+                            tracing::warn!(plugin_code = %plugin.code, %error, "ACP agents could not be saved");
+                        }
+                    }
+                }
+            } else if let Some(agents) = self.database.as_ref().and_then(|database| {
+                database
+                    .local_setting_json(&key)
+                    .ok()
+                    .flatten()
+                    .and_then(|text| serde_json::from_str::<Vec<crate::plugin_services::SavedAgent>>(&text).ok())
+            }) {
+                saved.insert(plugin.code.clone(), agents);
+            }
+        }
+        crate::plugin_services::chat_agents(&live, &saved, &installed)
+    }
+
+    /// Forgets the saved ACP agents of an uninstalled plugin.
+    fn forget_acp_agents(&self, code: &str) {
+        if let Some(database) = &self.database {
+            let _ = database.delete_local_setting(&format!("{ACP_AGENTS_SETTING_PREFIX}{code}"));
+        }
     }
 }
 

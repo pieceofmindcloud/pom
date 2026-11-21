@@ -97,6 +97,122 @@ pub(crate) struct PluginService {
     /// machine (`chat_image.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workflows: Vec<ImageWorkflow>,
+    /// For a service of kind `acp_agent`: where the plugin's upstream speaks
+    /// the Agent Client Protocol, for the Chat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acp: Option<AcpAgent>,
+}
+
+/// An ACP agent a plugin serves: `path` on its own upstream (`ui.upstream`),
+/// reached by the browser as `/api/ui/plugins/<code>/proxy<path>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub(crate) struct AcpAgent {
+    pub path: String,
+    pub protocol_version: u32,
+}
+
+/// Longest `acp.path` accepted.
+const MAX_ACP_PATH: usize = 128;
+
+/// `acp` of an `acp_agent` entry: a plain absolute path (letters, digits,
+/// `/._-`, no `..` segment, at most 128 bytes) and an ACP major version >= 1.
+fn parse_acp(entry: &Value) -> Option<AcpAgent> {
+    let path = entry["path"].as_str()?;
+    let plain = path.len() >= 2
+        && path.len() <= MAX_ACP_PATH
+        && path.starts_with('/')
+        && !path.starts_with("//")
+        && path.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))
+        && !path.split('/').any(|segment| segment == "..");
+    let protocol_version = u32::try_from(entry["protocol_version"].as_u64()?).ok()?;
+    (plain && protocol_version >= 1).then(|| AcpAgent {
+        path: path.to_owned(),
+        protocol_version,
+    })
+}
+
+/// What the node keeps of an agent while its on-demand plugin is stopped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub(crate) struct SavedAgent {
+    pub id: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub acp: AcpAgent,
+}
+
+/// The agents among `services`, as the node saves them.
+pub(crate) fn saved_agents(services: &[PluginService]) -> Vec<SavedAgent> {
+    services
+        .iter()
+        .filter_map(|service| {
+            Some(SavedAgent {
+                id: service.id.clone(),
+                name: service.name.clone(),
+                version: service.version.clone(),
+                acp: service.acp.clone()?,
+            })
+        })
+        .collect()
+}
+
+/// The Chat's agents: the live ones of running plugins, and the saved ones
+/// (status `stopped`) of installed on-demand plugins whose process is
+/// stopped. A plugin that is not installed has none, whatever was saved.
+pub(crate) fn chat_agents(
+    live: &[PluginService],
+    saved: &std::collections::BTreeMap<String, Vec<SavedAgent>>,
+    installed: &[crate::plugins::PluginSummary],
+) -> Vec<PluginService> {
+    let mut agents = Vec::new();
+    for plugin in installed {
+        if plugin.running {
+            agents.extend(
+                live.iter()
+                    .filter(|s| s.plugin_code == plugin.code && s.acp.is_some())
+                    .cloned(),
+            );
+        } else if plugin.lifecycle.is_on_demand() {
+            for agent in saved.get(&plugin.code).into_iter().flatten() {
+                agents.push(PluginService {
+                    plugin_code: plugin.code.clone(),
+                    id: agent.id.clone(),
+                    kind: "acp_agent".into(),
+                    name: agent.name.clone(),
+                    status: "stopped".into(),
+                    version: agent.version.clone(),
+                    acp: Some(agent.acp.clone()),
+                    ..PluginService::empty()
+                });
+            }
+        }
+    }
+    agents
+}
+
+impl PluginService {
+    fn empty() -> Self {
+        Self {
+            plugin_code: String::new(),
+            id: String::new(),
+            kind: String::new(),
+            name: String::new(),
+            status: String::new(),
+            version: None,
+            detail: None,
+            architectures: Vec::new(),
+            settings: Vec::new(),
+            stages: false,
+            stage_architectures: Vec::new(),
+            stage_ranges: Vec::new(),
+            draft_architectures: Vec::new(),
+            hf_architectures: Vec::new(),
+            vision: false,
+            pom_settings: Vec::new(),
+            components: Vec::new(),
+            workflows: Vec::new(),
+            acp: None,
+        }
+    }
 }
 
 /// A ComfyUI workflow the Chat can run: a deployment's built-in text to
@@ -495,6 +611,14 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
         if services.iter().any(|service| service.id == id) {
             continue;
         }
+        let acp = if kind == "acp_agent" {
+            match parse_acp(&entry["acp"]) {
+                Some(acp) => Some(acp),
+                None => continue,
+            }
+        } else {
+            None
+        };
         let stages = kind == "inference" && entry["stages"] == true;
         let vision = kind == "inference" && entry["vision"] == true;
         let pom_settings = parse_pom_settings(&kind, &entry["pom_settings"]);
@@ -567,6 +691,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             pom_settings,
             components,
             workflows,
+            acp,
         });
     }
     services
@@ -752,6 +877,92 @@ pub(crate) async fn plugin_peer_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn acp_entry(acp: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"services": [{"id": "goose", "kind": "acp_agent", "name": "Goose",
+            "status": "ready", "version": "1.60.2", "acp": acp}]})
+    }
+
+    #[test]
+    fn acp_agent_entries_keep_a_valid_path() {
+        let services = parse_services(
+            "goose",
+            &acp_entry(serde_json::json!({"path": "/acp", "protocol_version": 1})),
+        );
+        assert_eq!(
+            services[0].acp,
+            Some(AcpAgent { path: "/acp".into(), protocol_version: 1 })
+        );
+        let shown = serde_json::to_value(&services[0]).unwrap();
+        assert_eq!(shown["acp"]["path"], "/acp");
+    }
+
+    #[test]
+    fn acp_agent_entries_with_a_bad_path_are_dropped() {
+        let long = format!("/{}", "x".repeat(128));
+        for path in ["acp", "/a/../b", "/..", long.as_str(), "", "/a b", "/a?x"] {
+            let services = parse_services(
+                "goose",
+                &acp_entry(serde_json::json!({"path": path, "protocol_version": 1})),
+            );
+            assert!(services.is_empty(), "{path:?} was kept");
+        }
+        for acp in [
+            serde_json::Value::Null,
+            serde_json::json!({"path": "/acp", "protocol_version": 0}),
+            serde_json::json!({"path": "/acp"}),
+        ] {
+            assert!(parse_services("goose", &acp_entry(acp.clone())).is_empty(), "{acp}");
+        }
+    }
+
+    fn summary(code: &str, running: bool) -> crate::plugins::PluginSummary {
+        crate::plugins::PluginSummary {
+            code: code.into(),
+            version: Some("0.1.0".into()),
+            lifecycle: crate::plugin_ui::Lifecycle::OnDemand,
+            running,
+        }
+    }
+
+    fn live_goose() -> Vec<PluginService> {
+        parse_services(
+            "goose",
+            &acp_entry(serde_json::json!({"path": "/acp", "protocol_version": 1})),
+        )
+    }
+
+    #[test]
+    fn stopped_on_demand_plugin_keeps_its_agents_as_stopped() {
+        let saved = saved_agents(&live_goose());
+        assert_eq!(saved.len(), 1);
+        let mut by_plugin = std::collections::BTreeMap::new();
+        by_plugin.insert("goose".to_string(), saved);
+        let agents = chat_agents(&[], &by_plugin, &[summary("goose", false)]);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].status, "stopped");
+        assert_eq!(agents[0].acp.as_ref().unwrap().path, "/acp");
+        let running = chat_agents(&live_goose(), &by_plugin, &[summary("goose", true)]);
+        assert_eq!(running[0].status, "ready");
+    }
+
+    #[test]
+    fn agents_are_forgotten_when_the_plugin_is_removed() {
+        let mut by_plugin = std::collections::BTreeMap::new();
+        by_plugin.insert("goose".to_string(), saved_agents(&live_goose()));
+        assert!(chat_agents(&[], &by_plugin, &[]).is_empty());
+        assert!(chat_agents(&live_goose(), &by_plugin, &[]).is_empty());
+    }
+
+    #[test]
+    fn acp_is_ignored_on_other_kinds() {
+        let answer = serde_json::json!({"services": [{"id": "rag", "kind": "rag", "name": "Q",
+            "status": "ready", "acp": {"path": "/acp", "protocol_version": 1}}]});
+        let services = parse_services("qdrant", &answer);
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].acp, None);
+        assert!(serde_json::to_value(&services[0]).unwrap().get("acp").is_none());
+    }
 
     #[test]
     fn components_are_parsed_from_an_image_service() {

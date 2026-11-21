@@ -412,7 +412,9 @@ running host: `deployment.started` comes from the deploy and redeploy handlers,
 `model.serving`/`model.stopped` from `spawn_serving_watcher`. `plugin.installed`/`plugin.updated`/`plugin.removed` come
 from `spawn_installed_watcher` (a 5 s diff of `installed_summaries`, so every
 install path is covered), and `plugin_host_api::plugins` serves the same summary
-to plugins at `GET /api/plugin-host/plugins`. Batch license
+to plugins at `GET /api/plugin-host/plugins`. `PluginManager::acp_agents` merges the live `acp_agent`
+services with the ones saved under `plugin_acp_agents:<code>` for stopped
+on-demand plugins (`plugin_services::chat_agents`); `deactivate` forgets them. Batch license
 activation validates once, then activates/installs each granted code separately.
 Plugin features come from the manifest, NOT from the license. The server's public
 catalog remains the commercial storefront; `GET /api/ui/plugins` publishes the local

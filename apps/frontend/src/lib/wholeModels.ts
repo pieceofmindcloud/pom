@@ -27,6 +27,8 @@ export interface WholeModelEntry {
   size_bytes: number;
   quant: string | null;
   architecture: string | null;
+  /** `"safetensors"` for a Hugging Face folder; `null` for a GGUF. */
+  format: string | null;
   /** `<arch>.context_length` from the header: the largest `n_ctx` the model takes. */
   context_length: number | null;
   mmproj_path: string | null;
@@ -97,6 +99,7 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
           size_bytes: model.size_bytes,
           quant: model.quant,
           architecture: model.architecture,
+          format: model.format ?? null,
           context_length: model.context_length ?? null,
           mmproj_path: model.mmproj_path ?? null,
           mmproj_candidates: candidates,

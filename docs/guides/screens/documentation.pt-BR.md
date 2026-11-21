@@ -8,7 +8,7 @@ order: 320
 ---
 
 :::lead
-Documentação tem duas metades. **Guias** são escritos para pessoas: como o POM funciona, um guia por tela, as configurações da implantação e como cada parte do código pensa. **Referência** é a documentação viva do repositório, escrita para quem muda o código.
+Documentação tem duas metades. **Guias** são escritos para pessoas: como o PoM funciona, um guia por tela, as configurações da implantação e como cada parte do código pensa. **Referência** é a documentação viva do repositório, escrita para quem muda o código.
 :::
 
 ![A tela Documentação com a aba Guias aberta no primeiro guia.](../images/pt-BR/documentation.webp)

@@ -519,6 +519,7 @@ mod tests {
             skip_split: true,
             merge: None,
             n_gpu_layers: gpu,
+            gpus: None,
             offload_kqv: kqv,
             inference_role: None,
             no_embeddings: None,

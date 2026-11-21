@@ -499,6 +499,30 @@ pub(crate) async fn sign_vouches(state: &GatewayState) -> Vec<crate::membership:
             newest.insert(peer.node_id.clone(), (now, role));
         }
     }
+    // An instance of a member (`crate::instances`): the host signed that the
+    // node is its own, so it joins with the host's role - an admin host's
+    // instance as a worker - for as long as the host is a member. A host
+    // with a ban gets no vouch for its instances, which then age out.
+    for peer in state.network.alive_peers().await {
+        let Some(cert) = peer.instance.as_ref() else {
+            continue;
+        };
+        if newest.contains_key(&peer.node_id)
+            || !cert.verifies_for(&peer.node_id)
+            || state.admin_trust.revoked_node_at(&peer.node_id).is_some()
+            || state.admin_trust.revoked_node_at(&cert.host_node_id).is_some()
+        {
+            continue;
+        }
+        let host_role = if crate::admin_trust::is_admin_key(&document, &cert.host_node_id, &cert.host_pubkey) {
+            Some(crate::config::EnrollmentRole::Worker)
+        } else {
+            newest.get(&cert.host_node_id).map(|(_, role)| *role)
+        };
+        if let Some(role) = host_role {
+            newest.insert(peer.node_id.clone(), (now, role));
+        }
+    }
     let mut out = Vec::new();
     for (node_id, (admitted_at, role)) in newest {
         match crate::membership::sign_vouch(

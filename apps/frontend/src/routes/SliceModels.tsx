@@ -54,7 +54,8 @@ export function SliceModels() {
   const invalidate = useInvalidate();
   const pomDevMode = node.data?.pom_dev_mode === true;
 
-  const models = (catalog.data?.models ?? []).filter(isWholeModel);
+  // Only GGUF files are sliced; a Hugging Face folder runs whole.
+  const models = (catalog.data?.models ?? []).filter((model) => isWholeModel(model) && model.format !== "safetensors");
   const [path, setPath] = useState(params.get("path") ?? "");
   const [tpSize, setTpSize] = useState("2");
   const [plan, setPlan] = useState<TpSlicePlan | null>(null);

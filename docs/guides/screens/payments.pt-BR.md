@@ -16,11 +16,11 @@ Pagamentos é onde o principal da rede decide se os visitantes pagam pela infer�
 
 :::steps
 ### Defina os preços
-Cada modelo ganha um preço por 1000 tokens de entrada e 1000 tokens de saída, em créditos. Um modelo sem preço continua gratuito. Um preço definido numa implantação (Implantar, configurações do POM) substitui o daqui quando ela sobe.
+Cada modelo ganha um preço por 1000 tokens de entrada e 1000 tokens de saída, em créditos. Um modelo sem preço continua gratuito. Um preço definido numa implantação (Implantar, configurações do PoM) substitui o daqui quando ela sobe.
 ### Ligue a cobrança
 Escolha **Cobrar visitantes** e salve. Os visitantes passam a chegar aos modelos só através de um membro da rede, que os cobra. Se um visitante roda uma versão antiga que não faz isso, a tela o lista antes e pergunta de novo: ele perde o acesso até atualizar.
 ### Dê crédito
-O crédito é pré-pago. Depois que a rede de um visitante pagar você fora do POM, credite a conta dela aqui, aprove o pedido de crédito dela, ou digite um valor ao aprovar a admissão.
+O crédito é pré-pago. Depois que a rede de um visitante pagar você fora do PoM, credite a conta dela aqui, aprove o pedido de crédito dela, ou digite um valor ao aprovar a admissão.
 :::
 
 :::note Uma conta por rede visitante

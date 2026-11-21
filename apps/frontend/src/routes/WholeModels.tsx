@@ -119,6 +119,9 @@ export function ModelRow({
   const { t } = useI18n();
   const mmprojName = optionalBasename(model.mmproj_path);
   const [linkOpen, setLinkOpen] = useState(false);
+  // A Hugging Face folder runs whole on a plugin engine: no projector link,
+  // no GGUF transfer, and deleting a folder is left to the operator.
+  const folder = model.format === "safetensors";
 
   return (
     <>
@@ -131,6 +134,11 @@ export function ModelRow({
           {model.quant && (
             <Badge mono tone="neutral">
               {model.quant}
+            </Badge>
+          )}
+          {folder && (
+            <Badge mono tone="neutral">
+              safetensors
             </Badge>
           )}
         </div>
@@ -153,7 +161,7 @@ export function ModelRow({
         ) : (
           <span className="text-[0.78rem] text-faint">{t("models.mmprojNone")}</span>
         )}
-        {!isDemoUser() && (
+        {!isDemoUser() && !folder && (
           <Button size="sm" variant="ghost" className="ml-2 h-6 px-2 text-[0.68rem]" onClick={() => setLinkOpen(true)}>
             {t("sidecars.linkTitle")}
           </Button>
@@ -165,7 +173,7 @@ export function ModelRow({
       </td>
       <td className="whitespace-nowrap px-5 py-3.5">
         {/* A demonstration visitor sees the catalog, not its actions. */}
-        <div className={isDemoUser() ? "hidden" : "flex shrink-0 items-center gap-2"}>
+        <div className={isDemoUser() || folder ? "hidden" : "flex shrink-0 items-center gap-2"}>
           {!model.multipart && <SendToSelect path={model.path} name={model.name} />}
           <Button
             size="sm"

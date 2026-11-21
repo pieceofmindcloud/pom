@@ -38,7 +38,7 @@ import {
 import { rateSpeed } from "../lib/peerSpeed";
 import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
-import { sumVram } from "../lib/gpu";
+import { servedSystem, sumVram } from "../lib/gpu";
 import { layerPlacement, warnsLayersOnCpu, type LayerPlacement } from "../lib/layerPlacement";
 import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView, PluginService, RoutingEdge } from "../lib/types";
 import { RouteRttLabel } from "./RouteRttLabel";
@@ -51,6 +51,9 @@ export type EdgeState = "principal" | "paralela" | "inativa";
  *  an edge may not be in use and still be a ready path. */
 /** Edge that goes through a relay. */
 const RELAY_EDGE_STYLE = { className: "fill-none stroke-relay", strokeWidth: "4", strokeDasharray: "10 4", markerEnd: "url(#route-arrow-relay)" };
+/** Edge between two processes of one machine (a host and its instances): the
+ *  hidden state crosses the loopback, RTT zero. Dotted, never the network's line. */
+export const LOCAL_EDGE_STYLE = { className: "fill-none stroke-sky", strokeWidth: "3", strokeDasharray: "1 7", markerEnd: undefined };
 
 export function edgeStyle(state: EdgeState) {
   if (state === "principal") {
@@ -193,7 +196,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
     observer.observe(element);
     return () => observer.disconnect();
   }, [compact, onMeasure]);
-  const system = range.node?.system;
+  const system = servedSystem(range.node?.system, range.node?.config);
   /*
    * A machine may have more than one card, and the miniature card showed only
    * the first: in a box with two RTXs, half of the VRAM vanished from the screen and the
@@ -622,8 +625,9 @@ export function ModelNetworkCanvas({
           const state: EdgeState = selectedEdgeIds.has(id) ? "principal" : candidateIds.has(id) ? "paralela" : "inativa";
           // Edge through a relay: strong orange, whatever the state - it is
           // the cause of the slowness and calls for a route review.
-          const style = rttByPair.get(`${edge.from_node_id}:${edge.to_node_id}`)?.relayed ? RELAY_EDGE_STYLE : edgeStyle(state);
-          return <path key={id} data-relayed={style === RELAY_EDGE_STYLE ? "true" : undefined} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd} />;
+          const pair = rttByPair.get(`${edge.from_node_id}:${edge.to_node_id}`);
+          const style = pair?.relayed ? RELAY_EDGE_STYLE : pair?.transport === "local" ? LOCAL_EDGE_STYLE : edgeStyle(state);
+          return <path key={id} data-relayed={style === RELAY_EDGE_STYLE ? "true" : undefined} data-local={style === LOCAL_EDGE_STYLE ? "true" : undefined} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} strokeLinecap={style === LOCAL_EDGE_STYLE ? "round" : undefined} markerEnd={style.markerEnd} />;
         })}
         {gatewayPosition && terminalRanges.map((range) => {
           const geometry = gatewayRouteGeometry(positionOf(range, ranges.indexOf(range)), gatewayPosition, sizeOf(keyFor(range)));

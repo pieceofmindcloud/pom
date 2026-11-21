@@ -422,6 +422,7 @@ pub(super) async fn run(
                 end_layer: step.end_layer,
                 target_node_id: step.target_node_id.clone(),
                 n_gpu_layers: None,
+                gpus: None,
                 offload_kqv: None,
                 inference_role: step.inference_role,
             })
@@ -834,6 +835,8 @@ pub struct PerNodeParams {
     #[serde(default)]
     pub n_gpu_layers: Option<u32>,
     #[serde(default)]
+    pub gpus: Option<crate::config::GpuSet>,
+    #[serde(default)]
     pub offload_kqv: Option<bool>,
 }
 
@@ -885,6 +888,9 @@ impl RedeployRequest {
             if let Some(adj) = self.per_node.get(&n.node_id) {
                 if let Some(g) = adj.n_gpu_layers {
                     cfg.n_gpu_layers = g;
+                }
+                if adj.gpus.is_some() {
+                    cfg.gpus = adj.gpus;
                 }
                 if let Some(k) = adj.offload_kqv {
                     cfg.offload_kqv = k;
@@ -1176,6 +1182,9 @@ pub(super) async fn run_redeploy(
             if let Some(g) = adjustment.n_gpu_layers {
                 params.n_gpu_layers = g;
             }
+            if adjustment.gpus.is_some() {
+                params.gpus = adjustment.gpus;
+            }
             if let Some(k) = adjustment.offload_kqv {
                 params.offload_kqv = k;
             }
@@ -1369,6 +1378,9 @@ pub(super) async fn run_redeploy_in_place(
         if let Some(adjustment) = req.per_node.get(&no.node_id) {
             if let Some(g) = adjustment.n_gpu_layers {
                 params.n_gpu_layers = g;
+            }
+            if adjustment.gpus.is_some() {
+                params.gpus = adjustment.gpus;
             }
             if let Some(k) = adjustment.offload_kqv {
                 params.offload_kqv = k;

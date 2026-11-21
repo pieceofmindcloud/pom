@@ -77,6 +77,13 @@ pub struct NodeInfo {
     /// Raw operator-pinned address (`Config.advertise_addr`), for pre-filling
     /// the edit form — `None` means "nothing pinned," not "unknown."
     pub advertise_addr: Option<String>,
+    /// `Config.advertise_only`: offer peers only the pinned address.
+    #[serde(default)]
+    pub advertise_only: bool,
+    /// The saved `advertise_only` asks for a different endpoint bind than this
+    /// run has: it lands on the next start.
+    #[serde(default)]
+    pub advertise_only_restart: bool,
     /// What this node actually puts in `Announce.addr` right now
     /// (`Network::announce_addr()`, full `host:port`): the pin if set, else
     /// a peer-observed public address, else the `0.0.0.0:<port>` "ask the
@@ -337,6 +344,9 @@ pub(super) async fn node_info(
         detached: state.network.is_detached(),
         node_name,
         advertise_addr,
+        advertise_only: state.network.advertise_only_asked(),
+        advertise_only_restart: crate::discovery::held_bind_ip(&state.network).is_some()
+            != state.network.bind_held(),
         effective_address: state.network.announce_addr(),
         quic_enabled,
         quic_authority,
@@ -1574,6 +1584,9 @@ pub struct SaveAdvertiseAddrRequest {
     /// Empty means "clear the pin" — same convention as `SavePathsRequest.shard_dir`.
     #[serde(default)]
     pub advertise_addr: String,
+    /// Offer peers only this address; absent keeps the saved choice.
+    #[serde(default)]
+    pub advertise_only: Option<bool>,
 }
 
 /// Pin (or clear) the address this node advertises to peers, live — no
@@ -1601,16 +1614,26 @@ pub(super) async fn save_advertise_addr(
     {
         let mut cfg = state.auth.write().await;
         cfg.advertise_addr = normalized.clone();
+        if let Some(only) = req.advertise_only {
+            cfg.advertise_only = only;
+        }
         if let Err(e) = cfg.save() {
             return bad_request(format!("could not write pom.json: {e}"));
         }
     }
 
     state.network.set_advertise_addr(normalized.as_deref());
+    if let Some(only) = req.advertise_only {
+        state.network.set_advertise_only(only);
+    }
     info!("advertised address updated from the interface: {normalized:?}");
+    let restart_needed =
+        crate::discovery::held_bind_ip(&state.network).is_some() != state.network.bind_held();
 
     Json(json!({
         "advertise_addr": normalized,
+        "advertise_only": state.network.advertise_only_asked(),
+        "advertise_only_restart": restart_needed,
         "effective_address": state.network.announce_addr(),
     }))
     .into_response()
@@ -2126,7 +2149,7 @@ pub(super) async fn network_rtt(
             measurements: Vec::new(),
         });
     }
-    let mut measurements = local_rtt_measurements(&state);
+    let mut measurements = local_rtt_measurements(&state).await;
     measurements.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
 
     Json(RttReport {
@@ -3124,6 +3147,32 @@ pub(super) async fn chat_telemetry(
         Vec::new()
     };
 
+    // Two processes of one machine (a host and its instances,
+    // `crate::instances`) talk over the loopback: their hop is zero, and the
+    // panel draws it apart (`transport: "local"`).
+    let machines: HashMap<String, String> = state
+        .all_peers()
+        .await
+        .into_iter()
+        .map(|peer| {
+            let machine = crate::instances::machine_of(&peer.node_id, peer.instance.as_ref());
+            (peer.node_id, machine)
+        })
+        .collect();
+    for measurement in &mut measurements {
+        let same = match (
+            machines.get(&measurement.from_node_id),
+            machines.get(&measurement.to_node_id),
+        ) {
+            (Some(from), Some(to)) => from == to && measurement.from_node_id != measurement.to_node_id,
+            _ => false,
+        };
+        if same {
+            measurement.rtt_ms = 0.0;
+            measurement.transport = "local".into();
+            measurement.relayed = false;
+        }
+    }
     measurements.sort_by(|a, b| {
         a.from_node_id
             .cmp(&b.from_node_id)
@@ -3434,6 +3483,21 @@ pub(super) async fn clear_chat_history(
     }
 }
 
-pub(super) fn local_rtt_measurements(state: &GatewayState) -> Vec<crate::route::RttMeasurement> {
-    state.network.rtts.fresh_snapshot()
+/// The RTTs this node measured, with the peers of this machine (the host and
+/// its instances, `crate::instances`) at zero over the `local` transport: the
+/// hidden state crosses the loopback, and the panel draws that hop apart.
+pub(super) async fn local_rtt_measurements(state: &GatewayState) -> Vec<crate::route::RttMeasurement> {
+    let mut measurements = state.network.rtts.fresh_snapshot();
+    for peer in state.network.alive_peers().await {
+        if peer.node_id == state.network.node_id || !peer.on_this_machine() {
+            continue;
+        }
+        measurements.retain(|m| m.target_node_id != peer.node_id);
+        measurements.push(crate::route::RttMeasurement {
+            target_node_id: peer.node_id.clone(),
+            rtt_ms: 0.0,
+            transport: "local".into(),
+        });
+    }
+    measurements
 }

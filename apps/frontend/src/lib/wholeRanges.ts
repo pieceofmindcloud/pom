@@ -9,6 +9,8 @@ export interface WholeRange {
   node_id: string;
   start_layer: number;
   end_layer: number;
+  /** The machine's GPUs for this range; absent = all of them. */
+  gpus?: number[];
 }
 
 /** True when the rows split the whole model over machines that each hold it:
@@ -21,7 +23,12 @@ export function isWholeRangeSplit(rows: DeploySelection[], holders: string[], to
 }
 
 export function wholeRangesOf(rows: DeploySelection[]): WholeRange[] {
-  return rows.map((row) => ({ node_id: row.target_node_id, start_layer: row.start_layer, end_layer: row.end_layer }));
+  return rows.map((row) => ({
+    node_id: row.target_node_id,
+    start_layer: row.start_layer,
+    end_layer: row.end_layer,
+    ...(row.gpus ? { gpus: row.gpus } : {}),
+  }));
 }
 
 /** The layer ends a range may stop at: the GGUF's cuts when known (the plan's
@@ -163,6 +170,7 @@ export function splitOverMarked(
     return {
       ...row,
       n_gpu_layers: previous?.n_gpu_layers ?? null,
+      ...(previous?.gpus ? { gpus: previous.gpus } : {}),
       offload_kqv: previous?.offload_kqv ?? null,
       ...(previous?.inference_role ? { inference_role: previous.inference_role } : {}),
     };

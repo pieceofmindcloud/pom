@@ -401,6 +401,29 @@ difference is on the target, where the runtime asks the plugin to load the
 model instead of starting llama.cpp (`inference.md`, section 7.1); undeploying
 or removing the machine stops the runtime, which asks the plugin to unload.
 
+### 1.6.1 Hugging Face model folders
+
+The catalog also lists a folder holding `config.json` and `*.safetensors`
+(`catalog::scan_hf_dir`, read from the config alone: `model_type` as the
+architecture, layers and context at the top level or under `text_config`,
+the quantization method, the weights' size) with `format: "safetensors"`.
+Only a plugin service whose `hf_architectures` names that `model_type` runs
+it, whole, with the folder as `model_path`; the Deploy screen hides folders
+from llama.cpp (`defaultEngineRunsModel`) and matches them by
+`hf_architectures` (`serviceRunsModel`). A folder is never sliced (the
+slicing screen leaves it out) and the Models screen shows it with a
+`safetensors` badge, without the GGUF actions. The model provider downloads
+one with `folder: true` on `POST /api/ui/model-provider/downloads`: the
+folder's files (`model_provider::is_folder_file`) land in
+`<models folder>/<repo_id>/`. A service that lists the folder's `model_type`
+in `stage_ranges` serves ranges of it, one stage per machine, each machine
+from its own copy of the folder: the apply reads the architecture from the
+folder's `config.json` (`plugin_cuts_range`) and `engine.load` gets the
+folder with its `range` (`plugin_engine::file_is_whole_model`). The deploy survey's
+`layer_options` for a folder offer every whole layer as a cut, the weights
+costed evenly per layer (`jobs_apply::folder_layer_options`): the folder has
+no GGUF layout to read.
+
 ## 1.7 Image model components
 
 An image model (a diffusion model, a text encoder and a VAE) is served by
@@ -575,6 +598,25 @@ target_node_id, n_gpu_layers, offload_kqv }` is validated by position:
 
 - **An empty `target_node_id` is a refusal, not an invitation** for the node
   to choose.
+- **`gpus`** (a `config::GpuSet`, JSON `[0, 1]`, the node's own GPU indices)
+  says which of the machine's GPUs the range runs on; absent = all of them.
+  It travels like `n_gpu_layers`: `SelectedSlice`/`WholeRangeSelection` ->
+  `PeerOverrides` -> `Step` -> `LaunchTarget` -> `RuntimeParams.gpus` ->
+  `NodeConfig.gpus`, and in `NodeOverrides`/`PerNodeParams` for a redeploy.
+  llama.cpp loads the model only on those devices (`EngineConfig.devices`,
+  `runtime::device_picks`: each index becomes its vendor and its position
+  among that vendor's cards; the engine matches the ggml devices by backend
+  and description, `picked_device_indices`). A plugin's engine receives only
+  those GPUs in `engine.load` (`plugin_engine::chosen_gpus`). The plan's
+  machines carry their `gpus` (index, name, VRAM) for the Machines tab.
+  The process-wide `pom.json` `gpus` still bounds what the node sees at all.
+- **The same machine twice** (for example two ranges on two GPUs of one
+  machine, or an AMD and an NVIDIA card under an engine that runs one
+  architecture at a time): a node serves one range, so the machine adds an
+  **instance** (`crate::instances`, `operations.md`) and the second range goes
+  to it like to any other machine, with its own `gpus`. `MachineView.machine_id`
+  (the host's id for an instance) tells the screens which nodes share a
+  machine: their hop crosses the loopback and is drawn dotted at RTT 0.
 - **Machine with `n_gpu_layers`/`offload_kqv`**: only what is a property of the
   hardware travels per machine. `offload_kqv` is only the GPU-versus-RAM
   boolean, and when it stays on the GPU the cache follows the layer that holds

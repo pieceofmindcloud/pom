@@ -5,7 +5,7 @@ adjacent slices back into a single file. It lives in `crates/node/src/models/`
 (`catalog.rs`, `plan.rs`, `splitter.rs`, `model.rs`, `lastslice.rs`) and is
 consumed by `crates/node/src/backend/` (`webui/`, `deploy/`, `gateway/`). The
 GGUF reader is the engine's `gguf` module: it lives in `llama-engine` (the
-private `pom-plugin-llama.cpp` repository) and `crates/node/src/main.rs`
+public `pom-plugin-llama.cpp` repository) and `crates/node/src/main.rs`
 re-exports it, which is why the node code writes `crate::gguf::`. Slicing is
 local and on demand: each peer extracts
 its own range from its own copy of the GGUF - no weight travels over the

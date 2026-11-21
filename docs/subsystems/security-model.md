@@ -161,6 +161,16 @@ decision 5: no compatibility bridge), together with the request route
 carried: the relay passes (`relay_pass.rs`) a member needs to dial the
 network's visitor relays.
 
+**Instances** (`crate::instances`): a node may run more nodes of its own
+machine, each with its own key. Its announce carries an
+`InstanceCertificate` the host signed with its node key (`pom-instance/v1`,
+host id and public key, instance id, time). `sign_vouches` signs such a peer a
+vouch when the certificate verifies (`SHA256(host_pubkey) == host_node_id`, the
+signature names this instance) and the host is a member: with the host's
+roster role, or `worker` when the host is an admin. No admission request is
+made; a revocation of the host or of the instance stops the vouch, which then
+ages out. An instance never runs instances of its own.
+
 ## Revocation
 
 A ban is a revocation entry `{net, sub, sub_key, revoked_at, issuer,

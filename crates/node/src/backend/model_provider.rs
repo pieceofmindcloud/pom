@@ -88,6 +88,21 @@ pub(crate) struct DownloadRequest {
     /// configured folder, as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
+    /// A file of a Hugging Face model folder (safetensors weights, its
+    /// `config.json`, tokenizer and template files), saved under
+    /// `<destination>/<repo_id>/` so the catalog lists the folder as one
+    /// model (`catalog::scan_hf_dir`). Absent or false: a GGUF file, as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub folder: bool,
+}
+
+/// The files of a Hugging Face model folder the downloader accepts: the
+/// weights, the configuration, the tokenizer and the chat template.
+pub(crate) fn is_folder_file(filename: &str) -> bool {
+    let lower = filename.to_ascii_lowercase();
+    [".safetensors", ".json", ".jinja", ".txt", ".model", ".tiktoken"]
+        .iter()
+        .any(|extension| lower.ends_with(extension))
 }
 
 /// `?node_id=` on the download routes that name a download by id, and on the
@@ -113,7 +128,14 @@ impl DownloadRequest {
             .map(validate_revision)
             .transpose()?;
         let filename = validate_filename(&self.filename)?;
-        if !filename.to_ascii_lowercase().ends_with(".gguf") {
+        if self.folder {
+            if !is_folder_file(&filename) {
+                return Err(HfError::InvalidInput {
+                    field: "filename".into(),
+                    message: "not a file of a Hugging Face model folder".into(),
+                });
+            }
+        } else if !filename.to_ascii_lowercase().ends_with(".gguf") {
             return Err(HfError::InvalidInput {
                 field: "filename".into(),
                 message: "only GGUF files can be added to the catalog".into(),
@@ -738,6 +760,11 @@ async fn start_one(state: GatewayState, request: DownloadRequest) -> Response {
             "the models folder is not configured on this machine".into(),
         );
     };
+    let destination = if request.folder {
+        destination.join(&identity.repo_id)
+    } else {
+        destination
+    };
     if let (Some(size), Some(free)) = (file.size_bytes, folder_free_bytes(&destination).await) {
         if free < size {
             return conflict(
@@ -890,6 +917,7 @@ async fn retry_download(
         node_id: None,
         extra_files: Vec::new(),
         destination,
+        folder: false,
     };
     let response = start_download(ConnectionAuth, State(state), Json(request)).await;
     // The new attempt replaces the old row: "Try again" used to add a second
@@ -1970,6 +1998,7 @@ mod tests {
                 node_id: Some("someone-else".into()),
                 extra_files: Vec::new(),
                 destination: None,
+                folder: false,
             }),
         )
         .await;
@@ -2076,6 +2105,7 @@ mod tests {
                 node_id: None,
                 extra_files: vec!["model.gguf".into(), "mmproj.gguf".into()],
                 destination: None,
+                folder: false,
             }),
         )
         .await;
@@ -2113,6 +2143,7 @@ mod tests {
                 node_id: None,
                 extra_files: Vec::new(),
                 destination: None,
+                folder: false,
             }),
         )
         .await;
@@ -2142,6 +2173,7 @@ mod tests {
             node_id: None,
             extra_files: Vec::new(),
             destination: None,
+            folder: false,
         };
 
         assert_eq!(valid.identity().unwrap().repo_id, "Qwen/model");
@@ -2264,4 +2296,25 @@ mod tests {
     fn page_size_is_bounded() {
         assert_eq!(Some(1000usize).unwrap().clamp(1, MAX_SEARCH_PAGE_SIZE), 50);
     }
+
+    #[test]
+    fn a_folder_download_takes_the_files_of_a_hugging_face_model_folder() {
+        let request = |filename: &str, folder: bool| DownloadRequest {
+            repo_id: "owner/model".into(),
+            revision: None,
+            filename: filename.into(),
+            quantization: None,
+            node_id: None,
+            extra_files: Vec::new(),
+            destination: None,
+            folder,
+        };
+        assert!(request("model-00001-of-00002.safetensors", true).identity().is_ok());
+        assert!(request("config.json", true).identity().is_ok());
+        assert!(request("chat_template.jinja", true).identity().is_ok());
+        assert!(request("pytorch_model.bin", true).identity().is_err());
+        assert!(request("model.safetensors", false).identity().is_err());
+        assert!(request("model.gguf", false).identity().is_ok());
+    }
+
 }

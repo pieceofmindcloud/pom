@@ -8,7 +8,7 @@ order: 230
 ---
 
 :::lead
-Network participants lists the machines this one knows in the network: their name, whether their identity was verified, the POM version they run, the route in use to reach them, the layers they serve and whether they are connected.
+Network participants lists the machines this one knows in the network: their name, whether their identity was verified, the PoM version they run, the route in use to reach them, the layers they serve and whether they are connected.
 :::
 
 ![Network participants: one row per machine with its badges, the layers it serves, its state and the Block button.](../images/en/participants.webp)
@@ -17,7 +17,7 @@ Network participants lists the machines this one knows in the network: their nam
 ### verified
 The machine proved its identity: its certificate derives from its key, and the roster vouches what it is.
 ### Version
-The POM release it announces. Amber means it is not the same as this machine's.
+The PoM release it announces. Amber means it is not the same as this machine's.
 ### Route
 How this machine reaches it right now: **Direct**, **Direct (P2P)**, **Direct (hole punch)** or through a relay, and which kind of relay. The advertised address only goes into the tooltip; the route shown is the one in use.
 ### Block

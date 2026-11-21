@@ -2801,6 +2801,7 @@ mod budget_tests {
             prefill_min_tokens: None,
             inference_port: 8181,
             n_gpu_layers: 99,
+            gpus: None,
             n_ctx,
             offload_kqv: true,
             hidden_state_dtype: crate::wire::WireDtype::F16,
@@ -3187,6 +3188,7 @@ mod peer_visibility_tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 
@@ -4069,6 +4071,7 @@ pub(crate) mod testkit {
             }),
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 
@@ -4214,6 +4217,7 @@ pub(crate) mod testkit {
             relay_peers: vec![],
             relay: Default::default(),
             advertise_addr: None,
+            advertise_only: false,
             api_keys: vec![],
             blocked_nodes: vec![],
             model_dirs: None,
@@ -4297,6 +4301,7 @@ pub(crate) mod testkit {
             prefill_min_tokens: None,
             inference_port: 8181,
             n_gpu_layers: 0,
+            gpus: None,
             n_ctx: 8192,
             offload_kqv: true,
             hidden_state_dtype: crate::wire::WireDtype::F16,

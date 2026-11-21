@@ -92,6 +92,15 @@ The copy in `apps/frontend/src/docs/` is **generated** by
 `apps/frontend/scripts/build-docs.mjs` (it runs in `npm run build`/`dev`/`test`).
 Never edit it.
 
+## Git authorization
+
+The operator authorizes agents to commit, push and pull without asking each
+time, in this repository and in the related ones (the `pom-plugin-*`
+repositories, the engine forks, the cluster configuration), on the branch
+being worked on, and to pull those changes on the cluster machines. This does
+not cover rewriting published history (force push) or pushing to `main` of
+this repository.
+
 ## Commands
 
 ```bash
@@ -122,8 +131,8 @@ sources, use `POM_LLAMA_CPP_MODE=source` and, optionally,
 Preparing the build
 
 The llama.cpp engine (`llama-engine` and the `llama-cpp-sys-2` binding) lives in
-the private repository `pom-plugin-llama.cpp`, pinned by `rev` in `Cargo.toml`
-(`[patch.crates-io]`) and in `crates/node/Cargo.toml`. Cargo fetches it over SSH
+the public repository `pom-plugin-llama.cpp`, pinned by `rev` in `Cargo.toml`
+(`[patch.crates-io]`) and in `crates/node/Cargo.toml`. Cargo fetches it over HTTPS
 with the `git` client (`[net] git-fetch-with-cli` in `.cargo/config.toml`).
 
 The Cargo builds and the Docker `source` mode need the `llama.cpp` fork on the

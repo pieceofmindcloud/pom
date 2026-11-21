@@ -120,6 +120,8 @@ export interface NodeConfig {
   primary: boolean;
   inference_port: number;
   n_gpu_layers: number;
+  /** The GPUs this deployment runs on (indices of `system.gpus`); absent = all. */
+  gpus?: number[] | null;
   n_ctx: number;
   offload_kqv: boolean;
   fit_memory: boolean;
@@ -450,6 +452,10 @@ export interface NodeInfo {
   node_name: string | null;
   /** Address pinned by the operator. `null` when nothing was pinned. */
   advertise_addr: string | null;
+  /** Offer peers only the pinned address (older nodes omit it). */
+  advertise_only?: boolean;
+  /** The saved choice changes the endpoint's bind: it lands on the next start. */
+  advertise_only_restart?: boolean;
   /** What this node actually announces now (pinned, observed, or the sentinel). */
   effective_address: string;
   /** Whether the cluster prefers HTTP/3 over QUIC on new hops. */
@@ -815,6 +821,8 @@ export interface PluginService {
   stage_ranges?: string[];
   /** Kind `inference`: the model architectures whose drafter file its engine takes from the deployment. */
   draft_architectures?: string[];
+  /** Kind `inference`: the Hugging Face `model_type`s whose model folders its engine runs whole. */
+  hf_architectures?: string[];
   /** Kind `inference`: the POM deployment settings that apply to its engine. */
   pom_settings?: PomSetting[];
   /** Kind `inference`: its engine reads images through the deployment's vision projector (`mmproj`). */
@@ -1143,6 +1151,9 @@ export interface MultipartPart {
 
 export interface DiscoveredModel {
   id: string;
+  /** `"safetensors"` for a Hugging Face model folder (`path` is the folder,
+   *  `architecture` its `model_type`); absent for a GGUF. */
+  format?: string | null;
   name: string;
   source: ModelSource;
   source_label: string;
@@ -2209,6 +2220,8 @@ export interface DeployStep {
   primary: boolean;
   /** Per-machine GPU offload, when set. `null` means "the cluster's number". */
   n_gpu_layers: number | null;
+  /** The machine's GPUs this step runs on (node indices); absent = all of them. */
+  gpus?: number[] | null;
   /** Per-machine KV cache placement. `null` means "the cluster's answer". */
   offload_kqv: boolean | null;
   /** Per-machine prefill/decode role; absent means the deployment's `params.inference_role`. */
@@ -2331,10 +2344,23 @@ export interface DeployMachine {
   load: number | null;
   holds: Array<[number, number]>;
   taking: [number, number] | null;
+  /** The machine's GPUs (its `system.gpus[]`), for the Machines tab's choice.
+   *  Absent from older nodes. */
+  gpus?: DeployMachineGpu[];
+  /** The physical machine this node runs on: the host's id for an instance,
+   *  else its own. Equal ids talk over the loopback (RTT zero). */
+  machine_id?: string;
   /** Post-deployment projection for this machine — the sum of the steps it
    *  would take, per GPU. Absent until previewed, or when no step of this
    *  machine is materialized locally yet. */
   capacity?: MachineCapacity | null;
+}
+
+/** One GPU of a machine on the deploy screen. */
+export interface DeployMachineGpu {
+  index: number;
+  name: string;
+  vram_total_mb?: number | null;
 }
 
 export type DeployStrategy = "simple" | "complete";
@@ -2486,6 +2512,9 @@ export interface DeploySelection {
   target_node_id: string;
   /** Overrides `params.n_gpu_layers` for this machine alone. */
   n_gpu_layers?: number | null;
+  /** The machine's GPUs this range runs on, by the node's GPU index. Absent or
+   *  `null` = every GPU of the machine, the default. */
+  gpus?: number[] | null;
   /** This machine's part in a prefill/decode split of a whole model on a plugin's
    *  inference service; `null` takes `params.inference_role`. */
   inference_role?: InferenceRole | null;

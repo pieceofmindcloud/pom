@@ -2101,6 +2101,7 @@ impl GatewayState {
                 runtime_capacity: local.and_then(|_| self.network.runtime_capacity()),
                 idle: self.network.is_idle(),
                 direct_only: self.network.is_direct_only(),
+                instance: self.network.instance_certificate(),
             });
         }
         peers

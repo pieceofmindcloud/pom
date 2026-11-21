@@ -21,7 +21,7 @@ What to deploy: **Pipeline** (a language model, from its whole GGUF) or **Image 
 ### The map
 The machines in the deployment, each with the layer ranges it will serve and its live GPU, RAM and load. A machine follows the pipeline's order as soon as it has a range; **Organize** puts the cards you dragged back in place. Drag the dotted background to move the map anywhere, past any edge, and drop it where it reads best; a card also goes wherever you drop it; the mouse wheel or a trackpad pinch zooms. The **Gateway** closes the cycle.
 ### The inspector
-**Global** holds the settings of the whole deployment (context, sessions, sampling, the POM settings). **Machines** lists every machine on the map, in pipeline order, with only what you edit per machine: its layer ranges, GPU layers and whether the KV cache goes on the GPU.
+**Global** holds the settings of the whole deployment (context, sessions, sampling, the PoM settings). **Machines** lists every machine on the map, in pipeline order, with only what you edit per machine: its layer ranges, GPU layers and whether the KV cache goes on the GPU. A machine with more than one GPU also lists them, all checked: uncheck one and the engine runs on the checked GPUs alone, whatever the engine (llama.cpp, Strata, Avalon or another plugin). **+ Instance** starts another node of the same machine, which then joins the map as a machine of its own: give it another range and other GPUs to use one machine twice (an NVIDIA and an AMD card under an engine that runs one at a time, for example). Between a machine and its instances the line is dotted and the RTT is 0: the data never leaves the machine.
 :::
 
 ## From choice to service
@@ -32,7 +32,7 @@ The whole GGUF files known on any machine.
 ### Put the machines on the map
 The map opens on the last deployment of the model, or else on the machines that hold it, with the layers split over them. Drag more machines from the strip at the bottom; they join without a range, and you give them layers in the Machines tab. A machine that serves layer 0 is a **Head**: it receives the prompts. The edges between stages show the RTT measured between the machines. Nothing is checked while you edit, so the map never redraws on its own: **Model coverage**, at the bottom right, counts the layers covered.
 
-The card of a machine that does not have the model says so. **Download here** has it download the same Hugging Face repository and file another machine downloaded, every part of a split file included; the card then shows the progress. For a file copied by hand, put it in one of that machine's model folders and press **Rescan**. A model nobody downloaded through POM offers only Rescan. The same goes for a vision projector or an MTP draft the deployment needs on a machine that lacks it. A machine without the model is never sent a copy over the network.
+The card of a machine that does not have the model says so. **Download here** has it download the same Hugging Face repository and file another machine downloaded, every part of a split file included; the card then shows the progress. For a file copied by hand, put it in one of that machine's model folders and press **Rescan**. A model nobody downloaded through PoM offers only Rescan. The same goes for a vision projector or an MTP draft the deployment needs on a machine that lacks it. A machine without the model is never sent a copy over the network.
 ### Give each machine its layers
 In the **Machines** tab, each machine that holds the whole file can serve it whole (**Whole model**) or one range. The range has a slider with two handles that stop only at cuts the model allows; press anywhere on the track and the nearer handle follows the mouse, so any range it gives can be served: each machine reads its layers from its own copy of the whole file, nothing is written or copied. **Split the layers over N machines** divides the layers evenly, in the order of the list, over the machines whose box is marked (Shift+click on a card marks or unmarks it too). An unmarked machine keeps its ranges and settings: the marked ones share the layers it does not serve, or the whole model when the unmarked machines already serve it all. The deployment's name starts as the model's name without `.gguf` and without a split file's part number. The arrows on each machine move it up or down the list, which is the pipeline order: the machines with a range swap their ranges, so the first one on the list serves layer 0. Two machines on the same range are replicas. An engine published by a plugin that runs slices takes ranges the same way: when the deploy is applied, the node cuts each machine's slice (virtual or real) from its copy of the whole model.
 ### Deploy
@@ -44,7 +44,7 @@ The life of a slice: only the state the node itself confirmed lets it come back 
 :::
 
 :::note Settings help
-Each category of the inspector has a help button that opens its guide: Default settings and POM settings.
+Each category of the inspector has a help button that opens its guide: Default settings and PoM settings.
 :::
 
 ## Image models
@@ -60,7 +60,7 @@ Drag machines from the strip at the bottom onto each stage. More than one machin
 The red line at the top says what is still missing. Deploy follows the same progress window as a language model, and the deployment shows on the Dashboard and in Deployments, which the History button to the left of Deploy opens.
 :::
 
-ComfyUI on any machine of the network lists the stages as `POM ▸ <name> ▸ <file>` in its ordinary loaders, and the Chat can generate images with it. Nothing is copied: a machine without the file is not offered.
+ComfyUI on any machine of the network lists the stages as `PoM ▸ <name> ▸ <file>` in its ordinary loaders, and the Chat can generate images with it. Nothing is copied: a machine without the file is not offered.
 
 :::deep docs/subsystems/deployment.md
 The plan, the merge, the order and the slice lifecycle

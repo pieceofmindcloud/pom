@@ -56,6 +56,7 @@ import {
   History,
   Rocket,
   ServerCog,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 import { LayerRangeSlider, rangeBounds } from "../components/LayerRangeSlider";
@@ -73,7 +74,8 @@ import { DeployProgressModal } from "../components/DeployProgressModal";
 import { trackOf } from "../components/PipelineRail";
 import { fileSourceOn, tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
 import { evenSplit, isWholeRangeSplit, splitOverMarked, validEnds, wholeRangesOf, type SplitBalance } from "../lib/wholeRanges";
-import { inferenceServicesOf, serviceRunsModel, serviceCutsRanges,
+import { inferenceServicesOf, serviceRunsModel, defaultEngineRunsModel,
+  serviceCutsRanges,
   serviceRunsSlices, serviceTakesDraft } from "../lib/inferenceServices";
 import {
   Badge,
@@ -87,6 +89,7 @@ import {
 import type {
   DeployKind,
   DeployPlan,
+  DeployMachineGpu,
   DeploySelection,
   DeployStrategy,
   CacheTypesResponse,
@@ -126,6 +129,7 @@ function rowsOf(plan: DeployPlan | undefined): DeploySelection[] {
           target_node_id: s.target_node_id,
           // Per-machine, so every part of a merged step carries the same pair.
           n_gpu_layers: s.n_gpu_layers,
+          ...(s.gpus ? { gpus: s.gpus } : {}),
           offload_kqv: s.offload_kqv,
           ...(s.inference_role ? { inference_role: s.inference_role } : {}),
         }))
@@ -135,6 +139,7 @@ function rowsOf(plan: DeployPlan | undefined): DeploySelection[] {
             end_layer: s.end_layer,
             target_node_id: s.target_node_id,
             n_gpu_layers: s.n_gpu_layers,
+            ...(s.gpus ? { gpus: s.gpus } : {}),
             offload_kqv: s.offload_kqv,
             ...(s.inference_role ? { inference_role: s.inference_role } : {}),
           },
@@ -156,6 +161,7 @@ const launchOverridesKey = (rows: DeploySelection[] | null) =>
             row.end_layer,
             row.target_node_id,
             row.n_gpu_layers ?? null,
+            row.gpus?.join(",") ?? null,
             row.offload_kqv ?? null,
             row.inference_role ?? null,
           ])
@@ -301,7 +307,10 @@ export function DeployModel() {
    *  Machines tab; empty until the first move (then pipeline order rules). */
   const [machineOrder, setMachineOrder] = useState<string[]>([]);
   const [inspectorTab, setInspectorTab] = useState<"global" | "machine">("machine");
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  // Below the `lg` grid the inspector is a sheet over the map, closed at first
+  // so the map shows; on a wide screen it is the right column, open.
+  const narrow = useNarrowStudio();
+  const [inspectorOpen, setInspectorOpen] = useState(() => !narrow);
   /** The whole model to deploy, when that is the question being asked. */
   const [wholeName, setWholeName] = useState("");
   const [tensorGroupKey, setTensorGroupKey] = useState("");
@@ -430,7 +439,10 @@ export function DeployModel() {
    *  inference service, only the models its engine runs. */
   const allWholes = useMemo(() => wholeModelsOf(cluster.data?.peers), [cluster.data]);
   const wholes = useMemo(
-    () => (service ? allWholes.filter((entry) => serviceRunsModel(service, entry.architecture)) : allWholes),
+    () =>
+      service
+        ? allWholes.filter((entry) => serviceRunsModel(service, entry.architecture, entry.format))
+        : allWholes.filter((entry) => defaultEngineRunsModel(entry.format)),
     [allWholes, service],
   );
   /** The slicing rounds on offer - with an inference service, only those of
@@ -744,7 +756,7 @@ export function DeployModel() {
       if (isWhole && total != null && (selection ?? []).length === 0) {
         const holders = (wholeModel?.holders ?? []).filter((nodeId) =>
           machineIds.includes(nodeId) && (!service || service.nodeIds.includes(nodeId)));
-        const picked = service && !splitRoles ? holders.slice(0, 1) : holders;
+        const picked = service && !splitRoles && !rangesOnWhole ? holders.slice(0, 1) : holders;
         if (picked.length > 0) {
           const ends = validEnds(total, p.layer_options?.cuts.map((cut) => cut.end_layer) ?? null);
           // A service that does not cut this architecture into ranges runs the
@@ -1110,6 +1122,17 @@ export function DeployModel() {
    * number. One number per machine, so it lands on every row the machine
    * holds — a merged machine can't have two of them.
    */
+  /** The machine's GPUs for this deployment; `null` = all of them. */
+  function setPeerGpus(nodeId: string, value: number[] | null) {
+    edit((base) =>
+      base.map((r) => {
+        if (r.target_node_id !== nodeId) return r;
+        const { gpus: _gpus, ...rest } = r;
+        return value ? { ...rest, gpus: value } : rest;
+      }),
+    );
+  }
+
   function setPeerGpu(nodeId: string, value: number | null) {
     edit((base) =>
       base.map((r) => (r.target_node_id === nodeId ? { ...r, n_gpu_layers: value } : r)),
@@ -1234,7 +1257,9 @@ export function DeployModel() {
     // declares the prefill/decode role (the machines hand conversations over as
     // sessions): the next machine then joins with the whole model and the
     // default role, and the node keeps the sessions on for all of them.
-    if (isWhole && service && mapMachineIds.length > 0 && !mapMachineIds.includes(nodeId)) {
+    // A service that cuts the model's ranges itself (`stage_ranges`) takes the
+    // next machine like llama.cpp does: it joins without a range.
+    if (isWhole && service && !rangesOnWhole && mapMachineIds.length > 0 && !mapMachineIds.includes(nodeId)) {
       if (!splitRoles) {
         toast.warning(
           t("deploy.serviceSingleMachineTitle", { name: service.name }),
@@ -1632,12 +1657,38 @@ export function DeployModel() {
             )}
           </div>
 
+          {inspectorOpen && narrow && (
+            <div
+              aria-hidden="true"
+              className="fixed inset-0 z-40 bg-black/50"
+              onClick={() => setInspectorOpen(false)}
+            />
+          )}
           {inspectorOpen ? <>
-            <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45">
+            <aside
+              data-testid="deploy-inspector"
+              className={narrow
+                ? "fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col overflow-y-auto overscroll-y-contain rounded-t-2xl border-t border-line-strong bg-surface shadow-2xl"
+                : "relative min-h-0 overflow-y-auto border-l border-line bg-surface/45"}
+            >
+            {narrow && (
+              <div className="sticky top-0 z-20 flex items-center justify-between gap-2 border-b border-line bg-surface px-3 py-2">
+                <span aria-hidden="true" className="absolute left-1/2 top-1 h-1 w-10 -translate-x-1/2 rounded-full bg-line-strong" />
+                <span className="pt-1 text-[0.7rem] font-semibold text-fg">{t("deployStudio.propertiesLabel")}</span>
+                <button
+                  type="button"
+                  aria-label={t("deployStudio.hideInspector")}
+                  onClick={() => setInspectorOpen(false)}
+                  className="mt-1 rounded-md p-1.5 text-faint hover:bg-raised hover:text-fg"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
             <Tabs
               fill
               label={t("deployStudio.propertiesLabel")}
-              className="sticky top-0 z-10"
+              className={narrow ? "sticky top-[2.6rem] z-10" : "sticky top-0 z-10"}
               value={inspectorTab}
               onChange={setInspectorTab}
               items={[
@@ -1795,6 +1846,7 @@ export function DeployModel() {
               onRemoveMachine={removePeerFromDeployment}
               onRows={(next) => setSelection(next.slice().sort(byLayer))}
               onGpu={setPeerGpu}
+              onGpus={setPeerGpus}
               onKqv={setPeerKqv}
               marked={markedNodeIds}
               onToggleMarked={toggleMarked}
@@ -1810,7 +1862,7 @@ export function DeployModel() {
             />
             )}
             </aside>
-            <button
+            {!narrow && <button
               type="button"
               aria-label={t("deployStudio.hideInspector")}
               title={t("deployStudio.hideInspector")}
@@ -1821,8 +1873,18 @@ export function DeployModel() {
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-y-0 right-0 w-[3px] bg-line transition-colors duration-150 group-hover:bg-muted group-focus-visible:bg-muted"
               />
+            </button>}
+          </> : narrow ? (
+            <button
+              type="button"
+              data-testid="deploy-inspector-open"
+              onClick={() => setInspectorOpen(true)}
+              className="fixed bottom-24 right-4 z-30 flex items-center gap-2 rounded-full border border-iris/60 bg-iris px-4 py-2.5 text-sm font-semibold text-white shadow-lg"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              {t("deployStudio.openSettings")}
             </button>
-          </> : (
+          ) : (
             <button
               type="button"
               aria-label={t("deployStudio.showInspector")}
@@ -1946,6 +2008,111 @@ export function DeployModel() {
  * range or several, each picked on the valid cuts (virtual slices read any of
  * them from the whole file); nothing here re-plans, Deploy validates the map.
  */
+/** A machine's instances (`crate::instances` on the node): a host offers
+ *  another instance of itself, so the same machine joins the deployment again
+ *  on other GPUs; an instance offers its removal. The new instance shows up as
+ *  a machine of its own once it is in the network. */
+function MachineInstanceAction({ machine }: { machine: { node_id: string; label: string; machine_id?: string } }) {
+  const { t } = useI18n();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const host = machine.machine_id ?? machine.node_id;
+  const isInstance = host !== machine.node_id;
+  const act = async () => {
+    setBusy(true);
+    try {
+      if (isInstance) {
+        await api.post("/api/ui/instances/remove", { node_id: host, instance_node_id: machine.node_id });
+        toast.success(t("deployStudio.instanceRemoved"), machine.label);
+      } else {
+        await api.post("/api/ui/instances", { node_id: machine.node_id });
+        toast.success(t("deployStudio.instanceAdded"), t("deployStudio.instanceAddedDetail"));
+      }
+    } catch (error) {
+      toast.fromError(t(isInstance ? "deployStudio.instanceRemoveFailed" : "deployStudio.instanceAddFailed"), error);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex items-center justify-between gap-2" onClick={(event) => event.stopPropagation()}>
+      {isInstance && <span className="text-[0.58rem] text-sky">{t("deployStudio.instanceOfHost")}</span>}
+      <Button
+        size="sm"
+        variant={isInstance ? "ghost" : "outline"}
+        loading={busy}
+        className="ml-auto"
+        data-testid={isInstance ? `instance-remove-${machine.node_id}` : `instance-add-${machine.node_id}`}
+        title={t(isInstance ? "deployStudio.instanceRemoveHint" : "deployStudio.instanceAddHint")}
+        onClick={() => void act()}
+      >
+        {t(isInstance ? "deployStudio.instanceRemove" : "deployStudio.instanceAdd")}
+      </Button>
+    </div>
+  );
+}
+
+/** Below the studio's two-column grid (`lg`): the inspector becomes a sheet. */
+function useNarrowStudio(): boolean {
+  const query = "(max-width: 1023px)";
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && window.matchMedia?.(query).matches === true,
+  );
+  useEffect(() => {
+    const media = typeof window !== "undefined" ? window.matchMedia?.(query) : undefined;
+    if (!media) return;
+    const update = () => setNarrow(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+  return narrow;
+}
+
+/** Which of a machine's GPUs the deployment runs on: one box per GPU, all
+ *  checked by default (`chosen` null). The last box cannot be unchecked. */
+function MachineGpuPicker({
+  machine,
+  gpus,
+  chosen,
+  onChange,
+}: {
+  machine: string;
+  gpus: DeployMachineGpu[];
+  chosen: number[] | null;
+  onChange: (value: number[] | null) => void;
+}) {
+  const { t } = useI18n();
+  const on = (index: number) => chosen == null || chosen.includes(index);
+  const toggle = (index: number) => {
+    const current = chosen ?? gpus.map((gpu) => gpu.index);
+    const next = on(index) ? current.filter((value) => value !== index) : [...current, index].sort((a, b) => a - b);
+    if (next.length === 0) return;
+    onChange(next.length === gpus.length ? null : next);
+  };
+  return (
+    <div className="space-y-1 border-t border-line pt-2" data-testid={`machine-gpus-${machine}`} onClick={(event) => event.stopPropagation()}>
+      <p className="text-[0.62rem] font-medium text-muted">{t("deployStudio.machineGpus")}</p>
+      {gpus.map((gpu) => (
+        <label key={gpu.index} className="flex items-center gap-2 text-[0.62rem] text-fg">
+          <input
+            type="checkbox"
+            aria-label={t("deployStudio.machineGpu", { index: gpu.index, name: gpu.name })}
+            checked={on(gpu.index)}
+            onChange={() => toggle(gpu.index)}
+          />
+          <span className="font-mono">GPU {gpu.index}</span>
+          <span className="truncate text-faint">
+            {gpu.name}
+            {gpu.vram_total_mb ? ` · ${Math.round(gpu.vram_total_mb / 1024)} GB` : ""}
+          </span>
+        </label>
+      ))}
+      <p className="text-[0.58rem] leading-snug text-faint">{t("deployStudio.machineGpusHint")}</p>
+    </div>
+  );
+}
+
 function MachinesTab({
   machines,
   rows,
@@ -1960,6 +2127,7 @@ function MachinesTab({
   onRemoveMachine,
   onRows,
   onGpu,
+  onGpus,
   onKqv,
   marked,
   onToggleMarked,
@@ -1968,7 +2136,7 @@ function MachinesTab({
   onSplit,
   serviceName,
 }: {
-  machines: { node_id: string; label: string }[];
+  machines: { node_id: string; label: string; gpus?: DeployMachineGpu[]; machine_id?: string }[];
   rows: DeploySelection[];
   total: number | null;
   ends: number[];
@@ -1981,6 +2149,8 @@ function MachinesTab({
   onRemoveMachine: (nodeId: string) => void;
   onRows: (rows: DeploySelection[]) => void;
   onGpu: (nodeId: string, value: number | null) => void;
+  /** The machine's GPUs for this deployment; `null` = all of them. */
+  onGpus: (nodeId: string, value: number[] | null) => void;
   onKqv: (nodeId: string, value: boolean) => void;
   /** The machines Split the layers works on. */
   marked: string[];
@@ -2030,7 +2200,6 @@ function MachinesTab({
           >
             {t("deployStudio.splitLayers", { count: splitOver.length })}
           </Button>
-          <p className="text-[0.58rem] leading-snug text-faint">{t("deployStudio.splitMarkedHint")}</p>
         </>
       )}
       {machines.map((machine, position) => {
@@ -2095,6 +2264,7 @@ function MachinesTab({
               </span>
             </div>
             <div className="space-y-2 px-2 py-2">
+              <MachineInstanceAction machine={machine} />
               {taking.length === 0 && <p className="text-[0.62rem] text-faint">{t("deployStudio.noLayerAssigned")}</p>}
               {taking.length > 0 && balance && (() => {
                 const sizes = taking.map((row) => balance.bytes(row.start_layer, row.end_layer));
@@ -2158,6 +2328,14 @@ function MachinesTab({
               )}
               {rangesOnWhole && !holds && (
                 <p className="text-[0.6rem] leading-snug text-amber">{t("deployStudio.machineLacksModel")}</p>
+              )}
+              {first && (machine.gpus?.length ?? 0) > 1 && (
+                <MachineGpuPicker
+                  machine={machine.node_id}
+                  gpus={machine.gpus ?? []}
+                  chosen={first.gpus ?? null}
+                  onChange={(value) => onGpus(machine.node_id, value)}
+                />
               )}
               {first && llama && (
                 <div className="space-y-1 border-t border-line pt-2" onClick={(event) => event.stopPropagation()}>

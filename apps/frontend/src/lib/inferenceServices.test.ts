@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inferenceServicesOf, serviceCutsRanges, serviceRunsModel, serviceRunsSlices, serviceTakesDraft } from "./inferenceServices";
+import { defaultEngineRunsModel, inferenceServicesOf, serviceCutsRanges, serviceRunsModel, serviceRunsSlices, serviceTakesDraft, type InferenceServiceEntry } from "./inferenceServices";
 import type { PeerView } from "./types";
 
 const peer = (node_id: string, services: unknown[]) =>
@@ -17,11 +17,22 @@ describe("inferenceServicesOf", () => {
       peer("d", []),
     ]);
     expect(services).toEqual([
-      { code: "strata", name: "Strata", architectures: ["qwen4exp"], settings: [], pomSettings: [], nodeIds: ["a", "c"], stages: false, stageArchitectures: [], stageRanges: [], draftArchitectures: [], vision: false },
+      { code: "strata", name: "Strata", architectures: ["qwen4exp"], settings: [], pomSettings: [], nodeIds: ["a", "c"], stages: false, stageArchitectures: [], stageRanges: [], draftArchitectures: [],
+        hfArchitectures: [], vision: false },
     ]);
     expect(serviceRunsModel(services[0], "qwen4exp")).toBe(true);
     expect(serviceRunsModel(services[0], "llama")).toBe(false);
     expect(serviceRunsModel(services[0], null)).toBe(false);
+  });
+
+  it("offers the settings of every machine when the plugin versions differ", () => {
+    const [vllm] = inferenceServicesOf([
+      peer("old", [{ plugin_code: "vllm", id: "vllm", kind: "inference", name: "vLLM", status: "ready",
+        settings: [{ key: "cpu_offload_gb" }] }]),
+      peer("new", [{ plugin_code: "vllm", id: "vllm", kind: "inference", name: "vLLM", status: "ready",
+        settings: [{ key: "cpu_offload_gb" }, { key: "ngram_table" }] }]),
+    ]);
+    expect(vllm.settings.map((setting) => setting.key)).toEqual(["cpu_offload_gb", "ngram_table"]);
   });
 
   it("marks a service whose engine runs slices", () => {
@@ -85,5 +96,16 @@ describe("inferenceServicesOf", () => {
     expect(serviceCutsRanges(avalon, "qwen4exp")).toBe(true);
     expect(serviceCutsRanges(avalon, "deepseek4")).toBe(false);
     expect(serviceCutsRanges(avalon, null)).toBe(false);
+  });
+});
+
+describe("serviceRunsModel and Hugging Face folders", () => {
+  const service = { architectures: ["qwen35"], hfArchitectures: ["qwen3_5"] } as unknown as InferenceServiceEntry;
+  it("matches a folder by its model_type and a GGUF by its architecture", () => {
+    expect(serviceRunsModel(service, "qwen3_5", "safetensors")).toBe(true);
+    expect(serviceRunsModel(service, "qwen35", "safetensors")).toBe(false);
+    expect(serviceRunsModel(service, "qwen35", null)).toBe(true);
+    expect(defaultEngineRunsModel("safetensors")).toBe(false);
+    expect(defaultEngineRunsModel(null)).toBe(true);
   });
 });

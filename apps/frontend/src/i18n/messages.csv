@@ -149,6 +149,25 @@ key,en,pt-BR
 "network.chatVisitorsHint","Off, the Chat is for admins and workers only. On, visitors join it and see who else talks there, other visitors included.","Desligado, o Chat é só de administradores e trabalhadores. Ligado, visitantes entram nele e veem quem mais fala ali, inclusive outros visitantes."
 "network.logsNotAuthority","Only an admin decides this, and the decision applies to the whole cluster.","Só um admin decide isso, e a decisão vale para o cluster inteiro."
 "network.logsPropagates","No restart needed. Any admin can change it: a secondary admin's change goes to the main node, and the other nodes confirm the policy with it before adopting.","Não precisa reiniciar. Qualquer admin pode mudar: a mudança de um admin secundário vai para o principal, e os demais nós confirmam a política com ele antes de adotar."
+canvas.localBadge,same machine,mesma máquina
+canvas.localEdgeHint,"Two processes of one machine: the hidden state crosses the loopback, never the network.","Dois processos da mesma máquina: o hidden state passa pelo loopback, nunca pela rede."
+deployStudio.instanceAdd,+ Instance,+ Instância
+deployStudio.instanceAddFailed,Could not add the instance,Não foi possível adicionar a instância
+deployStudio.instanceAddHint,"Starts another node of this machine, so it can serve another range on other GPUs.","Sobe outro nó desta máquina, para ela servir outra faixa em outras GPUs."
+deployStudio.instanceAdded,Instance starting,Instância subindo
+deployStudio.instanceAddedDetail,"It shows up as a machine of its own once it is in the network, in a few seconds.","Ela aparece como uma máquina própria quando entrar na rede, em alguns segundos."
+deployStudio.instanceOfHost,instance of this machine,instância desta máquina
+deployStudio.instanceRemove,Remove instance,Remover instância
+deployStudio.instanceRemoveFailed,Could not remove the instance,Não foi possível remover a instância
+deployStudio.instanceRemoveHint,Stops this instance and deletes its folder on the machine.,Para esta instância e apaga a pasta dela na máquina.
+deployStudio.instanceRemoved,Instance removed,Instância removida
+deployStudio.machineGpu,GPU {index}: {name},GPU {index}: {name}
+deployStudio.machineGpus,GPUs,GPUs
+deployStudio.machineGpusHint,"The engine runs only on the checked GPUs. All checked uses every GPU of the machine.","O motor roda só nas GPUs marcadas. Todas marcadas usa todas as GPUs da máquina."
+deployStudio.openSettings,Settings,Configurar
+network.addrOnlyHint,"Peers get no other direct address of this machine. When the address belongs to one of its interfaces, the network endpoint listens on it alone, so two nodes on one computer stop switching between equal paths. Relays stay as a fallback.","Os peers não recebem nenhum outro endereço direto desta máquina. Quando o endereço pertence a uma das interfaces dela, o endpoint de rede escuta só nele, e dois nós no mesmo computador param de alternar entre caminhos iguais. Os relays continuam como alternativa."
+network.addrOnlyLabel,Announce only this address,Anunciar somente este endereço
+network.addrOnlyRestart,Saved. The network endpoint changes on the next start of this node.,Salvo. O endpoint de rede muda no próximo início deste nó.
 network.relayPolicy.all,All relays,Todos os relays
 network.relayPolicy.allDetail,"n0's public relays, this network's dedicated relays and member relays. Machines behind NAT connect without an open port.","Relays públicos da n0, relays dedicados desta rede e relays de membros. Máquinas atrás de NAT conectam sem porta aberta."
 network.relayPolicy.members,Only this network's relays,Só relays desta rede
@@ -1229,7 +1248,6 @@ deployStudio.showInspector,Show inspector,Mostrar inspetor
 deployStudio.size,Size,Tamanho
 deployStudio.splitLayers,Split the layers over {count} machines,Dividir as camadas entre {count} máquinas
 deployStudio.splitLayersHint,"Each machine serves its range from its own copy of the model, so nothing is copied.","Cada máquina serve sua faixa a partir da própria cópia do modelo, então nada é copiado."
-deployStudio.splitMarkedHint,Splits over the marked machines the layers no unmarked machine serves (the whole model when they serve it all) in proportion to each one''s VRAM: each share''s weights and KV cache fit its machine when the model fits them together. Unmarked machines keep their ranges; Shift+click a card on the map to mark or unmark it.,Divide entre as máquinas marcadas as camadas que nenhuma desmarcada serve (o modelo inteiro quando elas servem tudo) na proporção da VRAM de cada uma: os pesos e o cache KV de cada parte cabem na sua máquina quando o modelo cabe nelas juntas. As desmarcadas mantêm as faixas; Shift+clique num cartão do mapa marca ou desmarca.
 deployStudio.tabGlobal,Global,Globais
 deployStudio.tabMachine,Machine,Máquina
 deployStudio.tabMachines,"Machines ({count})","Máquinas ({count})"

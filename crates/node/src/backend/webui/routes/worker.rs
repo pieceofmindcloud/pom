@@ -15,6 +15,14 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(get_cache_types).post(save_cache_types),
         )
         .route("/api/ui/network/advertise-addr", post(save_advertise_addr))
+        .route(
+            "/api/ui/instances",
+            get(crate::instances::http::list).post(crate::instances::http::add),
+        )
+        .route(
+            "/api/ui/instances/remove",
+            post(crate::instances::http::remove_route),
+        )
         .route("/api/ui/network/node-name", post(save_node_name))
         .route(
             "/api/ui/network/transport",

@@ -77,6 +77,11 @@ pub struct RuntimeParams {
     pub prefill_min_tokens: Option<u32>,
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
+    /// The GPUs of the machine this deployment runs on (`GpuSet`, the node's
+    /// own indices). `None` = every GPU the node may use, the default. Per
+    /// machine like `n_gpu_layers`; the per-machine overrides set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<crate::config::GpuSet>,
     #[serde(default = "d_n_ctx")]
     pub n_ctx: u32,
     #[serde(default = "d_true")]
@@ -327,6 +332,7 @@ impl Default for RuntimeParams {
             inference_role: Default::default(),
             prefill_min_tokens: None,
             n_gpu_layers: d_gpu_layers(),
+            gpus: None,
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
             hidden_state_dtype: crate::wire::WireDtype::F16,
@@ -392,6 +398,7 @@ impl From<&NodeConfig> for RuntimeParams {
             inference_role: c.inference_role,
             prefill_min_tokens: c.prefill_min_tokens,
             n_gpu_layers: c.n_gpu_layers,
+            gpus: c.gpus,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,
             hidden_state_dtype: c.hidden_state_dtype,

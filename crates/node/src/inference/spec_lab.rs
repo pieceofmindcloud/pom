@@ -154,7 +154,12 @@ async fn bubble(
     base_meta["scale"] = json!(1.0);
     base_meta["next_hops"] = json!(remaining);
 
-    let sent = crate::relay::send_frame(
+    // The deadline production's `send_frame_or_tunnel` gives a frame (see the same
+    // helper in `prefix_reuse_lab.rs`): without it the call falls back to the 250 ms
+    // test `DIRECT_FRAME_TIMEOUT` and the ring's result depends on the machine's speed.
+    let deadline = std::time::Instant::now()
+        + crate::relay::frame_deadline_for_path(path, &base_meta, tensor.1.first().copied());
+    let sent = crate::relay::with_frame_deadline(deadline, crate::relay::send_frame(
         &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
         &next.node_id,
         &next.inference_url,
@@ -166,7 +171,7 @@ async fn bubble(
         1,
         &next.node_id,
         |_| {},
-    )
+    ))
     .await
     .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()).into_response())?;
 

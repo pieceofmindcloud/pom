@@ -786,14 +786,24 @@ pub(crate) async fn model_layer_options_local(
         .canonicalize()
         .map_err(|e| format!("could not resolve the whole model: {e}"))?;
     let catalog = local_catalog(state).await;
-    let listed = catalog.models.iter().any(|model| {
+    let found = catalog.models.iter().find(|model| {
         std::path::Path::new(&model.path)
             .canonicalize()
             .ok()
             .is_some_and(|path| path == canonical)
             && model.shard_range.is_none()
     });
-    if !listed {
+    // A Hugging Face folder has no GGUF to read: the plugin engine that runs it
+    // cuts at any whole layer (`stage_ranges`), so every layer is a cut and the
+    // weights are costed evenly per layer.
+    if let Some(model) = found.filter(|_| canonical.is_dir()) {
+        let total_layers = model
+            .total_layers
+            .filter(|total| *total > 0)
+            .ok_or_else(|| "the model folder declares no layers to slice".to_string())?;
+        return Ok(folder_layer_options(total_layers, model.size_bytes));
+    }
+    if found.is_none() {
         let error = if !catalog.metadata_complete {
             format!(
                 "the catalog of this peer is still being discovered; wait for metadata_complete=true before selecting {}",
@@ -920,6 +930,37 @@ pub(crate) async fn model_layer_options_local(
     })
 }
 
+/// The cuts of a Hugging Face model folder: every whole layer, the weights
+/// shared evenly over the layers (the folder carries no per-layer table).
+fn folder_layer_options(total_layers: u32, size_bytes: u64) -> ModelLayerOptions {
+    let share =
+        |layers: u32| size_bytes.saturating_mul(u64::from(layers)) / u64::from(total_layers);
+    let cuts = (0..total_layers)
+        .map(|end_layer| {
+            let layers = end_layer + 1;
+            let size_bytes = share(layers);
+            let remainder_bytes = share(total_layers - layers);
+            LayerCut {
+                end_layer,
+                layers,
+                size_bytes,
+                remainder_bytes,
+                kv_bytes: None,
+                remainder_kv_bytes: None,
+                resident_bytes: Some(size_bytes),
+                remainder_resident_bytes: Some(remainder_bytes),
+            }
+        })
+        .collect();
+    ModelLayerOptions {
+        total_layers,
+        cuts,
+        valid_starts: (0..total_layers).collect(),
+        granularity: None,
+        rule: "model folder: any cut at a whole layer".to_string(),
+    }
+}
+
 /// Seals a part cut here into the original model's manifest.
 ///
 /// `apply` cuts **one** range, for this machine. Before, that ended up in a
@@ -983,8 +1024,22 @@ async fn plugin_cuts_range(state: &GatewayState, req: &ApplyRequest) -> bool {
         return false;
     };
     let source = std::path::PathBuf::from(&req.source_model_path);
-    let info = match tokio::task::spawn_blocking(move || crate::gguf::read_info(&source)).await {
-        Ok(Ok(info)) if info.shard_range.is_none() => info,
+    // A whole GGUF names its architecture in the header; a Hugging Face
+    // folder in its config.json (`model_type`). A slice is not a whole model.
+    let architecture = match tokio::task::spawn_blocking(move || {
+        if source.is_dir() {
+            let parent = source.parent().unwrap_or(&source).to_path_buf();
+            return crate::catalog::describe_hf_folder(&parent, &source)
+                .map(|model| model.architecture);
+        }
+        match crate::gguf::read_info(&source) {
+            Ok(info) if info.shard_range.is_none() => Some(info.architecture),
+            _ => None,
+        }
+    })
+    .await
+    {
+        Ok(Some(architecture)) => architecture,
         _ => return false,
     };
     crate::plugin_engine::services_of(state, &state.network.node_id)
@@ -995,7 +1050,7 @@ async fn plugin_cuts_range(state: &GatewayState, req: &ApplyRequest) -> bool {
                 .find(|entry| entry["plugin_code"] == service && entry["kind"] == "inference")
         })
         .is_some_and(|entry| {
-            crate::plugin_engine::runs_ranges(&entry, info.architecture.as_deref())
+            crate::plugin_engine::runs_ranges(&entry, architecture.as_deref())
         })
 }
 
@@ -1252,6 +1307,8 @@ pub(super) async fn run_apply(
             );
             Some(path.to_string())
         }
+        // A Hugging Face model folder carries its own MTP head; no GGUF sibling.
+        None if std::path::Path::new(&model_path).is_dir() => None,
         None => crate::catalog::find_mtp_draft_sibling(std::path::Path::new(&model_path)),
     };
 
@@ -1322,7 +1379,20 @@ fn resolve_mmproj_path(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_mmproj_path;
+    use super::{folder_layer_options, resolve_mmproj_path};
+
+    #[test]
+    fn a_model_folder_cuts_at_every_layer() {
+        let options = folder_layer_options(4, 400);
+        assert_eq!(
+            options.cuts.iter().map(|cut| cut.end_layer).collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        assert_eq!(options.cuts[1].size_bytes, 200);
+        assert_eq!(options.cuts[1].remainder_bytes, 200);
+        assert_eq!(options.cuts[3].remainder_bytes, 0);
+        assert_eq!(options.valid_starts, [0, 1, 2, 3]);
+    }
 
     #[test]
     fn explicit_projector_path_is_used_for_a_slice() {

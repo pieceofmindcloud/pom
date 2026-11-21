@@ -88,6 +88,8 @@ pub(crate) fn engine_config_from_node(
         n_batch: cfg.n_batch,
         n_ubatch: cfg.n_ubatch,
         n_gpu_layers: cfg.n_gpu_layers as i32,
+        // Filled by the caller that loads (`device_picks` reads the GPUs).
+        devices: None,
         n_threads: 0,
         max_sessions: cfg.max_sessions.max(1),
         need_embeddings,
@@ -98,6 +100,32 @@ pub(crate) fn engine_config_from_node(
         moe_cache_mib: cfg.moe_cache_mib,
         rs_seq_window,
     })
+}
+
+/// The deployment's GPUs as the engine numbers them: each node index becomes
+/// its vendor and its position among that vendor's cards (the node counts
+/// NVIDIA first, then AMD). `None` = no choice, every device.
+pub(crate) async fn device_picks(
+    gpus: Option<crate::config::GpuSet>,
+) -> Option<Vec<(crate::sysmon::GpuVendor, u32)>> {
+    let chosen = gpus?;
+    Some(picks_of(&crate::sysmon::sample().await.gpus, chosen))
+}
+
+fn picks_of(
+    detected: &[crate::sysmon::GpuStat],
+    chosen: crate::config::GpuSet,
+) -> Vec<(crate::sysmon::GpuVendor, u32)> {
+    let mut counts: std::collections::HashMap<crate::sysmon::GpuVendor, u32> = Default::default();
+    let mut picks = Vec::new();
+    for gpu in detected {
+        let ordinal = counts.entry(gpu.vendor).or_insert(0);
+        if chosen.contains(gpu.index) {
+            picks.push((gpu.vendor, *ordinal));
+        }
+        *ordinal += 1;
+    }
+    picks
 }
 
 /// Converts the server's readiness proof into a publishable capacity.
@@ -190,6 +218,11 @@ pub struct NodeConfig {
 
     pub inference_port: u16,
     pub n_gpu_layers: u32,
+    /// The GPUs this deployment runs on (`RuntimeParams.gpus`); `None` = all
+    /// the node may use. llama.cpp loads the model on those devices only, and
+    /// a plugin's engine receives only those in `engine.load`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<crate::config::GpuSet>,
     pub n_ctx: u32,
     /// Keep the llama.cpp KV cache on the GPU. Disable to trade latency for
     /// host RAM capacity on large-context hardware.
@@ -402,6 +435,7 @@ impl NodeConfig {
             no_embeddings: p.no_embeddings,
 
             n_gpu_layers: p.n_gpu_layers,
+            gpus: p.gpus,
             n_ctx: p.n_ctx,
             offload_kqv: p.offload_kqv,
             hidden_state_dtype: p.hidden_state_dtype,
@@ -2465,6 +2499,7 @@ mod tests {
             prefill_min_tokens: None,
             inference_port: 8181,
             n_gpu_layers: 99,
+            gpus: None,
             n_ctx: 8192,
             offload_kqv: true,
             hidden_state_dtype: crate::wire::WireDtype::F16,

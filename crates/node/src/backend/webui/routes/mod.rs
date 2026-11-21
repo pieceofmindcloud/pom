@@ -664,6 +664,14 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::LocalOnly,
     },
+    // This machine's instances (`crate::instances`): the machine's operator
+    // runs them; another node may only ask as an admin
+    // (`node_to_node_scope`).
+    RouteRule {
+        prefix: "/api/ui/instances",
+        method: None,
+        scope: RouteScope::ServingMember,
+    },
     RouteRule {
         prefix: "/api/ui/dev/",
         method: None,
@@ -718,7 +726,8 @@ pub(crate) fn route_scope(method: &Method, path: &str) -> RouteScope {
 /// callers as before.
 pub(crate) fn node_to_node_scope(method: &Method, path: &str, scope: RouteScope) -> RouteScope {
     let admin_only = (method == Method::POST && is_under(path, "/api/ui/model-provider/downloads"))
-        || is_under(path, "/api/ui/models/rescan");
+        || is_under(path, "/api/ui/models/rescan")
+        || (method == Method::POST && is_under(path, "/api/ui/instances"));
     if admin_only && scope == RouteScope::ServingMember {
         RouteScope::AnyAdmin
     } else {
@@ -735,6 +744,7 @@ const VISITOR_REFUSES: &[&str] = &[
     "/api/ui/components",
     "/api/ui/launch",
     "/api/ui/deploy",
+    "/api/ui/instances",
     "/api/ui/reconfigure",
     "/api/ui/slice",
     "/api/ui/slice-ranges",

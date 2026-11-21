@@ -98,6 +98,7 @@ mod direct;
 mod direct_lab;
 #[path = "network/discovery.rs"]
 mod discovery;
+mod instances;
 #[path = "inference/engine_telemetry.rs"]
 mod engine_telemetry;
 #[path = "enterprise_p2p.rs"]
@@ -1236,6 +1237,7 @@ fn blank_config(gateway_port: u16, p2p_port: u16) -> config::Config {
         relay_peers: vec![],
         relay: Default::default(),
         advertise_addr: None,
+        advertise_only: false,
         network: Default::default(),
         api_keys: vec![],
         blocked_nodes: vec![],
@@ -1514,6 +1516,8 @@ struct P2pStackArgs {
     profile: crate::profile::NodeProfile,
     node_display_name: String,
     advertise_addr: Option<String>,
+    /// `Config.advertise_only`: announce and bind on the pinned address alone.
+    advertise_only: bool,
     cluster_logs: Arc<cluster_logs::ClusterLogs>,
     audit: Arc<reqlog::AuditLog>,
     plugins: Arc<plugins::PluginManager>,
@@ -1646,6 +1650,11 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_admission(args.auth.clone(), args.admin_trust.clone()),
     );
     net.relay_gate().set_reachable(args.public_addr_configured);
+    // Before `Discovery::new` binds the endpoint: it reads this to bind on the
+    // advertised address alone.
+    net.set_advertise_only(args.advertise_only);
+    // Which machine this process is on: the host's id for an instance.
+    crate::instances::set_local_machine(&net.node_id, net.instance_certificate().as_ref());
     // `--no-iroh` (spec 2026-11-15): the mode is fixed for the run. The gate
     // answers "no relay" whatever the screens or the network policy later ask
     // for, and `Discovery::new` builds no relay client on the endpoint.
@@ -1818,6 +1827,8 @@ fn merged_bootstrap_nodes(from_config: &[String], cli: &str) -> Vec<String> {
 /// Background tasks that go with every gateway.
 fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, bind_port: u16) {
     crate::plugin_stage_link::install(gw_state.clone());
+    // This machine's instances (`crate::instances`), as the host left them.
+    crate::instances::start_all(database);
     crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
     crate::metering::spawn_refresher(gw_state.clone());
@@ -1884,6 +1895,9 @@ async fn start_node(
         Ok(count) => info!("{count} replaced internal key(s) revoked"),
         Err(error) => warn!("could not revoke replaced internal keys: {error:#}"),
     }
+    if crate::instances::own_certificate().is_some() {
+        crate::instances::adopt_host_plugins(&database, &node_id);
+    }
     let plugins = plugins::PluginManager::runtime_with_database(&node_id, database.clone());
     plugin_engine::install(plugins.clone());
 
@@ -1919,6 +1933,7 @@ async fn start_node(
         profile: app_config.profile,
         node_display_name,
         advertise_addr: advertise_addr.clone(),
+        advertise_only: app_config.advertise_only,
         cluster_logs: cluster_logs.clone(),
         audit: audit.clone(),
         plugins: plugins.clone(),

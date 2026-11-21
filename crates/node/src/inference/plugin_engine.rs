@@ -256,6 +256,29 @@ pub(crate) async fn node_gpus() -> (Vec<u32>, Vec<Value>) {
     gpus_of(crate::sysmon::sample().await.gpus)
 }
 
+/// The deployment's GPUs only (`NodeConfig.gpus`), for `engine.load`: the
+/// engine runs on what it receives, so a deployment on GPU 1 of a two-GPU
+/// machine never touches GPU 0. `None` keeps every GPU of the node.
+pub(crate) fn chosen_gpus(
+    (gpus, devices): (Vec<u32>, Vec<Value>),
+    chosen: Option<crate::config::GpuSet>,
+) -> (Vec<u32>, Vec<Value>) {
+    let Some(chosen) = chosen else {
+        return (gpus, devices);
+    };
+    let gpus = gpus.into_iter().filter(|index| chosen.contains(*index)).collect();
+    let devices = devices
+        .into_iter()
+        .filter(|device| {
+            device["index"]
+                .as_u64()
+                .and_then(|index| u32::try_from(index).ok())
+                .is_some_and(|index| chosen.contains(index))
+        })
+        .collect();
+    (gpus, devices)
+}
+
 fn gpus_of(gpus: Vec<crate::sysmon::GpuStat>) -> (Vec<u32>, Vec<Value>) {
     let mut nvidia = Vec::new();
     let mut devices = Vec::new();
@@ -365,10 +388,15 @@ pub(crate) fn load_params(
     params
 }
 
-/// Whether the GGUF at `path` is a whole model rather than a POM slice (its header has no slice range). An unreadable
-/// file is not taken for a whole model.
+/// Whether the GGUF at `path` is a whole model rather than a POM slice (its header has no slice range), or `path` is a
+/// Hugging Face model folder. An unreadable file is not taken for a whole model.
 pub(crate) fn file_is_whole_model(path: &str) -> bool {
-    crate::gguf::read_info(std::path::Path::new(path)).is_ok_and(|info| info.shard_range.is_none())
+    let path = std::path::Path::new(path);
+    // A Hugging Face model folder is always the whole model.
+    if path.join("config.json").is_file() {
+        return true;
+    }
+    crate::gguf::read_info(path).is_ok_and(|info| info.shard_range.is_none())
 }
 
 /// The `/health` this node answers while a plugin engine serves its model:
@@ -464,7 +492,7 @@ pub(crate) async fn run(
     // The port first, as the llama.cpp server does: binding is the part that
     // fails because of the outside world, and loading costs minutes.
     let listener = crate::infer_server::bind_dual_stack(cfg.inference_port).await?;
-    let (gpus, gpu_devices) = node_gpus().await;
+    let (gpus, gpu_devices) = chosen_gpus(node_gpus().await, cfg.gpus);
     // One stage of a split model: a later stage waits here for the earlier
     // stage's machine and keeps the relay to it while it serves.
     let (link, mut relay) = if crate::plugin_stage_link::is_stage(&cfg) {
@@ -2136,6 +2164,25 @@ pub(crate) async fn engine_generate_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A deployment on one GPU of a two-GPU machine hands the engine that GPU
+    /// alone, in both lists; no choice keeps every GPU.
+    #[test]
+    fn the_engine_receives_only_the_deployments_gpus() {
+        let all = (
+            vec![0, 1],
+            vec![
+                json!({"index": 0, "vendor": "nvidia", "ordinal": 0}),
+                json!({"index": 1, "vendor": "nvidia", "ordinal": 1}),
+            ],
+        );
+        let (gpus, devices) =
+            chosen_gpus(all.clone(), Some(crate::config::GpuSet::from_indices([1])));
+        assert_eq!(gpus, vec![1]);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0]["ordinal"], 1);
+        assert_eq!(chosen_gpus(all.clone(), None), all);
+    }
 
     /// The undeploy that left the engine running: the poller drops its sender as the generation changes, and the
     /// wait must end on the new generation instead of polling the finished receiver again (a panic before unload).

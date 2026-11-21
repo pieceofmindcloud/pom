@@ -12,6 +12,7 @@ by the plugin code.
 {"id": "<code>", "kind": "inference", "name": "<Display>", "status": "ready|starting|installing|waiting|error",
  "version": "<runtime version>", "detail": "<= 190 chars, no secret>",
  "architectures": ["<GGUF general.architecture>", "..."],
+ "hf_architectures"?: ["<Hugging Face config.json model_type>", "..."],
  "settings": [{"key", "type": "number|integer|boolean|select", "label": {"en","pt-BR"},
                "description": {"en","pt-BR"}, "min"?, "max"?, "options"?, "placement"?: "pom"}],
  "stages"?: true, "vision"?: true,
@@ -20,7 +21,11 @@ by the plugin code.
 ```
 
 The deploy screen offers the service only for a model whose architecture is
-listed and only on machines that publish it. `settings` are the engine's, drawn
+listed and only on machines that publish it. `hf_architectures` opts the
+engine into Hugging Face model folders (`config.json` + `*.safetensors`,
+cataloged with `format: "safetensors"` and `architecture` = the folder's
+`model_type`): `engine.load.model_path` is then the folder. llama.cpp never
+gets a folder. `settings` are the engine's, drawn
 in the inspector and sent back in `engine.load.settings`; `pom_settings` names
 POM settings that apply to this engine's deployments.
 
@@ -28,7 +33,7 @@ POM settings that apply to this engine's deployments.
 
 | Operation | Request | Answer |
 |---|---|---|
-| `engine.load` | `params`: `model_path` (abs), `model_label`, `n_ctx`, `max_sessions`, `kv` (plugin names: `int8`, `q4_0`), `cache_type_k`/`cache_type_v` (llama.cpp names), `n_batch`, `n_ubatch`, `sampling` (temperature ... seed: the deployment's defaults), `gpus` (NVIDIA indices), `gpu_devices` (`{index, vendor, ordinal, name, vram_total_mb}`), `settings`, optional `link`, `mmproj_path`, `session_dir`, `role`, `prefill_min_tokens`, `range` (`{start_layer, end_layer}`: a stage cut from the whole model, see below) | `{"status": "accepted"}` at once; the load runs on the plugin's thread. A refusal is an `Err` with the reason. |
+| `engine.load` | `params`: `model_path` (abs), `model_label`, `n_ctx`, `max_sessions`, `kv` (plugin names: `int8`, `q4_0`), `cache_type_k`/`cache_type_v` (llama.cpp names), `n_batch`, `n_ubatch`, `sampling` (temperature ... seed: the deployment's defaults), `gpus` (NVIDIA indices), `gpu_devices` (`{index, vendor, ordinal, name, vram_total_mb}`) - both hold only the GPUs the deployment chose for this machine, so an engine that pins its process to them (`CUDA_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`) honours the operator's choice with no extra field, `settings`, optional `link`, `mmproj_path`, `session_dir`, `role`, `prefill_min_tokens`, `range` (`{start_layer, end_layer}`: a stage cut from the whole model, see below) | `{"status": "accepted"}` at once; the load runs on the plugin's thread. A refusal is an `Err` with the reason. |
 | `engine.status` | - | `{state: idle|loading|ready|stopping|error, detail, n_ctx, ...}`. Read every 2 s. `ready` makes `/health` say `model_loaded`; `error`, or `idle` after serving, ends the generation and the supervisor restarts it within its budget. |
 | `engine.upstream` | - | `{"status": "ready", "port", "token"}` only while ready; `starting`; or `{"status": "error", "error"}` (an earlier stage answers error). |
 | `engine.link` | - | Stages only: `{"status": "ready", "port", "token"}` of an earlier stage's loopback link; the node hands it only to the next stage's machine. |

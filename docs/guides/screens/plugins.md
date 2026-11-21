@@ -17,7 +17,7 @@ Plugins is the store of this machine: every plugin of the catalog, free or paid,
 
 :::cards
 ### Badges
-**License active** or **No license required**, **Featured** and **POM team** for plugins published by the POM team, and where it came from: GitHub, or a **Local build**.
+**License active** or **No license required**, **Featured** and **PoM team** for plugins published by the PoM team, and where it came from: GitHub, or a **Local build**.
 ### Version and platforms
 The installed version (or the newest this machine can install) and the systems the plugin supports. A release built for another system is never offered.
 ### Activations
@@ -32,9 +32,9 @@ For a licensed plugin, how many of the license's activations are in use and when
 ### From the store
 Free plugins install with one click. A paid plugin opens the purchase page in your browser; the license key it gives you is pasted in the license form here and activates every plugin that key grants. A plugin marked **Coming soon** is already announced but has no release yet: it shows in the list with nothing to buy or install.
 ### From GitHub
-**Add from GitHub** takes the address of a public repository and installs its newest release compatible with this machine. A plugin outside the POM team asks for a confirmation first: its code was not reviewed.
+**Add from GitHub** takes the address of a public repository and installs its newest release compatible with this machine. A plugin outside the PoM team asks for a confirmation first: its code was not reviewed.
 ### Keeping them current
-**Check for updates** asks every installed plugin and POM itself at once, and lists what is newer. POM installs last, because it restarts the node.
+**Check for updates** asks every installed plugin and PoM itself at once, and lists what is newer. PoM installs last, because it restarts the node.
 :::
 
 :::note Develop your plugin

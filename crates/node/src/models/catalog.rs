@@ -162,6 +162,12 @@ pub struct DiscoveredModel {
     /// it, outside the catalog's general scan.
     #[serde(default)]
     pub capabilities: Option<ModelCapabilityEvidence>,
+    /// `Some("safetensors")` for a Hugging Face model folder (`path` is the
+    /// folder: `config.json` and its `*.safetensors`), which only a plugin
+    /// engine that names the format runs; absent for a GGUF, every other
+    /// entry. `architecture` is then the folder's `model_type`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -895,6 +901,7 @@ fn describe(
         tp_rank: part.and_then(|c| c.tp_rank),
         tp_size: part.and_then(|c| c.tp_size),
         capabilities: None,
+        format: None,
     })
 }
 
@@ -1296,6 +1303,13 @@ enum EnrichResult {
 
 /// Read the header for one item after the fast inventory is already visible.
 fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
+    if model.format.is_some() {
+        // A Hugging Face folder: described from its config.json at discovery.
+        // Its identity is the folder's own (`current_metadata_identity`), so
+        // the catalog sees it as current and does not enrich it again.
+        model.metadata_identity = current_metadata_identity(model);
+        return EnrichResult::Ready;
+    }
     let path = PathBuf::from(&model.path);
     let Some(meta) = std::fs::metadata(&path).ok() else {
         model.metadata_identity = None;
@@ -1491,6 +1505,131 @@ fn is_ollama_store(dir: &Path) -> bool {
 }
 
 /// Walk one directory of `.gguf` files.
+/// Hugging Face model folders under `dir`: a folder holding `config.json`
+/// and at least one `*.safetensors`. Read from the config alone (no weight is
+/// opened): `model_type`, layers and context (top level or `text_config`),
+/// the quantization method, and the size of the weights.
+fn scan_hf_dir(dir: &Path, out: &mut Vec<DiscoveredModel>) {
+    let mut folders = Vec::new();
+    find_hf_folders(dir, 0, &mut folders);
+    for folder in folders {
+        let path = folder.display().to_string();
+        if out.iter().any(|model| model.path == path) {
+            continue;
+        }
+        if let Some(model) = describe_hf_folder(dir, &folder) {
+            out.push(model);
+        }
+    }
+}
+
+fn find_hf_folders(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > MAX_WALK_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let mut has_config = false;
+    let mut has_weights = false;
+    let mut children = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() && !name.starts_with('.') => children.push(entry.path()),
+            Ok(_) if name == "config.json" => has_config = true,
+            Ok(_) if name.ends_with(".safetensors") || name == "model.safetensors.index.json" => {
+                has_weights = true
+            }
+            _ => {}
+        }
+    }
+    if has_config && has_weights {
+        out.push(root.to_path_buf());
+        return;
+    }
+    for child in children {
+        find_hf_folders(&child, depth + 1, out);
+    }
+}
+
+/// The size of the `*.safetensors` under a model folder: at its root or in
+/// the subfolders its index points into (one level, e.g. `tensors/`).
+fn safetensors_bytes(folder: &Path, depth: usize) -> u64 {
+    let Ok(entries) = std::fs::read_dir(folder) else { return 0 };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() && depth == 0 => safetensors_bytes(&entry.path(), 1),
+            Ok(kind)
+                if kind.is_file() && entry.file_name().to_string_lossy().ends_with(".safetensors") =>
+            {
+                entry.metadata().map(|meta| meta.len()).unwrap_or(0)
+            }
+            _ => 0,
+        })
+        .sum()
+}
+
+pub(crate) fn describe_hf_folder(library: &Path, folder: &Path) -> Option<DiscoveredModel> {
+    let text = std::fs::read_to_string(folder.join("config.json")).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let text_config = config.get("text_config").unwrap_or(&serde_json::Value::Null);
+    let number = |key: &str| {
+        config
+            .get(key)
+            .or_else(|| text_config.get(key))
+            .and_then(|value| value.as_u64())
+            .and_then(|value| u32::try_from(value).ok())
+    };
+    let architecture = config.get("model_type").and_then(|value| value.as_str())?.to_string();
+    let size_bytes = safetensors_bytes(folder, 0);
+    let name = folder
+        .strip_prefix(library)
+        .ok()
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .unwrap_or(folder)
+        .display()
+        .to_string();
+    let quant = config
+        .get("quantization_config")
+        .and_then(|quant| quant.get("quant_method"))
+        .and_then(|method| method.as_str())
+        .map(str::to_string);
+    let path = folder.display().to_string();
+    Some(DiscoveredModel {
+        id: format!("hf:{path}"),
+        name,
+        source: ModelSource::Folder,
+        source_label: ModelSource::Folder.label(),
+        path,
+        mmproj_path: None,
+        mmproj_candidates: Vec::new(),
+        mmproj_reason: None,
+        identity_names: Vec::new(),
+        size_bytes,
+        multipart: false,
+        multipart_parts: Vec::new(),
+        multipart_error: None,
+        metadata_error: None,
+        metadata_identity: None,
+        architecture: Some(architecture),
+        embedding_length: number("hidden_size"),
+        context_length: number("max_position_embeddings"),
+        is_moe: number("num_experts").or(number("num_local_experts")).is_some_and(|n| n > 1),
+        total_layers: number("num_hidden_layers"),
+        quant,
+        shard_range: None,
+        shard_group: None,
+        sha256: None,
+        model_label: None,
+        pom_id: None,
+        tensor_parallel: false,
+        tp_rank: None,
+        tp_size: None,
+        capabilities: None,
+        format: Some("safetensors".into()),
+    })
+}
+
 fn scan_gguf_dir(
     dir: &Path,
     source: ModelSource,
@@ -2023,6 +2162,7 @@ pub fn discover_fast(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
             ModelSource::Ollama => scan_ollama_dir(dir, &mut models, &mut scanned),
             source => scan_gguf_dir(dir, source, &mut models, &mut scanned),
         }
+        scan_hf_dir(dir, &mut models);
     }
 
     models.sort_by(|a, b| {
@@ -2712,6 +2852,7 @@ pub(crate) mod tests {
             tp_rank: None,
             tp_size: None,
             capabilities: None,
+        format: None,
             multipart: false,
             multipart_parts: Vec::new(),
             multipart_error: None,
@@ -2754,6 +2895,7 @@ pub(crate) mod tests {
             tp_rank: None,
             tp_size: None,
             capabilities: None,
+        format: None,
             multipart: false,
             multipart_parts: Vec::new(),
             multipart_error: None,
@@ -2819,6 +2961,7 @@ pub(crate) mod tests {
             tp_rank: None,
             tp_size: None,
             capabilities: None,
+        format: None,
             multipart: false,
             multipart_parts: Vec::new(),
             multipart_error: None,
@@ -2876,6 +3019,7 @@ pub(crate) mod tests {
                 tp_rank: tensor_parallel.then_some(if id == "c" { 0 } else { 1 }),
                 tp_size: tensor_parallel.then_some(2),
                 capabilities: None,
+        format: None,
                 multipart: false,
                 multipart_parts: Vec::new(),
                 multipart_error: None,
@@ -3011,6 +3155,7 @@ pub(crate) mod tests {
             tp_rank: None,
             tp_size: None,
             capabilities: None,
+        format: None,
             multipart: false,
             multipart_parts: Vec::new(),
             multipart_error: None,
@@ -3419,4 +3564,48 @@ mod part_naming_tests {
 
         std::fs::remove_dir_all(&root).ok();
     }
+
+    #[test]
+    fn a_hugging_face_folder_is_a_safetensors_model_read_from_its_config() {
+        let library = tempfile::tempdir().unwrap();
+        let folder = library.path().join("org/Model-NVFP4");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("config.json"),
+            r#"{"model_type":"gemma4","text_config":{"num_hidden_layers":30,"max_position_embeddings":262144,"hidden_size":2816},"quantization_config":{"quant_method":"modelopt"}}"#,
+        )
+        .unwrap();
+        std::fs::write(folder.join("model-00001-of-00001.safetensors"), vec![0u8; 2048]).unwrap();
+        let mut found = Vec::new();
+        scan_hf_dir(library.path(), &mut found);
+        assert_eq!(found.len(), 1);
+        let model = &found[0];
+        assert_eq!(model.format.as_deref(), Some("safetensors"));
+        assert_eq!(model.name, "org/Model-NVFP4");
+        assert_eq!(model.architecture.as_deref(), Some("gemma4"));
+        assert_eq!(model.total_layers, Some(30));
+        assert_eq!(model.context_length, Some(262144));
+        assert_eq!(model.quant.as_deref(), Some("modelopt"));
+        assert_eq!(model.size_bytes, 2048);
+        let mut enriched = found[0].clone();
+        assert!(matches!(enrich_model(&mut enriched), EnrichResult::Ready));
+        assert!(metadata_is_current(&enriched), "an enriched folder is current, never enriched again");
+    }
+
+    #[test]
+    fn a_folder_whose_index_points_into_a_subfolder_is_found_with_its_size() {
+        let library = tempfile::tempdir().unwrap();
+        let folder = library.path().join("Model-FP4");
+        std::fs::create_dir_all(folder.join("tensors")).unwrap();
+        std::fs::write(folder.join("config.json"), r#"{"model_type":"qwen4_exp","text_config":{"num_hidden_layers":48}}"#).unwrap();
+        std::fs::write(folder.join("model.safetensors.index.json"), "{}").unwrap();
+        std::fs::write(folder.join("tensors/part-1.safetensors"), vec![0u8; 3000]).unwrap();
+        let mut found = Vec::new();
+        scan_hf_dir(library.path(), &mut found);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].architecture.as_deref(), Some("qwen4_exp"));
+        assert_eq!(found[0].total_layers, Some(48));
+        assert_eq!(found[0].size_bytes, 3000);
+    }
+
 }

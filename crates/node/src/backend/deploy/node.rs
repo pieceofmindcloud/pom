@@ -151,6 +151,9 @@ pub struct AddNodeRequest {
     pub params: Option<RuntimeParams>,
     #[serde(default)]
     pub n_gpu_layers: Option<u32>,
+    /// The new machine's GPUs for this deployment. `None` = all of them.
+    #[serde(default)]
+    pub gpus: Option<crate::config::GpuSet>,
     #[serde(default)]
     pub offload_kqv: Option<bool>,
     /// The new machine's own parameters (context, sessions, GPU layers, KV placement). They launch this machine only;
@@ -773,6 +776,7 @@ pub(super) async fn add_node_endpoint(
                 },
                 merge: None,
                 n_gpu_layers: req.n_gpu_layers,
+                gpus: req.gpus,
                 offload_kqv: req.offload_kqv,
                 inference_role: None,
                 no_embeddings: None,
@@ -821,6 +825,7 @@ pub(super) async fn add_node_endpoint(
             part_sha256: shard_sha256.clone(),
             merge: None,
             n_gpu_layers: req.n_gpu_layers,
+            gpus: req.gpus,
             offload_kqv: req.offload_kqv,
             inference_role: None,
             no_embeddings: None,

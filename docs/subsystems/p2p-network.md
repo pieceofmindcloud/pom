@@ -264,7 +264,28 @@ connected to. The relay URL is the only address a node behind CGNAT has to
 offer, and the `host:port` convention does not carry it. It comes from
 `Network::set_endpoint_addrs`, which `Discovery` updates on every policy round
 (5 s), with the operator's pin (`advertise_addr` on the endpoint port) in front;
-the new announcement goes out in the next gossip. Whoever dials
+the new announcement goes out in the next gossip. With `advertise_only`
+(`pom.json`, the My Machine checkbox, `POST /api/ui/network/advertise-addr`)
+and a pin, the list keeps only the pin and the relay URLs. The announce is not
+the only source of direct paths: iroh hands every local interface address of
+its socket to the other side as a NAT traversal candidate, inside QUIC, and
+`addr_filter` does not touch those. So `advertise_only` also binds the endpoint
+to the pinned IP alone when that IP is one of this machine's interfaces
+(`discovery::held_bind_ip`, read at startup; `NodeInfo.advertise_only_restart`
+says a saved change waits for the next start). Without it, a node on the host
+network beside nodes in a Docker bridge of the same machine offers about ten
+equal-RTT candidates; iroh 1.4 flips its selected path between them without
+end (path ids in the hundreds within minutes, `could not close last open path`,
+`missed a PathEvent, RemoteStateActor lagging`, gossip `send loop terminated`)
+and both processes burn several cores.
+
+An instance (`crate::instances`) announces `instance`, the host's signed
+certificate (optional, ignored by older nodes). Every node knows its machine
+(`instances::set_local_machine`: the host's id for an instance): a peer on the
+same machine (`PeerInfo::on_this_machine`) gets `127.0.0.1` first in its
+inference, gateway and QUIC candidates, so the hidden state between a host and
+its instances never leaves the machine, and the RTT reports give it 0 with
+`transport: "local"` (`local_rtt_measurements`, `chat_telemetry`). Whoever dials
 (`PeerInfo::endpoint_dialable_addrs`) adds the peer's UDP candidates on the
 endpoint port, which is how a LAN or VPN peer is reached where mDNS does not
 cross.

@@ -67,14 +67,6 @@ jobs:
           [ "$livre" -ge 20 ] || echo "::warning::only ${livre}G free; each variant uses ~10G in ~/.cache/pom-release"
 
       - name: Build and package
-        # Cargo.toml names the engine (pom-plugin-llama.cpp) as ssh://git@github.com/...;
-        # the same fine-grained read-only token the hosted workflows use rewrites that URL
-        # to HTTPS. Through GIT_CONFIG_* it lives only in this step's environment, never
-        # in the self-hosted runner's ~/.gitconfig.
-        env:
-          GIT_CONFIG_COUNT: "1"
-          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.POM_LLAMACPP_TOKEN }}@github.com/.insteadOf
-          GIT_CONFIG_VALUE_0: ssh://git@github.com/
         run: scripts/release-ksia.sh --variant linux-cpu --version "${{ inputs.version }}"
       - name: Publish to the release
         uses: softprops/action-gh-release@v2
@@ -103,14 +95,6 @@ jobs:
           [ "$livre" -ge 25 ] || echo "::warning::only ${livre}G free; the full CUDA build uses well more than the CPU one"
 
       - name: Build and package
-        # Cargo.toml names the engine (pom-plugin-llama.cpp) as ssh://git@github.com/...;
-        # the same fine-grained read-only token the hosted workflows use rewrites that URL
-        # to HTTPS. Through GIT_CONFIG_* it lives only in this step's environment, never
-        # in the self-hosted runner's ~/.gitconfig.
-        env:
-          GIT_CONFIG_COUNT: "1"
-          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.POM_LLAMACPP_TOKEN }}@github.com/.insteadOf
-          GIT_CONFIG_VALUE_0: ssh://git@github.com/
         run: scripts/release-ksia.sh --variant linux-cuda --version "${{ inputs.version }}"
       - name: Publish to the release
         uses: softprops/action-gh-release@v2
@@ -133,14 +117,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build and package
-        # Cargo.toml names the engine (pom-plugin-llama.cpp) as ssh://git@github.com/...;
-        # the same fine-grained read-only token the hosted workflows use rewrites that URL
-        # to HTTPS. Through GIT_CONFIG_* it lives only in this step's environment, never
-        # in the self-hosted runner's ~/.gitconfig.
-        env:
-          GIT_CONFIG_COUNT: "1"
-          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.POM_LLAMACPP_TOKEN }}@github.com/.insteadOf
-          GIT_CONFIG_VALUE_0: ssh://git@github.com/
         run: scripts/release-ksia.sh --variant windows-cpu --version "${{ inputs.version }}"
       - name: Publish to the release
         uses: softprops/action-gh-release@v2

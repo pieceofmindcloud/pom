@@ -854,6 +854,11 @@ pub enum P2PMessage {
         /// parseable; the announce signature covers it.
         #[serde(default)]
         direct_only: bool,
+        /// The host's certificate when this node is one of its instances
+        /// (`crate::instances`). Optional: older nodes neither send nor read
+        /// it; the announce signature covers it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instance: Option<crate::instances::InstanceCertificate>,
         /// Trigger for the network Chat's authenticated gate.
         #[serde(default)]
         network_chat_enabled: bool,
@@ -1007,6 +1012,11 @@ pub struct PeerInfo {
     /// Carried by the peer's own signed announce.
     #[serde(default)]
     pub direct_only: bool,
+    /// The host's certificate when the peer is an instance of another node
+    /// (`crate::instances`), as its signed announce carried it. Verified by
+    /// whoever relies on it (`InstanceCertificate::verifies_for`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<crate::instances::InstanceCertificate>,
 }
 
 /// Extract the host part of an addr string for use in HTTP URLs.
@@ -1338,7 +1348,12 @@ impl PeerInfo {
             .iter()
             .map(String::as_str)
             .chain(std::iter::once(self.addr.as_str()));
-        let mut urls = Vec::with_capacity(self.addr_candidates.len() + 1);
+        let mut urls = Vec::with_capacity(self.addr_candidates.len() + 2);
+        // Another process of this machine (`crate::instances`): the hidden
+        // state crosses the loopback, never the network.
+        if self.on_this_machine() {
+            urls.push(format!("{}://127.0.0.1:{port}", crate::peer_client::peer_scheme()));
+        }
         for address in base {
             if !is_peer_destination(&self.node_id, address) {
                 continue;
@@ -1378,10 +1393,23 @@ impl PeerInfo {
         let Some(port) = self.inference_quic_port else {
             return Vec::new();
         };
-        self.dialable_addrs()
+        let local = self
+            .on_this_machine()
+            .then(|| format!("127.0.0.1:{port}"));
+        local
             .into_iter()
-            .map(|address| format!("{}:{port}", ip_host(&address)))
+            .chain(
+                self.dialable_addrs()
+                    .into_iter()
+                    .map(|address| format!("{}:{port}", ip_host(&address))),
+            )
             .collect()
+    }
+
+    /// Whether the peer is another process of this machine: the host and its
+    /// instances, or two instances of one host (`crate::instances`).
+    pub fn on_this_machine(&self) -> bool {
+        crate::instances::same_machine(&self.node_id, self.instance.as_ref())
     }
 
     /// Base URL of this peer's HTTP API / web UI.
@@ -1422,7 +1450,10 @@ impl PeerInfo {
         };
         let mut base: Vec<&str> = vec![self.addr.as_str()];
         base.extend(self.addr_candidates.iter().map(String::as_str));
-        let mut urls: Vec<String> = Vec::with_capacity(base.len());
+        let mut urls: Vec<String> = Vec::with_capacity(base.len() + 1);
+        if self.on_this_machine() {
+            urls.push(crate::peer_client::peer_base_url("127.0.0.1", port, tls));
+        }
         for a in base {
             if !is_peer_destination(&self.node_id, a) {
                 continue;
@@ -1495,6 +1526,14 @@ pub struct Network {
     /// change this live, via `POST /api/ui/network/advertise-addr`, without a
     /// process restart.
     advertise_addr: std::sync::RwLock<Option<String>>,
+    /// `Config.advertise_only`: with a pin, announce no other direct address.
+    advertise_only: AtomicBool,
+    /// The host's certificate when this node is an instance of another node
+    /// (`<home>/instance.json`, `crate::instances`), read once at start.
+    instance_cert: Option<crate::instances::InstanceCertificate>,
+    /// Whether the p2p endpoint of this run is bound to the advertised address
+    /// alone (`discovery::held_bind_ip`); a change waits for the next start.
+    bind_held: AtomicBool,
     /// Tensor parallelism identity of this node (path C). `None` outside
     /// a TP group. Mutable like `advertise_addr`: `apply` can turn the
     /// node on as primary/worker without restarting the process.
@@ -2022,6 +2061,9 @@ impl Network {
             direct_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hostname: std::sync::RwLock::new(String::new()),
             advertise_addr: std::sync::RwLock::new(None),
+            advertise_only: AtomicBool::new(false),
+            instance_cert: crate::instances::own_certificate(),
+            bind_held: AtomicBool::new(false),
             tp: std::sync::RwLock::new(None),
             runtime_capacity: std::sync::RwLock::new(RuntimeCapacityState::default()),
             idle: AtomicBool::new(false),
@@ -2341,6 +2383,42 @@ impl Network {
     /// rather than stored broken; callers that need to reject bad input
     /// outright (the web UI's save endpoint) should validate with
     /// `advertised_addr` themselves first and only call this on success.
+    /// Offer peers only the pinned address (`Config.advertise_only`), live for
+    /// the announce; the endpoint's bind follows on the next start
+    /// (`discovery::bind`).
+    pub fn set_advertise_only(&self, only: bool) {
+        self.advertise_only.store(only, Ordering::Relaxed);
+    }
+
+    /// The host's certificate when this node is an instance (`crate::instances`).
+    pub fn instance_certificate(&self) -> Option<crate::instances::InstanceCertificate> {
+        self.instance_cert.clone()
+    }
+
+    /// The saved choice, with or without a pin.
+    pub fn advertise_only_asked(&self) -> bool {
+        self.advertise_only.load(Ordering::Relaxed)
+    }
+
+    pub fn set_bind_held(&self, held: bool) {
+        self.bind_held.store(held, Ordering::Relaxed);
+    }
+
+    pub fn bind_held(&self) -> bool {
+        self.bind_held.load(Ordering::Relaxed)
+    }
+
+    /// Whether the announce is held to the pinned address: asked for, and a
+    /// pin is set (without one there is nothing to hold it to).
+    pub fn advertise_only(&self) -> bool {
+        self.advertise_only.load(Ordering::Relaxed)
+            && self
+                .advertise_addr
+                .read()
+                .expect("advertise_addr lock")
+                .is_some()
+    }
+
     pub fn set_advertise_addr(&self, raw: Option<&str>) {
         let normalized = raw.and_then(|r| advertised_addr(r, self.bind_addr.port()));
         if let Some(ref a) = normalized {
@@ -2438,12 +2516,18 @@ impl Network {
         if let Some(address) = pinned.as_deref().and_then(pinned_endpoint_addr) {
             addrs.push(address);
         }
+        let only = self.advertise_only();
         for address in self
             .endpoint_addrs
             .read()
             .expect("endpoint_addrs lock")
             .iter()
         {
+            // Held to the pin: relays stay (a fallback, not a direct path),
+            // every other direct address goes.
+            if only && address.parse::<std::net::SocketAddr>().is_ok() {
+                continue;
+            }
             if !addrs.contains(address) {
                 addrs.push(address.clone());
             }
@@ -2687,7 +2771,9 @@ impl Network {
             addr_candidates,
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
             deploy_id: assignment.map(|a| a.deploy_id.clone()).unwrap_or_default(),
-            deployment_name: assignment.map(|a| a.deployment_name.clone()).unwrap_or_default(),
+            deployment_name: assignment
+                .map(|a| a.deployment_name.clone())
+                .unwrap_or_default(),
             start_layer: assignment.map(|a| a.start_layer).unwrap_or(0),
             end_layer: assignment.map(|a| a.end_layer).unwrap_or(0),
             total_layers: assignment.map(|a| a.total_layers).unwrap_or(0),
@@ -2774,6 +2860,7 @@ impl Network {
             cluster_logs_enabled: self.cluster_logs_enabled(),
             idle: self.is_idle(),
             direct_only: self.is_direct_only(),
+            instance: self.instance_certificate(),
             network_chat_enabled: self.network_chat_enabled(),
             signature: None,
         }
@@ -3878,6 +3965,7 @@ impl Network {
                 cluster_logs_enabled,
                 idle,
                 direct_only,
+                instance,
                 network_chat_enabled,
                 cluster_id,
                 trust_version,
@@ -3939,6 +4027,7 @@ impl Network {
                     runtime_capacity,
                     idle,
                     direct_only,
+                    instance,
                 };
 
                 self.remember_public_discovery_peer(&peer).await;
@@ -5542,6 +5631,36 @@ mod tests {
         );
     }
 
+    /// "Announce only this address": with a pin, no other direct address
+    /// leaves the node (relays stay as a fallback); without a pin the choice
+    /// holds nothing and every published address goes out as before.
+    #[tokio::test]
+    async fn advertise_only_keeps_the_pin_and_the_relays() {
+        let net = Network::testkit("n".into(), "p".into(), vec![], None, None)
+            .await
+            .unwrap();
+        net.set_endpoint_addrs(vec![
+            "203.0.113.5:52777".into(),
+            "https://relay.example.org/".into(),
+        ]);
+        net.set_advertise_only(true);
+        assert!(!net.advertise_only(), "no pin, nothing to hold to");
+        assert_eq!(net.endpoint_addrs().len(), 2);
+
+        net.set_advertise_addr(Some("198.51.100.9:42777"));
+        assert!(net.advertise_only());
+        assert_eq!(
+            net.endpoint_addrs(),
+            vec![
+                "198.51.100.9:52777".to_string(),
+                "https://relay.example.org/".to_string(),
+            ]
+        );
+
+        net.set_advertise_only(false);
+        assert_eq!(net.endpoint_addrs().len(), 3);
+    }
+
     /// Clearing the pin (`None`, from the UI's "empty means auto" convention)
     /// has to fall back through the same precedence `announce_addr` applies
     /// back to an observed address if no current public local address exists.
@@ -5649,6 +5768,7 @@ mod tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         };
         assert_eq!(
             peer.inference_url().as_deref(),
@@ -5706,6 +5826,7 @@ mod tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         };
 
         for count in [0usize, 1, 2, 3, 5, 12] {
@@ -5803,6 +5924,7 @@ mod tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 
@@ -5946,6 +6068,7 @@ mod tests {
                 cluster_logs_enabled: false,
                 network_chat_enabled: false,
                 direct_only: false,
+                instance: None,
             },
             current.parse().unwrap(),
             &assignment,
@@ -6267,6 +6390,7 @@ mod tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 
@@ -6294,6 +6418,7 @@ mod tests {
             relay_peers: vec![],
             relay: Default::default(),
             advertise_addr: None,
+            advertise_only: false,
             network: crate::config::NetworkSettings {
                 visibility,
                 ..Default::default()
@@ -6381,6 +6506,7 @@ mod tests {
             runtime_capacity: None,
             idle: false,
             direct_only: false,
+            instance: None,
         }
     }
 
@@ -6715,6 +6841,7 @@ mod tests {
                 runtime_capacity: None,
                 idle: false,
                 direct_only: true,
+                instance: None,
                 cluster_logs_enabled: false,
                 network_chat_enabled: false,
             },
@@ -7929,6 +8056,7 @@ mod tests {
             idle: false,
             network_chat_enabled: false,
             direct_only: false,
+            instance: None,
         };
         sign_announce(&mut announce, key);
         announce

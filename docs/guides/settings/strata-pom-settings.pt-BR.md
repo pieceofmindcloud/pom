@@ -1,13 +1,13 @@
 ---
 id: strata-pom-settings
-label: Configurações POM do Strata
+label: Configurações PoM do Strata
 summary: Como o plugin Strata divide um modelo entre máquinas
-title: Configurações POM do Strata
+title: Configurações PoM do Strata
 order: 130
 ---
 
 :::lead
-Quando uma implantação roda no plugin Strata, o inspetor de implantação mostra um card de configurações POM com as configurações que o Strata declara. Elas decidem como o POM distribui o modelo e as conversas entre as máquinas. As configurações do próprio motor (amostragem, raciocínio, MTP) ficam no card do motor, acima dele.
+Quando uma implantação roda no plugin Strata, o inspetor de implantação mostra um card de configurações PoM com as configurações que o Strata declara. Elas decidem como o PoM distribui o modelo e as conversas entre as máquinas. As configurações do próprio motor (amostragem, raciocínio, MTP) ficam no card do motor, acima dele.
 :::
 
 | Propriedade | O que faz | Quando mudar |
@@ -20,7 +20,7 @@ Quando uma implantação roda no plugin Strata, o inspetor de implantação most
 | Precisão do estado oculto | Aparece quando o modelo é dividido em fatias entre máquinas. Define os bytes enviados entre os estágios por token: f16 (o padrão), f32 (sem perda, o dobro do volume), f8 ou int4 (com perda). | Experimente f8 num link lento. |
 
 :::warn Você não escolhe o papel compartilhado
-Quando o modelo inteiro vai para duas ou mais máquinas, o POM dá sozinho um terceiro papel, compartilhado, a toda máquina deixada em Prefill e decode. Esse papel mantém as sessões do Strata ligadas, que é como as máquinas passam conversas umas para as outras. No Dashboard essas máquinas mostram o selo **Prefill/Decode**, e a máquina de prefill mostra **Prefill primeiro**.
+Quando o modelo inteiro vai para duas ou mais máquinas, o PoM dá sozinho um terceiro papel, compartilhado, a toda máquina deixada em Prefill e decode. Esse papel mantém as sessões do Strata ligadas, que é como as máquinas passam conversas umas para as outras. No Dashboard essas máquinas mostram o selo **Prefill/Decode**, e a máquina de prefill mostra **Prefill primeiro**.
 :::
 
 ## Receitas

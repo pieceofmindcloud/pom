@@ -21,7 +21,7 @@ O que implantar: **Pipeline** (um modelo de linguagem, a partir do GGUF inteiro)
 ### O mapa
 As máquinas da implantação, cada uma com as faixas de camadas que vai servir e a GPU, a RAM e a carga ao vivo. Uma máquina segue a ordem do pipeline assim que tem uma faixa; **Organizar** devolve ao lugar os cartões que você arrastou. Arraste o fundo pontilhado para levar o mapa a qualquer lugar, além de qualquer borda, e solte onde ele fica melhor de ver; um cartão também vai para onde você o soltar; a roda do mouse ou a pinça do trackpad dá zoom. O **Gateway** fecha o ciclo.
 ### O inspetor
-**Globais** guarda as configurações da implantação inteira (contexto, sessões, amostragem, as configurações do POM). **Máquinas** lista todas as máquinas do mapa, na ordem do pipeline, só com o que você edita por máquina: as faixas de camadas, as camadas na GPU e se o cache KV vai para a GPU.
+**Globais** guarda as configurações da implantação inteira (contexto, sessões, amostragem, as configurações do PoM). **Máquinas** lista todas as máquinas do mapa, na ordem do pipeline, só com o que você edita por máquina: as faixas de camadas, as camadas na GPU e se o cache KV vai para a GPU. Uma máquina com mais de uma GPU também as lista, todas marcadas: desmarque uma e o motor roda só nas GPUs marcadas, seja qual for o motor (llama.cpp, Strata, Avalon ou outro plugin). **+ Instância** sobe outro nó da mesma máquina, que entra no mapa como uma máquina própria: dê a ela outra faixa e outras GPUs para usar a mesma máquina duas vezes (uma placa NVIDIA e uma AMD num motor que roda uma de cada vez, por exemplo). Entre uma máquina e suas instâncias a linha é pontilhada e o RTT é 0: os dados não saem da máquina.
 :::
 
 ## Da escolha ao serviço
@@ -32,7 +32,7 @@ Os arquivos GGUF inteiros que alguma máquina conhece.
 ### Pôr as máquinas no mapa
 O mapa abre na última implantação do modelo, ou então nas máquinas que o têm, com as camadas divididas entre elas. Arraste mais máquinas da faixa de baixo; elas entram sem faixa, e você dá camadas a elas na aba Máquinas. Uma máquina que serve a camada 0 é uma **Cabeça**: ela recebe os prompts. As arestas entre os estágios mostram o RTT medido entre as máquinas. Nada é verificado enquanto você edita, então o mapa nunca se redesenha sozinho: **Cobertura do modelo**, no canto de baixo, conta as camadas cobertas.
 
-O cartão de uma máquina que não tem o modelo avisa. **Baixar aqui** faz ela baixar o mesmo repositório e arquivo do Hugging Face que outra máquina baixou, com todas as partes de um arquivo dividido; o cartão passa a mostrar o progresso. Para um arquivo copiado à mão, coloque-o numa das pastas de modelos dessa máquina e aperte **Varrer**. Um modelo que ninguém baixou pelo POM oferece só Varrer. O mesmo vale para um projetor de visão ou um rascunho MTP que a implantação precisa numa máquina que não o tem. Uma máquina sem o modelo nunca recebe uma cópia pela rede.
+O cartão de uma máquina que não tem o modelo avisa. **Baixar aqui** faz ela baixar o mesmo repositório e arquivo do Hugging Face que outra máquina baixou, com todas as partes de um arquivo dividido; o cartão passa a mostrar o progresso. Para um arquivo copiado à mão, coloque-o numa das pastas de modelos dessa máquina e aperte **Varrer**. Um modelo que ninguém baixou pelo PoM oferece só Varrer. O mesmo vale para um projetor de visão ou um rascunho MTP que a implantação precisa numa máquina que não o tem. Uma máquina sem o modelo nunca recebe uma cópia pela rede.
 ### Dar a cada máquina as suas camadas
 Na aba **Máquinas**, cada máquina que tem o arquivo inteiro pode servi-lo inteiro (**Modelo inteiro**) ou uma faixa. A faixa tem um controle deslizante com duas alças que só param em cortes que o modelo permite; aperte em qualquer ponto da trilha e a alça mais próxima segue o mouse, então qualquer faixa escolhida pode ser servida: cada máquina lê as camadas da própria cópia do arquivo inteiro, nada é gravado nem copiado. **Dividir as camadas entre N máquinas** divide as camadas por igual, na ordem da lista, entre as máquinas com a caixa marcada (Shift+clique num cartão também marca ou desmarca). Uma máquina desmarcada mantém as faixas e as configurações: as marcadas dividem as camadas que ela não serve, ou o modelo inteiro quando as desmarcadas já servem tudo. O nome da implantação começa como o nome do modelo sem `.gguf` e sem o número da parte de um arquivo dividido. As setas de cada máquina a sobem ou descem na lista, que é a ordem do pipeline: as máquinas com faixa trocam as faixas entre si, então a primeira da lista serve a camada 0. Duas máquinas na mesma faixa são réplicas. Um motor publicado por um plugin que roda fatias recebe faixas do mesmo jeito: quando a implantação é aplicada, o nó corta a fatia de cada máquina (virtual ou real) da própria cópia do modelo inteiro.
 ### Implantar
@@ -44,7 +44,7 @@ O ciclo de vida de uma fatia: só o estado que o próprio nó confirmou autoriza
 :::
 
 :::note Ajuda das configurações
-Cada categoria do inspetor tem um botão de ajuda que abre o guia dela: Configurações padrões e Configurações do POM.
+Cada categoria do inspetor tem um botão de ajuda que abre o guia dela: Configurações padrões e Configurações do PoM.
 :::
 
 ## Modelos de imagem
@@ -60,7 +60,7 @@ Arraste máquinas da barra de baixo para cada estágio. Mais de uma máquina num
 A linha vermelha no topo diz o que ainda falta. Implantar segue a mesma janela de progresso de um modelo de linguagem, e a implantação aparece no Dashboard e em Implantações, que o botão Histórico à esquerda de Implantar abre.
 :::
 
-O ComfyUI de qualquer máquina da rede lista os estágios como `POM ▸ <nome> ▸ <arquivo>` nos loaders normais, e o Chat pode gerar imagens com ele. Nada é copiado: uma máquina sem o arquivo não é oferecida.
+O ComfyUI de qualquer máquina da rede lista os estágios como `PoM ▸ <nome> ▸ <arquivo>` nos loaders normais, e o Chat pode gerar imagens com ele. Nada é copiado: uma máquina sem o arquivo não é oferecida.
 
 :::deep docs/subsystems/deployment.md
 O plano, a fusão, a ordem e o ciclo de vida da fatia

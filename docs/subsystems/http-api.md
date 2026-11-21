@@ -1312,7 +1312,7 @@ and `bootstrap` (the first run wizard), then `download_model`,
 `deploy_model`, `chat` and `join` (the hints); the progress is `first_run_guide` in `pom.json`,
 removed when the last step is done or the guide is dismissed, after which
 both calls answer `active: false`. An unknown step is 400),
-`network/advertise-addr`, `network/node-name` (POST `{node_name}`, at most 64
+`network/advertise-addr` (POST `{advertise_addr, advertise_only?}`, answers `advertise_only` and `advertise_only_restart`), `network/node-name` (POST `{node_name}`, at most 64
 characters and no control characters; empty goes back to the system hostname;
 it writes `node_name` to the config and renames the node live, answering
 `{node_name, hostname}`), `network/relay` (GET answers the relay options in

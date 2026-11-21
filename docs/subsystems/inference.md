@@ -2592,7 +2592,8 @@ runs it through that plugin or fails.
   of `infer_server::run`. It binds the inference port first, asks the plugin
   to load the model through the local plugin host (`engine.load` with
   `model_path`, `model_label`, `n_ctx`, `max_sessions`, `kv`, `gpus` - the
-  NVIDIA GPU indices of the machine - and `gpu_devices`, every GPU with its
+  NVIDIA GPU indices of the machine, only those the deployment chose
+  (`NodeConfig.gpus`, `chosen_gpus`) - and `gpu_devices`, every chosen GPU with its
   `vendor` and its `ordinal` among that vendor's cards, the number its own
   runtime gives it: `HIP_VISIBLE_DEVICES` for an AMD card, which `sysmon`
   counts after the NVIDIA ones; also `cache_type_k`/`cache_type_v` - the
@@ -3442,7 +3443,7 @@ Documented from the sources on the `fm/rdma-gateway-remoto-por-token` branch
 `inference/`, `routing/`, `backend/` and the root. The engine modules named here
 (`llm`, `wire`, `mtp`, `collective`, `gguf`, `multipart`, `kv_budget`, `moe`,
 `sysmon`) are not in this repository: they are the `llama-engine` crate of the
-private `pom-plugin-llama.cpp` repository, re-exported by
+public `pom-plugin-llama.cpp` repository, re-exported by
 `crates/node/src/main.rs` (`pub use llama_engine::{...}`), which is why the node
 code reaches them as `crate::llm::`, `crate::wire::` and so on. Where code and documentation
 diverge, the code wins and the divergence is noted as a defect.

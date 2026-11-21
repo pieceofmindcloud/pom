@@ -346,6 +346,8 @@
                 inference_capabilities: Some(vec!["speculate/v1-lookup".to_string()]),
                 mem_free_mb: s.mem_free_mb,
                 gpu_free_mb: s.mem_free_mb,
+                gpus: Vec::new(),
+                machine_id: String::new(),
                 ram_free_mb: s.mem_free_mb,
                 disk_free_mb: s.disk_free_mb,
                 rtt_ms: None,
@@ -387,6 +389,7 @@
             end_layer: end,
             target_node_id: target.to_string(),
             n_gpu_layers: None,
+            gpus: None,
             offload_kqv: None,
             inference_role: None,
         }
@@ -545,8 +548,8 @@
             reason: None,
         };
         let ranges = [
-            WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15 },
-            WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 },
+            WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15, gpus: None },
+            WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31, gpus: None },
         ];
         let selection = super::add_whole_ranges(&mut machines, "model", &ranges, &options)
             .expect("both machines hold the whole model");
@@ -616,9 +619,9 @@
             &mut machines,
             "model",
             &[
-                WholeRangeSelection { node_id: "gpu1".into(), start_layer: 0, end_layer: 34 },
-                WholeRangeSelection { node_id: "gpu2".into(), start_layer: 35, end_layer: 47 },
-                WholeRangeSelection { node_id: "whole".into(), start_layer: 0, end_layer: 47 },
+                WholeRangeSelection { node_id: "gpu1".into(), start_layer: 0, end_layer: 34, gpus: None },
+                WholeRangeSelection { node_id: "gpu2".into(), start_layer: 35, end_layer: 47, gpus: None },
+                WholeRangeSelection { node_id: "whole".into(), start_layer: 0, end_layer: 47, gpus: None },
             ],
             &options,
         ).unwrap();
@@ -654,8 +657,8 @@
             reason: None,
         };
         let ranges = [
-            WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15 },
-            WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 },
+            WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15, gpus: None },
+            WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31, gpus: None },
         ];
         let plan_for = |range_load: bool| {
             let mut machines = build(vec![
@@ -704,8 +707,8 @@
             &mut machines,
             "model",
             &[
-                WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15 },
-                WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 },
+                WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 15, gpus: None },
+                WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31, gpus: None },
             ],
             &options,
         )
@@ -765,7 +768,7 @@
         let error = super::add_whole_ranges(
             &mut machines,
             "model",
-            &[WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31 }],
+            &[WholeRangeSelection { node_id: "b".into(), start_layer: 16, end_layer: 31, gpus: None }],
             &options,
         )
         .unwrap_err();
@@ -773,7 +776,7 @@
         let error = super::add_whole_ranges(
             &mut machines,
             "model",
-            &[WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 9 }],
+            &[WholeRangeSelection { node_id: "a".into(), start_layer: 0, end_layer: 9, gpus: None }],
             &options,
         )
         .unwrap_err();

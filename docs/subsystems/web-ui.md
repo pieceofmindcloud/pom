@@ -1182,6 +1182,29 @@ fields as the original configuration. Node can also read the versions through
 
 ## Chat
 
+### Talking to an ACP agent
+
+When a plugin of this machine serves an ACP agent (`GET /api/ui/chat/agents`,
+polled every 15 s, every 2 s while a chosen agent wakes up), the Chat shows an
+agent picker (`components/chat/AgentPicker.tsx`) beside the model picker:
+"Model" keeps today's conversation, an agent swaps the column for
+`components/chat/AgentChat.tsx`. That one opens a stopped on-demand plugin
+(`POST /api/ui/plugins/<code>/open`) and shows "Starting <name>" until the
+agent reports `ready`, then speaks ACP with the generic SDK
+(`@agentclientprotocol/sdk` 1.5.0, `lib/acp/connection.ts`) over a WebSocket on
+the node's own origin through the plugin proxy (the session cookie
+authenticates it; no token in the URL). Sessions start in the machine's
+workspace (`cwd` of the agent entry). It draws streamed text (Markdown),
+thoughts, plans, each tool call as a card (title, status, input and output on
+demand) and each permission request as a card with the agent's options; the
+earlier sessions come from `session/list` and reopen with `session/load`, and
+the agent's own model option (`configOptions`, category `model`) shows as a
+picker only when offered. A lost connection shows "Try again"; an agent that
+disappears says so and offers going back to the model. The conversation state
+is a pure reducer (`lib/acp/session.ts`). User sessions and the `visitor`
+profile get no picker. POM stores no agent transcript.
+
+
 `src/routes/Chat.tsx` talks to the cluster through `POST /v1/chat/completions`
 with `stream: true`, like any harness - what shows up there is what a harness
 would get. The history belongs to the browser (`chatStore`, `localStorage`, a

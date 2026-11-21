@@ -11,6 +11,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ## Per-file
 
+- `acp/connection.ts` - the Chat's generic ACP client: `@agentclientprotocol/sdk`
+  1.5.0 `ClientSideConnection` over `createWebSocketStream` on the page's own
+  origin (`wsUrl`), `connectAcp` (takes any `Stream`, tested against the SDK's
+  `AgentSideConnection` in memory) and `openAcp`; `modelChoice` flattens the
+  agent's model `configOptions`. `acp/session.ts` - the conversation as a pure
+  reducer (`applyUpdate`, `pushUser`, `pushPermission`, `answerPermission`).
+  `queries.ts` `useChatAgents` reads `GET /api/ui/chat/agents`.
+
 - `api.ts` - fetch wrapper over relative paths with same-origin credentials,
   connection-key auth, administrative-password auth only for `/api/ui/**`,
   `/api/transfer/**` and `/admin/**`, conditional JSON GETs with ETag caching, the SSE reader and the deployment

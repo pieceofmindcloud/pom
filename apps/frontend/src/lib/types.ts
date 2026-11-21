@@ -2664,3 +2664,20 @@ export interface PlannedCopy {
 /** The network's relay policy (`NetworkSettings.relay_policy`), decided by the principal. */
 export type RelayPolicy = "all" | "members" | "none";
 export const RELAY_POLICIES: readonly RelayPolicy[] = ["all", "members", "none"];
+
+/** An ACP agent a plugin of this machine serves (`GET /api/ui/chat/agents`). */
+export interface ChatAgent {
+  plugin_code: string;
+  id: string;
+  name: string;
+  version: string | null;
+  /** The service status, or `stopped` for a stopped on-demand plugin. */
+  status: string;
+  /** Where the browser opens the agent's WebSocket (`/api/ui/plugins/<code>/proxy<path>`). */
+  proxy_path: string;
+  protocol_version: number;
+  /** The machine's shared projects workspace, where sessions start. */
+  cwd: string;
+}
+
+export const chatAgentKey = (agent: Pick<ChatAgent, "plugin_code" | "id">) => `${agent.plugin_code}/${agent.id}`;

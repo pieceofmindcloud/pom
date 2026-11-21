@@ -533,8 +533,13 @@ pub(crate) async fn list_plugin_ui(State(state): State<crate::gateway::GatewaySt
 }
 
 /// The Chat's agent list: each ACP agent with the proxy path the browser
-/// opens (`/api/ui/plugins/<code>/proxy<acp.path>`).
-pub(crate) fn chat_agents_json(agents: &[crate::plugin_services::PluginService]) -> serde_json::Value {
+/// opens (`/api/ui/plugins/<code>/proxy<acp.path>`) and the folder its
+/// sessions start in (`cwd`: the machine's shared projects workspace, which
+/// ACP's `session/new` needs as an absolute path).
+pub(crate) fn chat_agents_json(
+    agents: &[crate::plugin_services::PluginService],
+    cwd: &str,
+) -> serde_json::Value {
     let agents: Vec<serde_json::Value> = agents
         .iter()
         .filter_map(|agent| {
@@ -547,6 +552,7 @@ pub(crate) fn chat_agents_json(agents: &[crate::plugin_services::PluginService])
                 "status": agent.status,
                 "proxy_path": format!("{}{}", crate::plugin_proxy::proxy_prefix(&agent.plugin_code), acp.path),
                 "protocol_version": acp.protocol_version,
+                "cwd": cwd,
             }))
         })
         .collect();
@@ -563,7 +569,12 @@ pub(crate) async fn chat_agents(
     if principal.is_some_and(|axum::Extension(principal)| principal.is_user()) {
         return axum::Json(json!({ "agents": [] })).into_response();
     }
-    axum::Json(chat_agents_json(&state.plugins.acp_agents().await)).into_response()
+    let cwd = state.auth.read().await.workspace_root_path();
+    axum::Json(chat_agents_json(
+        &state.plugins.acp_agents().await,
+        &cwd.display().to_string(),
+    ))
+    .into_response()
 }
 
 /// `POST /api/ui/plugins/:code/open`: starts the process of an on-demand plugin.
@@ -793,12 +804,12 @@ mod tests {
 
     #[test]
     fn chat_agents_lists_agents_with_their_proxy_path() {
-        let shown = chat_agents_json(&[goose_agent("ready")]);
+        let shown = chat_agents_json(&[goose_agent("ready")], "/data/workspace");
         assert_eq!(
             shown,
             serde_json::json!({"agents": [{"plugin_code": "goose", "id": "goose", "name": "Goose",
                 "version": "1.57.0", "status": "ready", "proxy_path": "/api/ui/plugins/goose/proxy/acp",
-                "protocol_version": 1}]})
+                "protocol_version": 1, "cwd": "/data/workspace"}]})
         );
     }
 

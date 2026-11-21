@@ -121,6 +121,7 @@ export const keys = {
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
   pluginUi: ["plugin-ui"] as const,
+  chatAgents: ["chat-agents"] as const,
   clusterLogs: (deployId: string | undefined) => ["cluster-logs", deployId ?? "all"] as const,
   remoteModels: (query: string, ggufOnly: boolean, page: number) =>
     ["remote-models", query, ggufOnly, page] as const,
@@ -851,4 +852,18 @@ export function invalidateAfterAction(qc: QueryClient) {
 export function useInvalidate() {
   const qc = useQueryClient();
   return () => invalidateAfterAction(qc);
+}
+
+/**
+ * The ACP agents this machine's plugins serve, for the Chat
+ * (`GET /api/ui/chat/agents`). A failed request or an older node means none.
+ * Polls faster while `waking` (a chosen agent is starting up).
+ */
+export function useChatAgents(waking = false) {
+  return useQuery<{ agents: import("./types").ChatAgent[] }>({
+    queryKey: keys.chatAgents,
+    queryFn: () => optional(api.get<{ agents: import("./types").ChatAgent[] }>("/api/ui/chat/agents"), { agents: [] }),
+    retry: false,
+    refetchInterval: waking ? 2_000 : 15_000,
+  });
 }

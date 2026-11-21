@@ -17,6 +17,13 @@ export const POM_LICENSE = {
 
 export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
   {
+    "name": "@agentclientprotocol/sdk",
+    "version": "1.5.0",
+    "license": "Apache-2.0",
+    "repository": "https://github.com/agentclientprotocol/typescript-sdk",
+    "ecosystem": "frontend"
+  },
+  {
     "name": "@babel/runtime",
     "version": "7.29.7",
     "license": "MIT",
@@ -132,7 +139,7 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "name": "@napi-rs/canvas-linux-x64-musl",
     "version": "1.1.0",
     "license": "MIT",
-    "repository": "https://www.npmjs.com/package/@napi-rs/canvas-linux-x64-musl",
+    "repository": "https://github.com/Brooooooklyn/canvas",
     "ecosystem": "frontend"
   },
   {
@@ -1701,6 +1708,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "version": "0.3.1",
     "license": "MIT",
     "repository": "https://github.com/imaya/zlib.js",
+    "ecosystem": "frontend"
+  },
+  {
+    "name": "zod",
+    "version": "4.6.7",
+    "license": "MIT",
+    "repository": "https://github.com/colinhacks/zod",
     "ecosystem": "frontend"
   },
   {
@@ -3483,21 +3497,21 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
   },
   {
     "name": "iroh",
-    "version": "1.3.0",
+    "version": "1.4.1",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/n0-computer/iroh",
     "ecosystem": "rust"
   },
   {
     "name": "iroh-base",
-    "version": "1.3.0",
+    "version": "1.4.1",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/n0-computer/iroh",
     "ecosystem": "rust"
   },
   {
     "name": "iroh-dns",
-    "version": "1.3.0",
+    "version": "1.4.1",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/n0-computer/iroh",
     "ecosystem": "rust"
@@ -3532,7 +3546,7 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
   },
   {
     "name": "iroh-relay",
-    "version": "1.3.0",
+    "version": "1.4.1",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/n0-computer/iroh",
     "ecosystem": "rust"
@@ -4008,21 +4022,21 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
   },
   {
     "name": "noq",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/n0-computer/noq",
     "ecosystem": "rust"
   },
   {
     "name": "noq-proto",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/n0-computer/noq",
     "ecosystem": "rust"
   },
   {
     "name": "noq-udp",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/n0-computer/noq",
     "ecosystem": "rust"
@@ -4862,7 +4876,7 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
   },
   {
     "name": "rustls",
-    "version": "0.23.37",
+    "version": "0.23.46",
     "license": "Apache-2.0 OR ISC OR MIT",
     "repository": "https://github.com/rustls/rustls",
     "ecosystem": "rust"
@@ -4918,7 +4932,7 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
   },
   {
     "name": "rustls-webpki",
-    "version": "0.103.10",
+    "version": "0.103.17",
     "license": "ISC",
     "repository": "https://github.com/rustls/webpki",
     "ecosystem": "rust"

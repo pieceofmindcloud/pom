@@ -34,6 +34,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
+import { AgentChat } from "../components/chat/AgentChat";
+import { AgentPicker } from "../components/chat/AgentPicker";
+import { chatAgentKey } from "../lib/types";
 import { ChatSessionList } from "../components/ChatSessionList";
 import { ChatHero } from "../components/ChatHero";
 import { MissingPiece } from "../components/MissingPiece";
@@ -78,6 +81,7 @@ import { ms, num } from "../lib/format";
 import type { GenerationTimings, RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
+  useChatAgents,
   useChatCapabilities,
   useConnection,
   useLocalCatalog,
@@ -1100,6 +1104,11 @@ function ChatScreen() {
   const offerImageTool = imageMode === "auto" && imageWorkflow != null;
   const [imageBusy, setImageBusy] = useState(false);
   const [formWorkflow, setFormWorkflow] = useState<ChatImageWorkflow | null>(null);
+  // Talking to an ACP agent a plugin serves instead of the model (`AgentChat`).
+  const [agentKey, setAgentKey] = useState<string | null>(null);
+  const chatAgents = useChatAgents(agentKey !== null);
+  const agents = profile === "visitor" ? [] : chatAgents.data?.agents ?? [];
+  const chosenAgent = agentKey ? agents.find((agent) => chatAgentKey(agent) === agentKey) ?? null : null;
   // A collection that no longer exists is not asked for.
   const ragCollection =
     session.ragCollection && ragCollections.includes(session.ragCollection) ? session.ragCollection : "";
@@ -1861,6 +1870,7 @@ function ChatScreen() {
                 how to send on the right. */}
             <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
               <div className="flex min-w-0 items-center gap-2">
+                <AgentPicker agents={agents} value={agentKey} onChange={setAgentKey} />
                 <ModelPicker value={model} options={available} onChange={chooseModel} />
                 {chatCapabilities.data?.image === "supported" && (
                   <ImageMenu
@@ -1937,6 +1947,11 @@ function ChatScreen() {
         />
       )}
 
+      {agentKey !== null ? (
+        <div className="flex min-w-0 flex-1 flex-col">
+          <AgentChat agent={chosenAgent} onLeave={() => setAgentKey(null)} />
+        </div>
+      ) : (
       <div className="flex min-w-0 flex-1 flex-col">
         {/* An empty conversation has no title to show: the opening screen is the page. */}
         {!empty && (
@@ -2052,6 +2067,7 @@ function ChatScreen() {
           </>
         )}
       </div>
+      )}
     </div>
   );
 }

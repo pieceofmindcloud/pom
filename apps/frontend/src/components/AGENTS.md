@@ -166,6 +166,13 @@ Per-file list:
   default) so a broken plugin never breaks the host screen.
 ## Chat, history and shared tables
 
+- `chat/AgentPicker.tsx` / `chat/AgentChat.tsx` - the Chat's ACP agent mode
+  (`docs/subsystems/web-ui.md`, "Talking to an ACP agent"): the picker beside
+  the model, hidden without agents; the agent column that opens a stopped
+  plugin, connects through `lib/acp/connection.ts`, draws tool and permission
+  cards and the agent's sessions and model option. Tests in
+  `chat/AgentChat.test.tsx`.
+
 - `Markdown.tsx` - a memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

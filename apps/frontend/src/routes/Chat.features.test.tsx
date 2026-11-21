@@ -55,6 +55,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 vi.mock("../lib/queries", () => ({
+  useChatAgents: () => ({ data: { agents: [] }, isLoading: false }),
   useConnection: () => ({ data: { phase: "connected", since: 0, last_error: null } }),
   useNode: () => ({
     data: {

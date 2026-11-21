@@ -53,11 +53,12 @@ type Overview = {
 };
 
 const MICRO = 1_000_000;
-const credits = (micro: number) => (micro / MICRO).toLocaleString(undefined, { maximumFractionDigits: 6 });
 const short = (account: string) => (account.length > 22 ? `${account.slice(0, 18)}…` : account);
 
 export function Payments() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  // Numbers and dates in the interface's language, never the browser's or the process's.
+  const credits = (micro: number) => (micro / MICRO).toLocaleString(locale, { maximumFractionDigits: 6 });
   const toast = useToast();
   const client = useQueryClient();
   const overview = useQuery<Overview>({
@@ -261,7 +262,7 @@ export function Payments() {
               <tbody>
                 {data.requests.map((r) => (
                   <tr key={r.id} className="border-t border-line">
-                    <td className="py-1.5 text-xs">{new Date(r.at).toLocaleString()}</td>
+                    <td className="py-1.5 text-xs">{new Date(r.at).toLocaleString(locale)}</td>
                     <td className="font-mono text-xs" title={`${r.account} · ${r.node_id}`}>{short(r.account)}</td>
                     <td>{credits(r.amount_micro)}</td>
                     <td className="text-xs">{r.note ?? ""}</td>
@@ -305,7 +306,7 @@ export function Payments() {
                       {c.payouts == null
                         ? t("payments.payoutsUnknown")
                         : c.payouts.closed && c.payouts.payout != null
-                          ? c.payouts.payout.toLocaleString(undefined, { maximumFractionDigits: 4 })
+                          ? c.payouts.payout.toLocaleString(locale, { maximumFractionDigits: 4 })
                           : t("payments.payoutsOpen", { nodes: c.payouts.nodes })}
                     </td>
                     <td className="text-xs">{Object.keys(c.accounts).length}</td>
@@ -332,7 +333,7 @@ export function Payments() {
               <tbody>
                 {data.ledger.map((row, i) => (
                   <tr key={i} className="border-t border-line">
-                    <td className="py-1.5 text-xs">{new Date(row.at).toLocaleString()}</td>
+                    <td className="py-1.5 text-xs">{new Date(row.at).toLocaleString(locale)}</td>
                     <td className="font-mono text-xs" title={row.account}>{short(row.account)}</td>
                     <td>{t(`payments.kind.${row.kind}`)}</td>
                     <td>{row.kind === "grant" ? "+" : "−"}{credits(Math.abs(row.amount_micro))}</td>

@@ -99,10 +99,11 @@ describe("PluginScreen opening", () => {
   it("opens as soon as the plugin signals it finished rendering", async () => {
     renderFixture("signalling");
 
-    // The signal arrives from the mounted screen, well before the 2 s the host
-    // would give up waiting for it.
+    // The screen is mounted from the start, hidden under the loader, so its text
+    // shows up before the signal: what proves the signal opened it is the loader
+    // leaving, and well before the 2 s the host would give up waiting for it.
     await waitFor(() => expect(screen.getByText("plugin-screen:signalling")).toBeTruthy(), { timeout: 1000 });
-    expect(screen.queryByTestId("plugin-loading-piece")).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId("plugin-loading-piece")).toBeNull(), { timeout: 1000 });
   });
 });
 

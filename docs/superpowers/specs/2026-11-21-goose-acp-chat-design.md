@@ -52,8 +52,8 @@ CLI would duplicate Harness, so the CLI lives in Harness.
 
 - A secret (node API key, plugin token, `GOOSE_SERVER__SECRET_KEY`) reaching
   the browser, a reply, `host.services` or a log.
-- A visitor (or any non-operator session) driving an agent that runs commands
-  on the machine.
+- A user session (a person signed in through a plugin's provider, not the
+  machine's operator) driving an agent that runs commands on the machine.
 - Plugins sharing files or state: discovery is read-only metadata, never a way
   to reach another plugin's binary, data or process.
 - Breaking an existing contract: every change below is additive (compatibility
@@ -118,11 +118,6 @@ Six deliveries, in this order; each is shippable alone.
 
 ### 2. ACP agent contract (POM)
 
-- Manifest field `proxy_profiles` (optional, list of profiles): the node
-  refuses the plugin proxy (403) to sessions of other profiles; absent keeps
-  today's open proxy. Documented in `plugins-ui.md`, checked by the
-  contract tests.
-
 A `host.services` entry of `kind: "acp_agent"` declares one agent:
 
 ```json
@@ -140,8 +135,8 @@ A `host.services` entry of `kind: "acp_agent"` declares one agent:
   saved manifest) and reports them with `status: "stopped"`. `stopped` is a new
   status value only for this kind.
 - A new route `GET /api/ui/chat/agents` returns the agents for the Chat:
-  `[{plugin_code, id, name, version, status, proxy_path}]`, operator and admin
-  sessions only (others get an empty list).
+  `[{plugin_code, id, name, version, status, proxy_path}]`, for operator
+  sessions; a user session gets an empty list.
 
 ### 3. Chat as a generic ACP client (POM frontend)
 
@@ -151,7 +146,7 @@ A `host.services` entry of `kind: "acp_agent"` declares one agent:
 - Choosing a stopped agent calls the existing `POST
   /api/ui/plugins/<code>/open`, shows "Starting <name>" until the agent reports
   `ready`, and an error with retry if it reports `error`.
-- Transport: the browser opens the WebSocket at the proxy path with the admin
+- Transport: the browser opens the WebSocket at the proxy path with the operator
   session cookie; `@aaif/goose-acp-client` (pinned, bundled into the frontend)
   speaks ACP over it. If the client turns out to be Goose-specific in ways
   that break the generic promise, the builder wraps a thin generic ACP layer
@@ -165,7 +160,7 @@ A `host.services` entry of `kind: "acp_agent"` declares one agent:
 - Sessions: the Chat session list shows agent conversations with the agent's
   name; reopening one resumes it through ACP `session/load` when the agent
   supports it, otherwise the transcript is read-only.
-- Never shown to visitors; no telemetry slot on agent answers.
+- Never shown to user sessions; no telemetry slot on agent answers.
 
 ### 4. Background services screen (POM frontend + small route)
 
@@ -185,7 +180,7 @@ A `host.services` entry of `kind: "acp_agent"` declares one agent:
 Scaffolded with `creating-pom-plugins`; structure like `pom-plugin-openmausbot`
 minus Node.
 
-- Manifest: `lifecycle: "on_demand"`, `proxy_profiles: ["admin"]`, no menu, no routes beyond what the
+- Manifest: `lifecycle: "on_demand"`, no menu, no routes beyond what the
   contract needs; icon, description and docs so the Plugins screen and the new
   screen show it.
 - Installer thread: downloads the pinned Goose CLI release asset for the
@@ -228,12 +223,18 @@ minus Node.
 
 ## Resolved after review
 
-- **Proxy access (security).** `/api/ui/plugins/:code/proxy/*` is open to every
-  profile today (`plugins-ui.md`), so hiding agents in `/api/ui/chat/agents`
-  alone would let a visitor session reach Goose. Fix (confirmed by the operator): an optional manifest field
-  `"proxy_profiles": ["admin"]`, additive, enforced by the node before
-  proxying; absent keeps today's behaviour. `pom-plugin-goose` declares it.
-  "Operator" means a session of profile `admin` on this node.
+- **Proxy access (security).** "Open to every profile" in `plugins-ui.md`
+  means every machine profile (admin, worker, visitor): a plugin's proxy is
+  only used by that machine's own UI. The people on a machine's UI are the
+  operator (node password) and user sessions (sign-in through a plugin's
+  provider), and `user_may_call` (`crates/node/src/backend/user_session.rs`)
+  is an allowlist that does not include the plugin proxy, so a user session
+  already cannot reach Goose. No new contract: a regression test pins that a
+  user session is refused on `/api/ui/plugins/goose/proxy/*`, and
+  `/api/ui/chat/agents` is empty for user sessions. A `proxy_profiles` field
+  gated on the machine profile was considered and dropped: it would stop the
+  operator of a worker or visitor machine from using Goose on their own
+  machine.
 - **Key and accounting.** Both plugins use `host.configure.gateway.api_key`,
   the node's chat key (`pom-<node_id>`), as every plugin does; usage is
   audited like the UI Chat's. No new key.
@@ -250,8 +251,8 @@ minus Node.
   uninstalled, and replaced whenever the running plugin reports a new list.
 - **Windows.** The host already kills its process tree on Windows (Job Object,
   `enterprise-licensing.md`), so no platform is scoped out.
-- **Background services access** (designer's call). Shown to `admin` sessions
-  only; Close and Open only for on-demand plugins, as the existing routes
+- **Background services access** (designer's call). Shown to operator sessions
+  only (not in `user_may_call`); Close and Open only for on-demand plugins, as the existing routes
   enforce (409 for resident ones).
 
 ## Left to the builder
@@ -271,6 +272,6 @@ minus Node.
 - Discovery returns the caller too, and no data beyond code/version/lifecycle/
   running.
 - `stopped` status and persisted agents so Chat can wake a stopped plugin.
-- Agents only for operator/admin sessions on the same machine.
+- Agents only for operator sessions on the same machine.
 - No idle auto-close.
 - Harness keeps its own Goose copy instead of reusing the Goose plugin's.

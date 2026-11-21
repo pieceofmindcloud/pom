@@ -193,7 +193,7 @@ describe("DeploymentInspector help", () => {
     mount({ ...params }, vi.fn(), undefined, false);
     for (const [section, title] of [
       ["Default settings", "Default deployment settings"],
-      ["POM settings", "POM settings"],
+      ["POM settings", "PoM settings"],
     ]) {
       fireEvent.click(screen.getByRole("button", { name: `Learn more about ${section}` }));
       const dialog = screen.getByRole("dialog", { name: title });

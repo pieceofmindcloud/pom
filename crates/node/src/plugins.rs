@@ -6901,17 +6901,31 @@ mod tests {
         }
     }
 
+    /// Where cargo put the `pom-fake-enterprise-plugin-host` [[bin]]: `target/<profile>/`.
+    /// The test binary sits below it, in `deps/` (older cargo) or in
+    /// `build/node/<hash>/out/` (cargo's newer build-dir layout), so the
+    /// directories above the test binary are searched until one holds the helper.
+    fn fake_host_path() -> std::path::PathBuf {
+        let name = if cfg!(windows) {
+            "pom-fake-enterprise-plugin-host.exe"
+        } else {
+            "pom-fake-enterprise-plugin-host"
+        };
+        let exe = std::env::current_exe().expect("locate the test binary");
+        exe.ancestors()
+            .skip(1)
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+            .unwrap_or_else(|| {
+                exe.parent()
+                    .and_then(|deps| deps.parent())
+                    .expect("locate the target/<profile> directory")
+                    .join(name)
+            })
+    }
+
     fn fake_host_binary() -> std::path::PathBuf {
-        let fake_host = std::env::current_exe()
-            .expect("locate the test binary")
-            .parent()
-            .and_then(|deps| deps.parent())
-            .expect("locate the target/<profile> directory")
-            .join(if cfg!(windows) {
-                "pom-fake-enterprise-plugin-host.exe"
-            } else {
-                "pom-fake-enterprise-plugin-host"
-            });
+        let fake_host = fake_host_path();
         assert!(
             fake_host.is_file(),
             "helper binary {} was not built; run `cargo test -p node` (not `--lib`) to produce all the [[bin]] targets",
@@ -7352,19 +7366,10 @@ mod tests {
         let _serial = REAL_HOST.lock().await;
         // `CARGO_BIN_EXE_*` is only injected in integration tests
         // (`tests/*.rs`); this is a unit test inside the `pom` binary, so we
-        // locate the helper binary the same way `plugin_host::host_executable`
-        // locates the real `pom-plugin-host` in production: beside cargo's output
-        // directory (`target/<profile>/deps/pom-<hash>` -> `target/<profile>/`).
-        let fake_host = std::env::current_exe()
-            .expect("locate the test binary")
-            .parent()
-            .and_then(|deps| deps.parent())
-            .expect("locate the target/<profile> directory")
-            .join(if cfg!(windows) {
-                "pom-fake-enterprise-plugin-host.exe"
-            } else {
-                "pom-fake-enterprise-plugin-host"
-            });
+        // locate the helper binary beside cargo's output directory, the way
+        // `plugin_host::host_executable` locates the real `pom-plugin-host` (see
+        // `fake_host_path`).
+        let fake_host = fake_host_path();
         assert!(
             fake_host.is_file(),
             "helper binary {} was not built; run `cargo test -p node` (not `--lib`) to produce all the [[bin]] targets",
@@ -7461,16 +7466,7 @@ mod tests {
     #[tokio::test]
     async fn an_on_demand_plugin_runs_only_while_opened() {
         let _serial = REAL_HOST.lock().await;
-        let fake_host = std::env::current_exe()
-            .expect("locate the test binary")
-            .parent()
-            .and_then(|deps| deps.parent())
-            .expect("locate the target/<profile> directory")
-            .join(if cfg!(windows) {
-                "pom-fake-enterprise-plugin-host.exe"
-            } else {
-                "pom-fake-enterprise-plugin-host"
-            });
+        let fake_host = fake_host_path();
         assert!(
             fake_host.is_file(),
             "helper binary {} was not built; run `cargo test -p node` (not `--lib`)",

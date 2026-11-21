@@ -45,6 +45,8 @@ export interface AcpConnection {
   cancel(sessionId: string): Promise<void>;
   /** Settles when the connection ends (the agent stopped, the socket closed). */
   closed: Promise<void>;
+  /** Ends the connection (the socket), so a session never outlives the screen. */
+  close(): void;
 }
 
 export function wsUrl(proxyPath: string, location: { protocol: string; host: string }): string {
@@ -65,7 +67,7 @@ export function modelChoice(options: SessionConfigOption[] | null | undefined): 
 
 let permissionSeq = 0;
 
-export async function connectAcp(stream: Stream, handlers: AcpHandlers): Promise<AcpConnection> {
+export async function connectAcp(stream: Stream, handlers: AcpHandlers, onClose?: () => void): Promise<AcpConnection> {
   const connection = new ClientSideConnection(
     () => ({
       sessionUpdate: async (notification) => handlers.onUpdate(notification),
@@ -110,10 +112,25 @@ export async function connectAcp(stream: Stream, handlers: AcpHandlers): Promise
       await connection.cancel({ sessionId });
     },
     closed: connection.closed,
+    close: () => onClose?.(),
   };
 }
 
 /** Opens the agent at `proxyPath` on this page's origin. */
-export function openAcp(proxyPath: string, handlers: AcpHandlers): Promise<AcpConnection> {
-  return connectAcp(createWebSocketStream(wsUrl(proxyPath, window.location), { cookies: "include" }), handlers);
+export async function openAcp(proxyPath: string, handlers: AcpHandlers): Promise<AcpConnection> {
+  let socket: WebSocket | undefined;
+  // The SDK creates the socket; this constructor keeps hold of it to close it.
+  class TrackedWebSocket extends WebSocket {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(url, protocols);
+      socket = this;
+    }
+  }
+  const stream = createWebSocketStream(wsUrl(proxyPath, window.location), { cookies: "include", WebSocket: TrackedWebSocket });
+  try {
+    return await connectAcp(stream, handlers, () => socket?.close());
+  } catch (error) {
+    socket?.close();
+    throw error;
+  }
 }

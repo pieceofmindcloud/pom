@@ -241,8 +241,6 @@ fn demo_plugin_allowlist() -> &'static Option<BTreeSet<String>> {
     })
 }
 
-/// Whether a person reaches plugin `code`: the plugins that sign people in
-/// always, and on a demonstration node the allowed ones as well.
 fn agent_plugin_set() -> &'static std::sync::Mutex<BTreeSet<String>> {
     static SET: std::sync::OnceLock<std::sync::Mutex<BTreeSet<String>>> = std::sync::OnceLock::new();
     SET.get_or_init(Default::default)
@@ -265,6 +263,28 @@ pub(crate) fn note_agent_plugins<'a>(codes: impl IntoIterator<Item = &'a str>) {
     }
 }
 
+fn seen_plugin_set() -> &'static std::sync::Mutex<BTreeSet<String>> {
+    static SET: std::sync::OnceLock<std::sync::Mutex<BTreeSet<String>>> = std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
+}
+
+/// Plugins whose `host.services` answer the node has read at least once: only
+/// those can be known not to serve an ACP agent.
+pub(crate) fn seen_plugins() -> BTreeSet<String> {
+    seen_plugin_set()
+        .lock()
+        .map(|set| set.clone())
+        .unwrap_or_default()
+}
+
+pub(crate) fn note_seen_plugins<'a>(codes: impl IntoIterator<Item = &'a str>) {
+    if let Ok(mut set) = seen_plugin_set().lock() {
+        set.extend(codes.into_iter().map(str::to_owned));
+    }
+}
+
+/// Whether a person reaches plugin `code`: the plugins that sign people in
+/// always, and on a demonstration node the allowed ones as well.
 fn user_reaches_plugin(code: &str, demo: bool) -> bool {
     if user_plugins().contains(code) {
         return true;
@@ -971,8 +991,11 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
         // demonstration node, where each person gets their own folder.
         // Never a plugin that serves an ACP agent: the agent runs commands on
         // the machine as its operator, in the shared workspace.
+        // Deny by default: only a plugin whose services the node has already
+        // seen, and which serves no agent, is opened.
         if demo
             && reaches
+            && seen_plugins().contains(code)
             && !agent_plugins().contains(code)
             && (rest == "proxy" || rest.starts_with("proxy/"))
         {
@@ -1592,17 +1615,22 @@ mod tests {
 
     #[test]
     fn user_sessions_never_reach_a_plugin_proxy() {
-        note_agent_plugins(["goose"]);
         for demo in [false, true] {
-            assert!(!user_may_call(&Method::GET, "/api/ui/plugins/goose/proxy/acp", demo));
-            assert!(!user_may_call(&Method::POST, "/api/ui/plugins/goose/proxy/acp", demo));
             assert!(!user_may_call(&Method::POST, "/api/ui/plugins/goose/open", demo));
             assert!(!user_may_call(&Method::POST, "/api/ui/plugins/goose/close", demo));
         }
-        // On a demonstration node a plugin's own interface is open to a person,
-        // but never one that serves an ACP agent.
+        // Outside demo mode no plugin proxy is on the user surface.
+        note_seen_plugins(["editor"]);
+        assert!(!user_may_call(&Method::GET, "/api/ui/plugins/editor/proxy/", false));
+        // On a demonstration node a seen plugin without an agent is reachable...
+        assert!(user_may_call(&Method::GET, "/api/ui/plugins/editor/proxy/", true));
+        // ...one never seen yet is not (its services may announce an agent)...
+        assert!(!user_may_call(&Method::GET, "/api/ui/plugins/unseen/proxy/acp", true));
+        // ...and one that serves an ACP agent never is.
+        note_seen_plugins(["goose"]);
         note_agent_plugins(["goose"]);
         assert!(!user_may_call(&Method::GET, "/api/ui/plugins/goose/proxy/acp", true));
+        assert!(!user_may_call(&Method::POST, "/api/ui/plugins/goose/proxy/acp", true));
         // The agent list answers a user (empty), so the Chat needs no special case.
         assert!(user_may_call(&Method::GET, "/api/ui/chat/agents", false));
     }

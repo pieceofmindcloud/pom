@@ -79,6 +79,13 @@ describe("ACP connection", () => {
     expect(seen.config).toEqual({ sessionId: "s1", configId: "model", value: "b" });
   });
 
+  it("close ends the connection", async () => {
+    const onClose = vi.fn();
+    const conn = await connectAcp(fakeAgent().client, { onUpdate: () => {}, onPermission: async () => null }, onClose);
+    conn.close();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("a declined permission is a cancelled outcome", async () => {
     const { client } = fakeAgent();
     const conn = await connectAcp(client, { onUpdate: () => {}, onPermission: async () => null });

@@ -388,7 +388,10 @@ plugin never sees a cookie. Design:
   sign-in plugin's `auth` screen and its `rpc.auth.*` never do, and neither does the
   web proxy of a plugin that serves an ACP agent (`user_session::agent_plugins`,
   filled from every `acp_agent` service the node sees, live or saved): the
-  agent runs commands on the machine as its operator.
+  agent runs commands on the machine as its operator. The proxy is denied by default:
+  it opens only for a plugin the node has already polled for its services
+  (`user_session::seen_plugins`), so a plugin that just started cannot be
+  reached before its agent is recorded.
 - **Demo without sign-in** (`DEMO_NO_AUTH=1`, only with `DEMO_MODE`). A
   plugin whose `auth.providers` answer carries `"guest": true` opens guest
   sessions: `/api/access` names its `guest_url` and the login screen goes

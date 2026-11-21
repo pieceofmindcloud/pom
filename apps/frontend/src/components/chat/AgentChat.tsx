@@ -161,6 +161,7 @@ export function AgentChat({ agent, onLeave }: { agent: ChatAgent | null; onLeave
     setError(null);
     setConversation(emptyConversation());
     const pending = resolvers.current;
+    let opened: AcpConnection | null = null;
     openAcp(agent.proxy_path, {
       onUpdate: (notification) => {
         if (!cancelled) setConversation((state) => applyUpdate(state, notification.update));
@@ -172,7 +173,11 @@ export function AgentChat({ agent, onLeave }: { agent: ChatAgent | null; onLeave
         }),
     })
       .then(async (conn) => {
-        if (cancelled) return;
+        opened = conn;
+        if (cancelled) {
+          conn.close();
+          return;
+        }
         connection.current = conn;
         void conn.closed.then(() => {
           if (!cancelled) setPhase("lost");
@@ -193,6 +198,7 @@ export function AgentChat({ agent, onLeave }: { agent: ChatAgent | null; onLeave
       cancelled = true;
       for (const resolve of pending.values()) resolve(null);
       pending.clear();
+      opened?.close();
       connection.current = null;
     };
     // The proxy path and workspace identify the agent; status changes past ready do not reconnect.

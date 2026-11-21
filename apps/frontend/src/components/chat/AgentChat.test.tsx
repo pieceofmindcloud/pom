@@ -42,6 +42,7 @@ function fakeConnection(options: { model?: boolean; list?: boolean } = {}) {
     prompt,
     setModel: vi.fn(async () => {}),
     cancel: vi.fn(async () => {}),
+    close: vi.fn(),
     closed: new Promise<void>((resolve) => {
       closeIt = resolve;
     }),
@@ -155,6 +156,14 @@ describe("AgentChat", () => {
     fakeConnection();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(mocks.openAcp).toHaveBeenCalledTimes(2));
+  });
+
+  it("closes the agent connection when it leaves or retries", async () => {
+    const first = fakeConnection();
+    const view = mount(goose("ready"));
+    await waitFor(() => expect(first.conn.newSession).toHaveBeenCalled());
+    view.unmount();
+    expect(first.conn.close).toHaveBeenCalledTimes(1);
   });
 
   it("drops a selected agent that disappears", () => {

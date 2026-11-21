@@ -713,17 +713,32 @@ pub(crate) async fn node_services(plugins: &crate::plugins::PluginManager) -> Ve
             return services.clone();
         }
     }
-    let services: Vec<PluginService> = plugins
-        .query_running("host.services")
-        .await
+    let answers = plugins.query_running("host.services").await;
+    let services: Vec<PluginService> = answers
         .iter()
         .flat_map(|(code, answer)| parse_services(code, answer))
         .collect();
+    // Agents first: a plugin is never "seen" before its agent is recorded.
     crate::user_session::note_agent_plugins(
         services
             .iter()
             .filter(|service| service.acp.is_some())
             .map(|service| service.plugin_code.as_str()),
+    );
+    // Every running plugin was asked: one that did not answer (no
+    // `host.services`) cannot have announced an agent either.
+    let running: Vec<String> = plugins
+        .installed_summaries()
+        .await
+        .into_iter()
+        .filter(|plugin| plugin.running)
+        .map(|plugin| plugin.code)
+        .collect();
+    crate::user_session::note_seen_plugins(
+        answers
+            .iter()
+            .map(|(code, _)| code.as_str())
+            .chain(running.iter().map(String::as_str)),
     );
     *cache()
         .lock()

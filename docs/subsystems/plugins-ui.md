@@ -609,6 +609,7 @@ plugin, so a plugin only ever speaks as itself.
 |---|---|
 | `GET /api/plugin-host/node` | `{node_id, hostname, public_key, did_key, role, principal_node_id}`: the node key in hex and as a `did:key`, the node's role in the trust chain (`principal`, `admin`, `visitor` or `member`) |
 | `GET /api/plugin-host/peers` | `{peers: [{node_id, hostname, principal, visitor}]}`: the live peers |
+| `GET /api/plugin-host/plugins` | `{plugins: [{code, version, lifecycle, running}]}`: the plugins installed (active) on this machine, the caller included, in code order; no license, path, token or preference. A plugin offers what depends on another one from it (Harness opens its Goose tab only while `goose` is installed) |
 | `POST /api/plugin-host/peer` | `{node_id, op, params}` runs `peer.<op>` of **the same plugin** on that machine, through the signed peer call above (or locally, with `caller.local: true`, for this node's own `node_id`), and answers `{reply}`; 404 when the node is not a live peer, 502 when its plugin refused |
 | `GET /api/plugin-host/catalog/images` | `{image_files, metadata_complete}`: the image model files of this node's whole-model folders (the `image_files` entries of `GET /api/ui/models`), read fresh on each call |
 | `POST /api/plugin-host/catalog/refresh` | `{ok: true}` after asking the node to rescan its catalog, so a file the plugin just wrote reaches the screens and the deploy survey |
@@ -737,6 +738,8 @@ envelope, whatever the channel:
 | `deployment.started` | `{kind, deploy_id, job_id, model, nodes, deployment_name?, reused?, version?}` | a deployment (`kind: "deploy"`) or redeployment (`"redeploy"`) started on this node |
 | `model.serving` | `{model, deploy_ids, node_ids}` | a model starts being served by the network (enters `/v1/models`) |
 | `model.stopped` | `{model}` | a model stops being served |
+| `plugin.installed` / `plugin.updated` | `{code, version}` | a plugin was installed on this machine, or its version changed |
+| `plugin.removed` | `{code}` | a plugin was uninstalled from this machine |
 | `loader.retry` | `{}` | the person clicked "Try again" on the plugin's loader error (to that plugin only) |
 
 Browser channels (`lib/pluginEvents.ts`, fed by `components/PluginBridge.tsx`):
@@ -757,7 +760,11 @@ plugin, the node events published by `PluginManager::publish_event`:
 `deployment.started` (emitted by `deploy_endpoint` and `redeploy_endpoint`) and
 `model.serving`/`model.stopped` (`spawn_serving_watcher`, which every 5 s
 compares the served models, the same as `/v1/models`; the first snapshot is
-only the baseline). The node events also sit in a sequenced queue of 100, read
+only the baseline). `plugin.installed`/`plugin.updated`/`plugin.removed` come from
+`spawn_installed_watcher`, which every 5 s compares the installed plugins
+(`PluginManager::installed_summaries`) whatever path installed them; its
+first snapshot is the baseline too, so a plugin that starts later reads the
+current state from `GET /api/plugin-host/plugins`. The node events also sit in a sequenced queue of 100, read
 by the UI at `GET /api/ui/plugins/events?after=<seq>` (open to every profile,
 like the rest of `/api/ui/plugins`); without `after`, the response only carries
 the current sequence. `PluginBridge` polls the route every 3 s and forwards the

@@ -1832,6 +1832,7 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::metering::spawn_refresher(gw_state.clone());
     crate::plugins::spawn_host_context(gw_state.clone());
     crate::plugins::spawn_serving_watcher(gw_state.clone());
+    crate::plugins::spawn_installed_watcher(gw_state.clone());
     crate::plugins::spawn_bundled_plugins(gw_state.clone());
     crate::gateway::spawn_public_directory_republisher(gw_state.clone());
     crate::webui::spawn_public_stats_publisher(gw_state.clone());

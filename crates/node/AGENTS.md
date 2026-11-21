@@ -409,7 +409,10 @@ directory and sends the host the native `host.event` (`preferences.changed`, the
 `PluginManager::publish_event` keeps node events in a short queue
 (`GET /api/ui/plugins/events`) and delivers them through `host.event` to every
 running host: `deployment.started` comes from the deploy and redeploy handlers,
-`model.serving`/`model.stopped` from `spawn_serving_watcher`. Batch license
+`model.serving`/`model.stopped` from `spawn_serving_watcher`. `plugin.installed`/`plugin.updated`/`plugin.removed` come
+from `spawn_installed_watcher` (a 5 s diff of `installed_summaries`, so every
+install path is covered), and `plugin_host_api::plugins` serves the same summary
+to plugins at `GET /api/plugin-host/plugins`. Batch license
 activation validates once, then activates/installs each granted code separately.
 Plugin features come from the manifest, NOT from the license. The server's public
 catalog remains the commercial storefront; `GET /api/ui/plugins` publishes the local

@@ -4087,6 +4087,89 @@ pub(crate) fn serving_transitions(
     events
 }
 
+/// One installed plugin as another plugin may see it (`GET
+/// /api/plugin-host/plugins`): no license, path, token or preference.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct PluginSummary {
+    pub code: String,
+    pub version: Option<String>,
+    pub lifecycle: crate::plugin_ui::Lifecycle,
+    pub running: bool,
+}
+
+impl PluginManager {
+    /// The plugins installed on this machine (the ones the menu lists:
+    /// active), in code order.
+    pub(crate) async fn installed_summaries(&self) -> Vec<PluginSummary> {
+        self.all_statuses()
+            .await
+            .into_iter()
+            .filter(|status| status.active)
+            .map(|status| PluginSummary {
+                lifecycle: if status.on_demand {
+                    crate::plugin_ui::Lifecycle::OnDemand
+                } else {
+                    crate::plugin_ui::Lifecycle::Resident
+                },
+                code: status.code,
+                version: status.plugin_version,
+                running: status.running,
+            })
+            .collect()
+    }
+}
+
+/// Compares two snapshots of the installed plugins (code -> version) and
+/// returns the `plugin.updated`/`plugin.installed`/`plugin.removed` events.
+pub(crate) fn installed_transitions(
+    before: &std::collections::BTreeMap<String, Option<String>>,
+    after: &std::collections::BTreeMap<String, Option<String>>,
+) -> Vec<(&'static str, serde_json::Value)> {
+    let mut events = Vec::new();
+    for (code, version) in after {
+        let kind = match before.get(code) {
+            None => "plugin.installed",
+            Some(old) if old != version => "plugin.updated",
+            Some(_) => continue,
+        };
+        events.push((
+            kind,
+            serde_json::json!({ "code": code, "version": version }),
+        ));
+    }
+    for code in before.keys() {
+        if !after.contains_key(code) {
+            events.push(("plugin.removed", serde_json::json!({ "code": code })));
+        }
+    }
+    events
+}
+
+/// Tells the running plugins when a plugin is installed, updated or removed,
+/// whatever path installed it. The first snapshot is the baseline.
+pub(crate) fn spawn_installed_watcher(state: crate::gateway::GatewayState) {
+    const INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+    tokio::spawn(async move {
+        let mut known: Option<std::collections::BTreeMap<String, Option<String>>> = None;
+        loop {
+            let current = state
+                .plugins
+                .installed_summaries()
+                .await
+                .into_iter()
+                .map(|summary| (summary.code, summary.version))
+                .collect();
+            if let Some(before) = &known {
+                for (event_type, payload) in installed_transitions(before, &current) {
+                    state.plugins.publish_event(event_type, payload);
+                }
+            }
+            known = Some(current);
+            tokio::time::sleep(INTERVAL).await;
+        }
+    });
+}
+
 /// Watches the network and notifies the plugins when a model starts or stops
 /// being served. The first snapshot is only the baseline: a node that has just
 /// started does not announce as news what was already up.
@@ -7579,6 +7662,61 @@ mod plugin_event_tests {
         let (_, all) = hub.after(Some(0));
         assert_eq!(all.len(), PLUGIN_EVENT_BACKLOG);
         assert_eq!(all[0].0, 6);
+    }
+
+    #[test]
+    fn installed_transitions_report_installed_updated_and_removed() {
+        let snapshot = |plugins: &[(&str, Option<&str>)]| {
+            plugins
+                .iter()
+                .map(|(code, version)| (code.to_string(), version.map(str::to_owned)))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let events = installed_transitions(
+            &snapshot(&[("goose", Some("0.1.0")), ("old", Some("1.0.0"))]),
+            &snapshot(&[("goose", Some("0.2.0")), ("harness", Some("0.3.0"))]),
+        );
+        assert_eq!(
+            events,
+            vec![
+                (
+                    "plugin.updated",
+                    serde_json::json!({ "code": "goose", "version": "0.2.0" })
+                ),
+                (
+                    "plugin.installed",
+                    serde_json::json!({ "code": "harness", "version": "0.3.0" })
+                ),
+                ("plugin.removed", serde_json::json!({ "code": "old" })),
+            ]
+        );
+        let same = snapshot(&[("goose", Some("0.1.0"))]);
+        assert!(installed_transitions(&same, &same).is_empty());
+    }
+
+    #[tokio::test]
+    async fn installed_summaries_hold_no_secrets() {
+        let service = Arc::new(tests_support::MockLicenseService::new());
+        let manager = PluginManager::test_manager(&["goose"], service);
+        assert!(
+            manager.installed_summaries().await.is_empty(),
+            "an inactive plugin is not installed"
+        );
+        let summary = PluginSummary {
+            code: "goose".into(),
+            version: Some("0.1.0".into()),
+            lifecycle: crate::plugin_ui::Lifecycle::OnDemand,
+            running: false,
+        };
+        let shown = serde_json::to_value(&summary).unwrap();
+        assert_eq!(
+            shown,
+            serde_json::json!({"code": "goose", "version": "0.1.0", "lifecycle": "on_demand", "running": false})
+        );
+        let text = shown.to_string();
+        for secret in ["license", "path", "token", "preferences"] {
+            assert!(!text.contains(secret), "{secret} leaked in {text}");
+        }
     }
 
     #[test]

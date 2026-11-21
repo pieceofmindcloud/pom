@@ -467,6 +467,15 @@ pub(crate) async fn peers(State(state): State<GatewayState>, headers: HeaderMap)
     Json(json!({ "peers": peers })).into_response()
 }
 
+/// `GET /api/plugin-host/plugins`: the plugins installed on this machine,
+/// the caller included, so a plugin can offer what depends on another one.
+pub(crate) async fn plugins(State(state): State<GatewayState>, headers: HeaderMap) -> Response {
+    if let Err(response) = caller_code(&state, &headers) {
+        return response;
+    }
+    Json(json!({ "plugins": state.plugins.installed_summaries().await })).into_response()
+}
+
 /// `POST /api/plugin-host/peer`.
 pub(crate) async fn peer_call(
     State(state): State<GatewayState>,
@@ -643,6 +652,21 @@ mod tests {
         }
         let response = node(State(state.clone()), headers(&token)).await;
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn plugins_lists_installed_plugins_to_a_plugin_only() {
+        let (state, token) = state_with_plugin().await;
+        let response = plugins(State(state.clone()), HeaderMap::new()).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = plugins(State(state.clone()), headers(&token)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert!(body["plugins"].is_array());
+        for entry in body["plugins"].as_array().unwrap() {
+            let keys: Vec<&String> = entry.as_object().unwrap().keys().collect();
+            assert_eq!(keys, ["code", "lifecycle", "running", "version"]);
+        }
     }
 
     async fn with_profile(state: &GatewayState, profile: crate::profile::NodeProfile) {

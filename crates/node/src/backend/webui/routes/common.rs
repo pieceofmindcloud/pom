@@ -59,6 +59,10 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/plugin-host/node", get(crate::plugin_host_api::node))
         .route("/api/plugin-host/peers", get(crate::plugin_host_api::peers))
         .route(
+            "/api/plugin-host/plugins",
+            get(crate::plugin_host_api::plugins),
+        )
+        .route(
             "/api/plugin-host/peer",
             post(crate::plugin_host_api::peer_call),
         )

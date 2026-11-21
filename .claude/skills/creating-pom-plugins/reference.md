@@ -42,7 +42,7 @@ release, host process). If this file and the code disagree, the code wins.
 | Operation | Request fields | Expected reply | Notes |
 |---|---|---|---|
 | `host.configure` | `gateway{openai_base_url, api_key}`, `workspace_root`, `host_api{base_url, token}`, `preferences{features, storage_directory}` | `{"status":"ok"}` | On every host start and whenever any part changes. Errors are ignored. |
-| `host.event` | `event` (envelope, section 6) | `{"status":"ok"}` | `preferences.changed` to the plugin itself; `deployment.started`, `model.serving`, `model.stopped` to every running plugin. |
+| `host.event` | `event` (envelope, section 6) | `{"status":"ok"}` | `preferences.changed` to the plugin itself; `deployment.started`, `model.serving`, `model.stopped`, `plugin.installed`, `plugin.updated`, `plugin.removed` to every running plugin. |
 | `host.services` | - | `{"services":[{id, kind, name, status, version?, detail?, architectures?, settings?, stages?, pom_settings?}]}` | Polled at most every 5 s; at most 8 entries; published in `GET /api/ui/node.plugin_services` and drawn next to the machine. `status`: `ready`, `starting`, `installing`, `waiting`, `error`. |
 | `ui.manifest` | - | the `pom-plugin-ui/v1` manifest | Saved in `pom.db`, so an `on_demand` menu survives a stopped process. |
 | `ui.asset` | `path` | `{"content_type", "base64"}` | Only paths listed in `assets`. Closed content-type list. |
@@ -152,6 +152,7 @@ loopback only. The token names the plugin, new at every node start.
 |---|---|
 | `GET /api/plugin-host/node` | `{node_id, hostname, public_key, did_key, role, principal_node_id}` |
 | `GET /api/plugin-host/peers` | `{peers: [{node_id, hostname, principal, visitor}]}` |
+| `GET /api/plugin-host/plugins` | `{plugins: [{code, version, lifecycle, running}]}`: plugins installed on this machine (caller included) |
 | `POST /api/plugin-host/peer` | `{node_id, op, params}` -> `{reply}` from `peer.<op>` of the same plugin on that machine (`caller.local: true` for this node) |
 | `POST /api/plugin-host/sign` | `{statement}` -> `{signature, public_key, did_key}`; only known identity statements naming this node's `did:key` |
 
@@ -174,6 +175,7 @@ Envelope: `{protocol, id, type, target ("*" or code), source: "pom", at, payload
 | `notification.response` | `{request_id, kind, action, error?}` |
 | `deployment.started` | `{kind, deploy_id, job_id, model, nodes, deployment_name?, reused?, version?}` |
 | `model.serving` / `model.stopped` | `{model, deploy_ids, node_ids}` / `{model}` |
+| `plugin.installed` / `plugin.updated` / `plugin.removed` | `{code, version}` / `{code, version}` / `{code}` |
 | `loader.retry` | `{}` ("Try again" on this plugin's loader error) |
 
 Browser channels: SDK `plugin(code).events.subscribe(type|"*", h, {replay})`,

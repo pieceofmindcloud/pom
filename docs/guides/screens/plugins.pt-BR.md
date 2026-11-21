@@ -17,7 +17,7 @@ Plugins é a loja desta máquina: cada plugin do catálogo, gratuito ou pago, co
 
 :::cards
 ### Selos
-**Licença ativa** ou **Não exige licença**, **Destaque** e **Equipe POM** para plugins publicados pela equipe do POM, e de onde ele veio: GitHub, ou um **Build local**.
+**Licença ativa** ou **Não exige licença**, **Destaque** e **Equipe PoM** para plugins publicados pela equipe do PoM, e de onde ele veio: GitHub, ou um **Build local**.
 ### Versão e plataformas
 A versão instalada (ou a mais nova que esta máquina pode instalar) e os sistemas que o plugin suporta. Uma versão feita para outro sistema nunca é oferecida.
 ### Ativações
@@ -32,9 +32,9 @@ Para um plugin licenciado, quantas ativações da licença estão em uso e quand
 ### Da loja
 Plugins gratuitos instalam com um clique. Um plugin pago abre a página de compra no seu navegador; a chave de licença que ela te dá é colada no formulário de licença daqui e ativa todos os plugins que aquela chave concede. Um plugin marcado **Em breve** já foi anunciado mas ainda não tem versão publicada: ele aparece na lista sem nada para comprar ou instalar.
 ### Do GitHub
-**Adicionar do GitHub** recebe o endereço de um repositório público e instala a versão mais nova compatível com esta máquina. Um plugin de fora da equipe do POM pede uma confirmação antes: o código dele não foi revisado.
+**Adicionar do GitHub** recebe o endereço de um repositório público e instala a versão mais nova compatível com esta máquina. Um plugin de fora da equipe do PoM pede uma confirmação antes: o código dele não foi revisado.
 ### Mantendo em dia
-**Verificar atualizações** consulta todos os plugins instalados e o próprio POM de uma vez, e lista o que há de mais novo. O POM é instalado por último, porque reinicia o nó.
+**Verificar atualizações** consulta todos os plugins instalados e o próprio PoM de uma vez, e lista o que há de mais novo. O PoM é instalado por último, porque reinicia o nó.
 :::
 
 :::note Desenvolva seu plugin

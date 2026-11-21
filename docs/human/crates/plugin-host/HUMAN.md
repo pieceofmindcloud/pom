@@ -1,7 +1,7 @@
 ---
 id: human-plugin-host
 label: Plugin host
-summary: Why a plugin runs in its own process, and how it talks to POM
+summary: Why a plugin runs in its own process, and how it talks to PoM
 title: Inside the plugin host
 reference: crates/plugin-host/AGENTS.md
 order: 60
@@ -21,9 +21,9 @@ A plugin is activated per `plugin_code`: by a license key the license server gra
 ### Load
 `pom` starts `pom-plugin-host` as a child with the plugin's library. The library is loaded through a C ABI, and the two processes talk over stdin and stdout - no socket, no shared volume.
 ### Show up
-The plugin declares its menus, screens, routes and texts in a manifest (`pom-plugin-ui/v1`), and POM draws them in this interface.
+The plugin declares its menus, screens, routes and texts in a manifest (`pom-plugin-ui/v1`), and PoM draws them in this interface.
 ### Stay current
-Each plugin updates on its own. POM's own update is not a plugin: it lives apart and swaps the binary through the same host.
+Each plugin updates on its own. PoM's own update is not a plugin: it lives apart and swaps the binary through the same host.
 :::
 
 :::note A license per plugin

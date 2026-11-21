@@ -8,7 +8,7 @@ order: 320
 ---
 
 :::lead
-Documentation has two halves. **Guides** are written for people: how POM works, one guide per screen, the deployment settings, and how each part of the code thinks. **Reference** is the living documentation of the repository, written for whoever changes the code.
+Documentation has two halves. **Guides** are written for people: how PoM works, one guide per screen, the deployment settings, and how each part of the code thinks. **Reference** is the living documentation of the repository, written for whoever changes the code.
 :::
 
 ![The Documentation screen with the Guides tab open on the first guide.](../images/en/documentation.webp)

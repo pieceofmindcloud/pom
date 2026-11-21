@@ -1,13 +1,13 @@
 ---
 id: strata-pom-settings
-label: POM settings for Strata
+label: PoM settings for Strata
 summary: How the Strata plugin shares a model between machines
-title: POM settings for Strata
+title: PoM settings for Strata
 order: 130
 ---
 
 :::lead
-When a deployment runs on the Strata plugin, the deploy inspector shows a POM settings card with the settings Strata declares. They decide how POM spreads the model and the conversations between machines. The engine's own settings (sampling, reasoning, MTP) are in the engine card above it.
+When a deployment runs on the Strata plugin, the deploy inspector shows a PoM settings card with the settings Strata declares. They decide how PoM spreads the model and the conversations between machines. The engine's own settings (sampling, reasoning, MTP) are in the engine card above it.
 :::
 
 | Property | What it does | When to change it |
@@ -20,7 +20,7 @@ When a deployment runs on the Strata plugin, the deploy inspector shows a POM se
 | Hidden-state precision | Shown when the model is split into slices across machines. Sets the bytes sent between stages per token: f16 (the default), f32 (lossless, twice the volume), f8 or int4 (lossy). | Try f8 on a slow link. |
 
 :::warn You do not choose the shared role
-When the whole model goes on two or more machines, POM gives every machine left at Prefill and decode a third role, shared, on its own. That role keeps Strata's sessions on, which is how the machines hand conversations to each other. On the Dashboard those machines show the **Prefill/Decode** badge, and the prefill machine shows **Prefill first**.
+When the whole model goes on two or more machines, PoM gives every machine left at Prefill and decode a third role, shared, on its own. That role keeps Strata's sessions on, which is how the machines hand conversations to each other. On the Dashboard those machines show the **Prefill/Decode** badge, and the prefill machine shows **Prefill first**.
 :::
 
 ## Recipes

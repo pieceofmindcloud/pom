@@ -7,7 +7,7 @@ order: 110
 ---
 
 :::lead
-These are the settings llama.cpp already has. POM only carries them to every machine of the deployment. They decide how much memory each slice reserves, how fast the prompt goes in and how the model picks each token.
+These are the settings llama.cpp already has. PoM only carries them to every machine of the deployment. They decide how much memory each slice reserves, how fast the prompt goes in and how the model picks each token.
 :::
 
 ## Memory and capacity
@@ -73,7 +73,7 @@ Only the last peer of the pipeline samples. The order is llama.cpp's: first the 
 | DRY base | How fast the penalty grows with each extra token of the repeated sequence. | 1.75. |
 | DRY allowed length | Repeated sequences shorter than this are not punished. | 2. |
 | DRY window | How many recent tokens DRY searches. | 0 searches the whole history, up to 8192 tokens. |
-| Seed | Where the random generator starts when the deployment loads. The same seed, model and requests in the same order give the same answers. | POM's default. |
+| Seed | Where the random generator starts when the deployment loads. The same seed, model and requests in the same order give the same answers. | PoM's default. |
 | Reasoning budget | How many tokens a thinking block may take; at the limit, the end of thinking is forced. | Empty is no limit; 0 closes the block at once. |
 | Disable thinking | The model answers directly, without the preamble between tags. | Turn on when only the answer matters. |
 
@@ -109,7 +109,7 @@ For a deployment already running, use Redeploy in History: the new version loads
 
 :::faq
 ### The deployment does not start for lack of VRAM. What do I change first?
-Turn on Fit to memory, under POM settings. Then drop the Micro-batch to 256 and use a quantized K/V cache. Lower Context or Sessions only as a last resort.
+Turn on Fit to memory, under PoM settings. Then drop the Micro-batch to 256 and use a quantized K/V cache. Lower Context or Sessions only as a last resort.
 ### The client's max_tokens or Max. tokens: which wins?
 The client's max_tokens bounds the response. Max. tokens only splits generation into legs inside the gateway.
 ### Does changing sampling require reloading the model?

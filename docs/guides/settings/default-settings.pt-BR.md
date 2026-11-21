@@ -7,7 +7,7 @@ order: 110
 ---
 
 :::lead
-Estas são as configurações que o próprio llama.cpp já oferece. O POM só as leva para cada máquina da implantação. Elas decidem quanta memória cada fatia reserva, quão rápido o prompt entra e como o modelo escolhe cada token.
+Estas são as configurações que o próprio llama.cpp já oferece. O PoM só as leva para cada máquina da implantação. Elas decidem quanta memória cada fatia reserva, quão rápido o prompt entra e como o modelo escolhe cada token.
 :::
 
 ## Memória e capacidade
@@ -73,7 +73,7 @@ Só o último peer do pipeline amostra. A ordem é a do llama.cpp: primeiro os c
 | DRY: base | O quanto a penalidade cresce a cada token a mais da sequência repetida. | 1,75. |
 | DRY: tamanho permitido | Sequências repetidas menores que isto não são punidas. | 2. |
 | DRY: janela | Quantos tokens recentes o DRY percorre. | 0 percorre o histórico inteiro, até 8192 tokens. |
-| Semente | De onde o gerador aleatório parte quando a implantação carrega. Mesma semente, mesmo modelo e mesmas requisições na mesma ordem dão as mesmas respostas. | O padrão do POM. |
+| Semente | De onde o gerador aleatório parte quando a implantação carrega. Mesma semente, mesmo modelo e mesmas requisições na mesma ordem dão as mesmas respostas. | O padrão do PoM. |
 | Limite de raciocínio | Quantos tokens um bloco de raciocínio pode ocupar; no limite, o fim do raciocínio é forçado. | Vazio é sem limite; 0 fecha o bloco de imediato. |
 | Desativar thinking | O modelo responde direto, sem o preâmbulo entre tags. | Ligue quando só a resposta importa. |
 
@@ -109,7 +109,7 @@ Para uma implantação que já está no ar, use Reimplantar no Histórico: a ver
 
 :::faq
 ### A implantação não sobe por falta de VRAM. O que mexo primeiro?
-Ligue Ajustar à memória, nas Configurações POM. Depois baixe o Microlote para 256 e use Cache K/V quantizado. Reduza Contexto ou Sessões só em último caso.
+Ligue Ajustar à memória, nas Configurações PoM. Depois baixe o Microlote para 256 e use Cache K/V quantizado. Reduza Contexto ou Sessões só em último caso.
 ### O max_tokens do cliente ou o Máx. tokens: quem vence?
 O max_tokens do cliente limita a resposta. O Máx. tokens só divide a geração em pernas dentro do gateway.
 ### Mudar a amostragem exige recarregar o modelo?

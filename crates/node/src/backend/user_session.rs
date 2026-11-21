@@ -243,6 +243,28 @@ fn demo_plugin_allowlist() -> &'static Option<BTreeSet<String>> {
 
 /// Whether a person reaches plugin `code`: the plugins that sign people in
 /// always, and on a demonstration node the allowed ones as well.
+fn agent_plugin_set() -> &'static std::sync::Mutex<BTreeSet<String>> {
+    static SET: std::sync::OnceLock<std::sync::Mutex<BTreeSet<String>>> = std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
+}
+
+/// Plugins that announced an ACP agent (live or saved): their proxy is never
+/// on the user surface, demo mode included.
+pub(crate) fn agent_plugins() -> BTreeSet<String> {
+    agent_plugin_set()
+        .lock()
+        .map(|set| set.clone())
+        .unwrap_or_default()
+}
+
+/// Records plugins that serve an ACP agent. Only adds: a plugin that once
+/// served an agent stays off the user surface until the node restarts.
+pub(crate) fn note_agent_plugins<'a>(codes: impl IntoIterator<Item = &'a str>) {
+    if let Ok(mut set) = agent_plugin_set().lock() {
+        set.extend(codes.into_iter().map(str::to_owned));
+    }
+}
+
 fn user_reaches_plugin(code: &str, demo: bool) -> bool {
     if user_plugins().contains(code) {
         return true;
@@ -860,6 +882,7 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
         "/api/ui/cluster/models",
         "/api/ui/deployments",
         "/api/ui/chat/capabilities",
+        "/api/ui/chat/agents",
         "/api/ui/infer/heads",
         "/api/ui/requests",
         "/api/ui/requests/stats",
@@ -946,7 +969,13 @@ pub fn user_may_call(method: &Method, path: &str, demo: bool) -> bool {
         }
         // A plugin's own web interface (the editor, a harness): only on a
         // demonstration node, where each person gets their own folder.
-        if demo && reaches && (rest == "proxy" || rest.starts_with("proxy/")) {
+        // Never a plugin that serves an ACP agent: the agent runs commands on
+        // the machine as its operator, in the shared workspace.
+        if demo
+            && reaches
+            && !agent_plugins().contains(code)
+            && (rest == "proxy" || rest.starts_with("proxy/"))
+        {
             return true;
         }
         return false;
@@ -1560,6 +1589,23 @@ pub(crate) async fn passthrough(request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_sessions_never_reach_a_plugin_proxy() {
+        note_agent_plugins(["goose"]);
+        for demo in [false, true] {
+            assert!(!user_may_call(&Method::GET, "/api/ui/plugins/goose/proxy/acp", demo));
+            assert!(!user_may_call(&Method::POST, "/api/ui/plugins/goose/proxy/acp", demo));
+            assert!(!user_may_call(&Method::POST, "/api/ui/plugins/goose/open", demo));
+            assert!(!user_may_call(&Method::POST, "/api/ui/plugins/goose/close", demo));
+        }
+        // On a demonstration node a plugin's own interface is open to a person,
+        // but never one that serves an ACP agent.
+        note_agent_plugins(["goose"]);
+        assert!(!user_may_call(&Method::GET, "/api/ui/plugins/goose/proxy/acp", true));
+        // The agent list answers a user (empty), so the Chat needs no special case.
+        assert!(user_may_call(&Method::GET, "/api/ui/chat/agents", false));
+    }
 
     #[test]
     fn a_user_reaches_only_the_user_surface() {

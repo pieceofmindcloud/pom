@@ -524,6 +524,40 @@ pub(crate) async fn list_plugin_ui(State(state): State<crate::gateway::GatewaySt
     axum::Json(json!({ "plugins": out })).into_response()
 }
 
+/// The Chat's agent list: each ACP agent with the proxy path the browser
+/// opens (`/api/ui/plugins/<code>/proxy<acp.path>`).
+pub(crate) fn chat_agents_json(agents: &[crate::plugin_services::PluginService]) -> serde_json::Value {
+    let agents: Vec<serde_json::Value> = agents
+        .iter()
+        .filter_map(|agent| {
+            let acp = agent.acp.as_ref()?;
+            Some(json!({
+                "plugin_code": agent.plugin_code,
+                "id": agent.id,
+                "name": agent.name,
+                "version": agent.version,
+                "status": agent.status,
+                "proxy_path": format!("{}{}", crate::plugin_proxy::proxy_prefix(&agent.plugin_code), acp.path),
+                "protocol_version": acp.protocol_version,
+            }))
+        })
+        .collect();
+    json!({ "agents": agents })
+}
+
+/// `GET /api/ui/chat/agents`: the ACP agents of this machine's plugins, for
+/// the operator. A user session gets an empty list: an agent runs commands
+/// on the machine, and the plugin proxy is not on the user surface either.
+pub(crate) async fn chat_agents(
+    State(state): State<crate::gateway::GatewayState>,
+    principal: Option<axum::Extension<crate::user_session::SessionPrincipal>>,
+) -> Response {
+    if principal.is_some_and(|axum::Extension(principal)| principal.is_user()) {
+        return axum::Json(json!({ "agents": [] })).into_response();
+    }
+    axum::Json(chat_agents_json(&state.plugins.acp_agents().await)).into_response()
+}
+
 /// `POST /api/ui/plugins/:code/open`: starts the process of an on-demand plugin.
 /// Called by the menu click; the license is not touched.
 pub(crate) async fn plugin_open(
@@ -741,6 +775,41 @@ pub(crate) async fn plugin_asset(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn goose_agent(status: &str) -> crate::plugin_services::PluginService {
+        let answer = serde_json::json!({"services": [{"id": "goose", "kind": "acp_agent",
+            "name": "Goose", "status": status, "version": "1.57.0",
+            "acp": {"path": "/acp", "protocol_version": 1}}]});
+        crate::plugin_services::parse_services("goose", &answer).remove(0)
+    }
+
+    #[test]
+    fn chat_agents_lists_agents_with_their_proxy_path() {
+        let shown = chat_agents_json(&[goose_agent("ready")]);
+        assert_eq!(
+            shown,
+            serde_json::json!({"agents": [{"plugin_code": "goose", "id": "goose", "name": "Goose",
+                "version": "1.57.0", "status": "ready", "proxy_path": "/api/ui/plugins/goose/proxy/acp",
+                "protocol_version": 1}]})
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_agents_is_empty_for_a_user_session() {
+        let state = crate::gateway::testkit::state_with("node", vec![]).await;
+        let user = crate::user_session::SessionPrincipal::User(crate::user_session::UserIdentity {
+            user_id: "u1".into(),
+            label: "U".into(),
+            email: None,
+            provider: "p".into(),
+            plugin: "p".into(),
+        });
+        let response = chat_agents(State(state.clone()), Some(axum::Extension(user))).await;
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body, serde_json::json!({"agents": []}));
+        let response = chat_agents(State(state), None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 
     fn manifest() -> Value {
         json!({

@@ -385,7 +385,10 @@ plugin never sees a cookie. Design:
   (`demo_network_chat_post`); files, typing, notices and direct messages are
   refused. Plugins listed in `DEMO_PLUGINS` (every active
   one when unset) open their assets, RPCs and web proxy to a person; the
-  sign-in plugin's `auth` screen and its `rpc.auth.*` never do.
+  sign-in plugin's `auth` screen and its `rpc.auth.*` never do, and neither does the
+  web proxy of a plugin that serves an ACP agent (`user_session::agent_plugins`,
+  filled from every `acp_agent` service the node sees, live or saved): the
+  agent runs commands on the machine as its operator.
 - **Demo without sign-in** (`DEMO_NO_AUTH=1`, only with `DEMO_MODE`). A
   plugin whose `auth.providers` answer carries `"guest": true` opens guest
   sessions: `/api/access` names its `guest_url` and the login screen goes

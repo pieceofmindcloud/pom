@@ -1072,6 +1072,15 @@ group the nodes of one card by. See `deployment.md`, section 1.7.
 
 ### Chat images
 
+`GET /api/ui/chat/agents` lists the ACP agents of this machine's plugins for
+the Chat: `{"agents": [{plugin_code, id, name, version, status, proxy_path,
+protocol_version}]}`, where `proxy_path` is
+`/api/ui/plugins/<code>/proxy<acp.path>` and `status` is the service's, or
+`stopped` for a stopped on-demand plugin (the Chat calls
+`POST /api/ui/plugins/<code>/open` before connecting). It is on the user
+surface only to answer a user session with an empty list
+(`plugin_ui::chat_agents`).
+
 `GET /api/ui/chat/capabilities` also answers `image` (`supported` when some
 machine offers a ComfyUI workflow) and `image_workflows` (`[{id, name,
 node_id, inputs?, description?, params?}]`, built-in ones first; `params` are a

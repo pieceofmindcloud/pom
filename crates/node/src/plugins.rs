@@ -4164,7 +4164,9 @@ impl PluginManager {
                 saved.insert(plugin.code.clone(), agents);
             }
         }
-        crate::plugin_services::chat_agents(&live, &saved, &installed)
+        let agents = crate::plugin_services::chat_agents(&live, &saved, &installed);
+        crate::user_session::note_agent_plugins(agents.iter().map(|a| a.plugin_code.as_str()));
+        agents
     }
 
     /// Forgets the saved ACP agents of an uninstalled plugin.
@@ -4215,6 +4217,9 @@ pub(crate) fn spawn_installed_watcher(state: crate::gateway::GatewayState) {
                 .into_iter()
                 .map(|summary| (summary.code, summary.version))
                 .collect();
+            // Keeps the agent plugins off the user surface from the first
+            // seconds after a restart (their saved agents are read here).
+            state.plugins.acp_agents().await;
             if let Some(before) = &known {
                 for (event_type, payload) in installed_transitions(before, &current) {
                     state.plugins.publish_event(event_type, payload);

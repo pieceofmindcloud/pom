@@ -719,6 +719,12 @@ pub(crate) async fn node_services(plugins: &crate::plugins::PluginManager) -> Ve
         .iter()
         .flat_map(|(code, answer)| parse_services(code, answer))
         .collect();
+    crate::user_session::note_agent_plugins(
+        services
+            .iter()
+            .filter(|service| service.acp.is_some())
+            .map(|service| service.plugin_code.as_str()),
+    );
     *cache()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) =

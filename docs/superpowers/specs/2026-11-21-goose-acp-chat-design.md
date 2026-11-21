@@ -228,8 +228,11 @@ minus Node.
   only used by that machine's own UI. The people on a machine's UI are the
   operator (node password) and user sessions (sign-in through a plugin's
   provider), and `user_may_call` (`crates/node/src/backend/user_session.rs`)
-  is an allowlist that does not include the plugin proxy, so a user session
-  already cannot reach Goose. No new contract: a regression test pins that a
+  is an allowlist that does not include the plugin proxy, except on a
+  demonstration node, where a person reaches the proxy of the allowed
+  plugins (found while implementing). There the proxy of any plugin that
+  announced an `acp_agent` is excluded (`user_session::agent_plugins`). No new
+  contract: a regression test pins that a
   user session is refused on `/api/ui/plugins/goose/proxy/*`, and
   `/api/ui/chat/agents` is empty for user sessions. A `proxy_profiles` field
   gated on the machine profile was considered and dropped: it would stop the

@@ -1,7 +1,6 @@
 name: Release · Windows
 
-# It only runs when you ask for it. On a private repository the Windows runner minute
-# counts 2x. See `docs/subsystems/build-and-run.md`, section "Release through GitHub
+# It only runs when you ask for it. See `docs/subsystems/build-and-run.md`, section "Release through GitHub
 # Actions".
 #
 # Two variants, chosen in the `variantes` input:
@@ -107,7 +106,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           LLAMA_TAG: ${{ inputs.llama_tag }}
-          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
         run: |
           set -euo pipefail
           tag="$LLAMA_TAG"
@@ -117,7 +115,7 @@ jobs:
             # changed nothing but CI files: an older one fails inside the engine's wrapper
             # (a llama.cpp function it calls changed its arguments).
             engine_rev="$(sed -n 's/^llama-cpp-sys-2 = .*rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml)"
-            want="$(GH_TOKEN="$ENGINE_TOKEN" gh api "repos/pieceofmindcloud/pom-plugin-llama.cpp/contents/llama-cpp.lock?ref=$engine_rev" -q .content \
+            want="$(gh api "repos/pieceofmindcloud/pom-plugin-llama.cpp/contents/llama-cpp.lock?ref=$engine_rev" -q .content \
               | base64 -d | sed -n 's/^LLAMA_CPP_COMMIT=//p')"
             test -n "$want" || { echo "could not read llama-cpp.lock of the engine at $engine_rev" >&2; exit 1; }
             echo "engine $engine_rev wants fork commit $want"
@@ -176,16 +174,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.variante }}-llama-${{ steps.llama.outputs.tag }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Access to the engine repository (pom-plugin-llama.cpp)
-        shell: bash
-        env:
-          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
-        run: |
-          # Cargo.toml names the engine as ssh://git@github.com/...; this rewrites that URL to
-          # HTTPS with a fine-grained token (read-only on pom-plugin-llama.cpp). It goes to the
-          # job's global git config, which lives only as long as this hosted runner.
-          git config --global url."https://x-access-token:${ENGINE_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
 
       - name: Validate the autoclone destination on Windows
         shell: pwsh

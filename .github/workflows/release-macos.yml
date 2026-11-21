@@ -1,7 +1,7 @@
 name: Release · macOS
 
 # It only runs when you ask for it, on a GitHub-hosted macOS (Apple Silicon) runner. The
-# private engine repository is reached over HTTPS with the POM_LLAMACPP_TOKEN secret. See
+# engine repository (pom-plugin-llama.cpp) is public and fetched over HTTPS. See
 # `docs/subsystems/build-and-run.md`, "Release through GitHub Actions".
 on:
   workflow_dispatch:
@@ -78,16 +78,6 @@ jobs:
           npm ci
           npm run build
         working-directory: apps/frontend
-
-      - name: Access to the engine repository (pom-plugin-llama.cpp)
-        shell: bash
-        env:
-          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
-        run: |
-          # Cargo.toml names the engine as ssh://git@github.com/...; this rewrites that URL to
-          # HTTPS with a fine-grained token (read-only on pom-plugin-llama.cpp). It goes to the
-          # job's global git config, which lives only as long as this hosted runner.
-          git config --global url."https://x-access-token:${ENGINE_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
 
       # One binary for Apple silicon and Intel: each slice is compiled for its own target
       # and lipo joins them. MACOSX_DEPLOYMENT_TARGET makes both slices run from macOS 11

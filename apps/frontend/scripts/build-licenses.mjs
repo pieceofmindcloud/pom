@@ -7,7 +7,7 @@
  * entries that are not development-only, transitive ones included), every
  * crate a workspace member reaches through normal or build dependencies (on
  * any target), and the native components compiled in that no package manager
- * describes (`NATIVE`). POM's own crates from its private repositories are
+ * describes (`NATIVE`). POM's own crates from its other repositories (the engine) are
  * POM itself and are left out. Re-run `npm run licenses` after changing
  * package.json, package-lock.json, Cargo.toml or Cargo.lock, then commit this
  * script, `src/lib/licenses.generated.ts` and `THIRD-PARTY-NOTICES.txt`.

@@ -4,8 +4,8 @@ name: Release · macOS · self-hosted
 # sync with that workflow; only runner-specific setup should differ.
 #
 # It only runs when you ask for it, on the self-hosted `macbook` runner. It consumes no
-# hosted-runner quota; if the machine is offline, the job stays queued. The private engine
-# repository is reached over HTTPS with the POM_LLAMACPP_TOKEN secret. See
+# hosted-runner quota; if the machine is offline, the job stays queued. The engine
+# repository (pom-plugin-llama.cpp) is public and fetched over HTTPS. See
 # `docs/subsystems/build-and-run.md`, "Release through GitHub Actions".
 on:
   workflow_dispatch:
@@ -95,20 +95,6 @@ jobs:
           npm ci
           npm run build
         working-directory: apps/frontend
-
-      - name: Access to the engine repository (pom-plugin-llama.cpp)
-        shell: bash
-        env:
-          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
-        run: |
-          # Cargo.toml names the engine as ssh://git@github.com/...; rewrite that URL to
-          # HTTPS with a fine-grained read-only token. Job environment variables keep the
-          # credential out of this persistent runner's ~/.gitconfig.
-          {
-            echo "GIT_CONFIG_COUNT=1"
-            echo "GIT_CONFIG_KEY_0=url.https://x-access-token:${ENGINE_TOKEN}@github.com/.insteadOf"
-            echo "GIT_CONFIG_VALUE_0=ssh://git@github.com/"
-          } >> "$GITHUB_ENV"
 
       # One binary for Apple silicon and Intel: each slice is compiled for its own target
       # and lipo joins them. MACOSX_DEPLOYMENT_TARGET makes both slices run from macOS 11

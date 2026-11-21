@@ -1,0 +1,65 @@
+name: Tests
+
+# Runs the test suites on every push to develop/main and on every pull request, on a
+# GitHub-hosted Ubuntu runner (CPU only, no GPU). The engine (pom-plugin-llama.cpp) and the
+# llama.cpp fork are public and fetched over HTTPS, so no secret is needed. Route tests use
+# `gateway::testkit`, never real UDP, so the suite is safe on a shared network.
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: cargo test (workspace)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      LLAMA_SOURCE: ${{ github.workspace }}/.ci-cache/llama.cpp
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      # `mold` is required: `.cargo/config.toml` links with `-fuse-ld=mold` on Linux.
+      # `libclang-dev` is for bindgen, `cmake` for the llama.cpp build.
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake clang mold libclang-dev pkg-config
+
+      - name: Prepare/cache the llama.cpp checkout
+        uses: ./.github/actions/llama-cache
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: llama-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+  frontend:
+    name: frontend tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+      - name: npm test
+        working-directory: apps/frontend
+        run: |
+          npm ci
+          npm test

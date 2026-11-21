@@ -3443,7 +3443,7 @@ Documented from the sources on the `fm/rdma-gateway-remoto-por-token` branch
 `inference/`, `routing/`, `backend/` and the root. The engine modules named here
 (`llm`, `wire`, `mtp`, `collective`, `gguf`, `multipart`, `kv_budget`, `moe`,
 `sysmon`) are not in this repository: they are the `llama-engine` crate of the
-private `pom-plugin-llama.cpp` repository, re-exported by
+public `pom-plugin-llama.cpp` repository, re-exported by
 `crates/node/src/main.rs` (`pub use llama_engine::{...}`), which is why the node
 code reaches them as `crate::llm::`, `crate::wire::` and so on. Where code and documentation
 diverge, the code wins and the divergence is noted as a defect.

@@ -122,7 +122,7 @@ COPY --from=llama-fork . /build/llama.cpp/
 # ── 1b. the llama engine from a published release ─────────────────────────────
 # POM_PLUGIN_LLAMA_RELEASE (a tag of pom-plugin-llama.cpp, e.g. v0.1.0) makes the
 # build use that release's source archive instead of fetching the locked commit
-# over SSH. The archive is downloaded with the token of the `pom_gh_token` secret
+# over HTTPS. The archive is downloaded with the token of the `pom_gh_token` secret
 # (optional, only needed here). The layer depends on the tag alone, so it is
 # reused across builds of the same release. Its files keep the archive's mtimes,
 # so Cargo's fingerprints stay valid while the release does not change.
@@ -173,15 +173,8 @@ ENV XDG_CACHE_HOME=/build/target
 # load dynamically; POM's custom CUDA MoE kernels are linked into this executable.
 # `kache init` sets Cargo's `rustc-wrapper` and the build-script C/C++ `[env]`
 # keys; `--no-service` because a build container has no service manager.
-# The engine repository is private and fetched over SSH: the build forwards the
-# host's agent (`docker compose build` with `ssh: [default]`, see
-# docker-compose.common.yml). github.com's host key is pinned here. With the
-# `pom_gh_token` secret, git fetches it over HTTPS with that token instead; the
-# token lives only in this RUN's environment, never in a layer.
-RUN mkdir -p -m 0700 /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts
-RUN --mount=type=ssh \
-    --mount=type=secret,id=pom_gh_token,required=false \
-    --mount=type=cache,target=/root/.cargo/registry \
+# The engine repository (pom-plugin-llama.cpp) is public: cargo fetches it over HTTPS.
+RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target,id=pom-target-v2-${LLAMA_CPP_CACHE_KEY}-${CUDA_VERSION}-${POM_CUDA_ARCH_CACHE_KEY}-${RUST_TOOLCHAIN},sharing=locked \
     if [ "$POM_LLAMA_CPP_MODE" = release ]; then \
@@ -193,11 +186,6 @@ RUN --mount=type=ssh \
       unset POM_LLAMA_CPP_PREBUILT_LIB_DIR LLAMA_BUILD_SHARED_LIBS; \
     fi; \
     export CUDAARCHS="$POM_CUDA_ARCHITECTURES"; \
-    if [ -s /run/secrets/pom_gh_token ]; then \
-      export GIT_CONFIG_COUNT=1 \
-        GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/pom_gh_token)@github.com/.insteadOf" \
-        GIT_CONFIG_VALUE_0="ssh://git@github.com/"; \
-    fi; \
     kache init --no-service --yes && \
     CARGO_TARGET_DIR=/build/target/cuda-vulkan cargo build --release --features cuda,vulkan && \
     cp /build/target/cuda-vulkan/release/pom /build/pom && \

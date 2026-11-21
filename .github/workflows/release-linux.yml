@@ -149,21 +149,6 @@ jobs:
           npm run build
         working-directory: apps/frontend
 
-      - name: Access to the engine repository (pom-plugin-llama.cpp)
-        shell: bash
-        env:
-          ENGINE_TOKEN: ${{ secrets.POM_LLAMACPP_TOKEN }}
-        run: |
-          # Cargo.toml names the engine as ssh://git@github.com/...; this rewrites that URL to
-          # HTTPS with a fine-grained token (read-only on pom-plugin-llama.cpp). It is passed as
-          # environment variables of the job, not written to ~/.gitconfig: this machine is
-          # self-hosted, and the token must not outlive the job.
-          {
-            echo "GIT_CONFIG_COUNT=1"
-            echo "GIT_CONFIG_KEY_0=url.https://x-access-token:${ENGINE_TOKEN}@github.com/.insteadOf"
-            echo "GIT_CONFIG_VALUE_0=ssh://git@github.com/"
-          } >> "$GITHUB_ENV"
-
       - name: Compile
         # llama.cpp's wide list under CUDA 12.9 written out, because a release goes to machines
         # that are not this one. An empty value would not do: CMake takes it as unset and picks

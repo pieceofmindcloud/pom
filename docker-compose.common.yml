@@ -4,9 +4,6 @@ x-node: &node
   build:
     context: .
     target: ${POM_DOCKER_TARGET:-dev-runtime}
-    # The Rust build fetches pom-plugin-llama.cpp (private) over SSH with the host agent.
-    ssh:
-      - default
     secrets:
       - pom_gh_token
     additional_contexts:
@@ -30,7 +27,7 @@ x-node: &node
       POM_CUDA_ARCH_CACHE_KEY: ${POM_CUDA_ARCH_CACHE_KEY:-86-120}
       RUST_TOOLCHAIN: ${RUST_TOOLCHAIN:-stable}
       # Tag of a published pom-plugin-llama.cpp release (e.g. v0.1.0). Empty = fetch the
-      # locked commit over SSH. The release needs POM_GH_TOKEN (the pom_gh_token secret).
+      # locked commit over HTTPS. Downloading the release with gh needs POM_GH_TOKEN (the pom_gh_token secret).
       POM_PLUGIN_LLAMA_RELEASE: ${POM_PLUGIN_LLAMA_RELEASE:-}
   image: pom:latest
   network_mode: host

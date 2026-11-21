@@ -769,6 +769,16 @@ flags on the command line.
 | `POM_LLAMA_CPP_AUTOCLONE` | Use `=0` to block the automatic download and only get the message with the manual procedure. |
 | `VITE_API_TARGET` | Proxy target of the UI dev server (default `http://127.0.0.1:8080`). |
 
+## Tests in CI
+
+`.github/workflows/test.yml` runs on every push to `develop` and `main` and on every
+pull request, on a GitHub-hosted Ubuntu runner. The `rust` job installs `cmake`,
+`clang`, `mold` and `libclang-dev`, prepares the llama.cpp fork through
+`.github/actions/llama-cache` (branch `pom`) and runs `cargo test --workspace --locked`
+on the CPU, with no feature flags. The `frontend` job runs `npm test` (vitest) in
+`apps/frontend`. No secret is needed: the engine and the fork are public and fetched
+over HTTPS.
+
 ## Release through GitHub Actions
 
 The platform package workflows are manual only (`workflow_dispatch`). macOS has
@@ -804,16 +814,12 @@ for a given version.
 
 ### The llama.cpp fork is the step that cannot be missing
 
-The engine lives in the private repository `pom-plugin-llama.cpp`
+The engine lives in the public repository `pom-plugin-llama.cpp`
 (`llama-engine` and `llama-cpp-sys-2`). The POM depends on it by git, pinned to
 a `rev` in `Cargo.toml` (`[patch.crates-io]`) and in `crates/node/Cargo.toml`.
-Cargo fetches it over SSH through the system `git`, enabled by
-`[net] git-fetch-with-cli = true` in `.cargo/config.toml`. Every release
-workflow reaches it with the read-only token `POM_LLAMACPP_TOKEN`, rewriting
-`ssh://git@github.com/` to HTTPS. The hosted macOS and Windows workflows use the
-job's global git config. The self-hosted Linux and macOS workflows use
-`GIT_CONFIG_*` environment variables, so the token never lands in either
-runner's `~/.gitconfig`. Changing the engine means: commit and push
+Cargo fetches it over HTTPS through the system `git`, enabled by
+`[net] git-fetch-with-cli = true` in `.cargo/config.toml`; no key or token is
+needed, locally, in Docker or in the workflows. Changing the engine means: commit and push
 `pom-plugin-llama.cpp`, then move both `rev`s.
 
 The fork of llama.cpp is not in either repository. `llama-cpp-sys-2` finds it

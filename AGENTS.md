@@ -131,8 +131,8 @@ sources, use `POM_LLAMA_CPP_MODE=source` and, optionally,
 Preparing the build
 
 The llama.cpp engine (`llama-engine` and the `llama-cpp-sys-2` binding) lives in
-the private repository `pom-plugin-llama.cpp`, pinned by `rev` in `Cargo.toml`
-(`[patch.crates-io]`) and in `crates/node/Cargo.toml`. Cargo fetches it over SSH
+the public repository `pom-plugin-llama.cpp`, pinned by `rev` in `Cargo.toml`
+(`[patch.crates-io]`) and in `crates/node/Cargo.toml`. Cargo fetches it over HTTPS
 with the `git` client (`[net] git-fetch-with-cli` in `.cargo/config.toml`).
 
 The Cargo builds and the Docker `source` mode need the `llama.cpp` fork on the

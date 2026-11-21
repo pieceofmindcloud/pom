@@ -89,11 +89,9 @@ contract is open, so anyone can write and publish a plugin.
 **The Business Pack** (`pom-plugin-logs`) is a plugin we built for companies that
 want local AI under their own control: quotas per team, person and project,
 single sign-on, request logs and auditing, telemetry per request, usage
-statistics, and energy and cost per machine. It started as a separate closed
-source plugin meant to fund the project. It has never been sold and has not been
-released to the public. Our preference is to make it part of the open project, and
-we are open to discussing how - its license, its timing and how it joins the
-core.
+statistics, and energy and cost per machine. If your company already has
+the hardware and wants to be one of the first to try it, talk to us: we will
+release a beta to a few companies, with support, before the public release.
 
 To build a plugin, start from `.claude/skills/creating-pom-plugins/`; the
 contract is in `docs/subsystems/enterprise-licensing.md` and

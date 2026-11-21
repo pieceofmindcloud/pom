@@ -331,6 +331,11 @@ impl PluginHost {
         self.request("query", query).await
     }
 
+    /// The host's process id while it runs.
+    pub(crate) async fn pid(&self) -> Option<u32> {
+        self.process.child.lock().await.id()
+    }
+
     pub(crate) async fn stop(&self) -> Result<()> {
         let _lifecycle = self.process.lifecycle.write().await;
         self.process

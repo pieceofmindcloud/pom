@@ -185,6 +185,10 @@ the boundary.
 
 ## Menu and routes
 
+`/config/background-services` (Settings > Background services,
+`routes/BackgroundServices.tsx`) lists the on-demand plugins with their memory
+and closes or opens them; it is not on the user surface (`USER_ROUTES`).
+
 `src/components/nav.ts` holds the menu as data (`NAV`: sections and leaves with
 `labelKey`, route and `end`), consumed by the Sidebar and by the router in
 `src/App.tsx`. `Deploy` (`nav.deployments`) is a single entry to `/deploy` with the rocket

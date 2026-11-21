@@ -496,6 +496,11 @@ while the node does not answer.
   links, search + clear, empty state, and the mobile nav/reader/`Voltar`
   contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
+- `BackgroundServices.tsx` - Settings > Background services at
+  `/config/background-services`: the on-demand plugins from `usePluginUi`,
+  running first with `memory_bytes` (`formatMemory`) and a confirmed Close
+  (`closePlugin`), stopped ones with Open (`openPlugin`). The only place to
+  close a plugin without a menu entry. Tests: `BackgroundServices.test.tsx`.
 - `About.tsx` - an information screen at `/config/about`, the last leaf of
   Settings. It shows the repository's MIT `LICENSE` and the Open Source
   Initiative page, the risk/LGPD notice and links to the site (`pieceofmind.cloud`), contact

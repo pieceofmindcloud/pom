@@ -278,6 +278,13 @@ A resident plugin behaves as before.
   piece paused, "The <name> piece is paused", why (closed, it uses no memory,
   processor or GPU, and keeps its settings), that it can be closed again with
   the X, and an "Open <name>" button.
+- **Settings > Background services** (`routes/BackgroundServices.tsx`,
+  `/config/background-services`) lists the on-demand plugins, running first,
+  with Close (confirmed, then `/close`) and Open for stopped ones. It is the
+  only place to close a plugin with no menu entry (`pom-plugin-goose`).
+  `GET /api/ui/plugins/ui` adds `memory_bytes` to a running plugin: the
+  resident memory of its host's process tree (`process_memory.rs`, `/proc`
+  on Linux; omitted elsewhere or when unmeasurable).
 - A running on-demand plugin shows an X badge in the menu; `POST
   /api/ui/plugins/<code>/close` stops the process and leaves the plugin
   installed and licensed.

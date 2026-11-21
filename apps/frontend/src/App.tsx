@@ -304,6 +304,7 @@ export const routeLoaders = {
   networkSharing: () => import("./routes/NetworkSharing").then(({ NetworkSharing }) => NetworkSharing),
   preferences: () => import("./routes/Preferences").then(({ Preferences }) => Preferences),
   about: () => import("./routes/About").then(({ About }) => About),
+  backgroundServices: () => import("./routes/BackgroundServices").then(({ BackgroundServices }) => BackgroundServices),
   notFound: () => import("./routes/NotFound").then(({ NotFound }) => NotFound),
   deployModel: () => import("./routes/DeployModel").then(({ DeployModel }) => DeployModel),
   deployments: () => import("./routes/Deployments").then(({ Deployments }) => Deployments),
@@ -339,6 +340,7 @@ const TrustAnchor = lazyRoute(routeLoaders.trustAnchor);
 const NetworkSharing = lazyRoute(routeLoaders.networkSharing);
 const Preferences = lazyRoute(routeLoaders.preferences);
 const About = lazyRoute(routeLoaders.about);
+const BackgroundServices = lazyRoute(routeLoaders.backgroundServices);
 const NotFound = lazyRoute(routeLoaders.notFound);
 const DeployModel = lazyRoute(routeLoaders.deployModel);
 const Deployments = lazyRoute(routeLoaders.deployments);
@@ -686,6 +688,7 @@ export default function App() {
                         <Route path="/config/preferences" element={<Page><Preferences /></Page>} />
                         <Route path="/config/preferences/admin" element={<Page><Preferences administrative /></Page>} />
                         <Route path="/config/about" element={<Page><About /></Page>} />
+                        <Route path="/config/background-services" element={<Page><BackgroundServices /></Page>} />
                         <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                         <Route path="/config/keys/connection" element={<Page><ConnectionKeys /></Page>} />
                         <Route path="/config/folders" element={<Page><ModelPaths /></Page>} />

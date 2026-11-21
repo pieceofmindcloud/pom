@@ -11,6 +11,7 @@ import {
   History,
   Info,
   KeyRound,
+  Layers,
   Laptop,
   ListTree,
   MessagesSquare,
@@ -124,6 +125,7 @@ export const NAV: NavSection[] = [
     children: [
       { labelKey: "nav.preferences", to: "/config/preferences", icon: SlidersHorizontal },
       { labelKey: "nav.storage", to: "/config/storage", icon: FolderTree },
+      { labelKey: "nav.backgroundServices", to: "/config/background-services", icon: Layers },
       { labelKey: "nav.administrativePreferences", to: "/config/preferences/admin", icon: SlidersHorizontal },
       { labelKey: "nav.about", to: "/config/about", icon: Info },
     ],

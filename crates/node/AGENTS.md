@@ -417,7 +417,10 @@ services with the ones saved under `plugin_acp_agents:<code>` for stopped
 on-demand plugins (`plugin_services::chat_agents`); `deactivate` forgets them. `plugin_ui::chat_agents`
 serves them at `GET /api/ui/chat/agents` (empty for a user session), and
 every agent plugin seen is noted in `user_session::agent_plugins`, which keeps
-its proxy off the demonstration user surface. Batch license
+its proxy off the demonstration user surface. `process_memory.rs` sums `VmRSS` over a
+process tree from `/proc` (Linux; `None` elsewhere) for the `memory_bytes` of
+running plugins in `GET /api/ui/plugins/ui` (`PluginManager::memory_bytes`,
+`PluginHost::pid`). Batch license
 activation validates once, then activates/installs each granted code separately.
 Plugin features come from the manifest, NOT from the license. The server's public
 catalog remains the commercial storefront; `GET /api/ui/plugins` publishes the local

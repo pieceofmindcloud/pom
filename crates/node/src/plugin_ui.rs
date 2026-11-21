@@ -499,6 +499,9 @@ struct ActivePluginUi {
     /// On-demand plugin: the menu shows the X when `running` and opens the process on click.
     on_demand: bool,
     running: bool,
+    /// Resident memory of the running host's process tree, where measurable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_bytes: Option<u64>,
 }
 
 /// `GET /api/ui/plugins/ui`: manifests of the active plugins. An on-demand plugin
@@ -518,6 +521,11 @@ pub(crate) async fn list_plugin_ui(State(state): State<crate::gateway::GatewaySt
                 manifest,
                 on_demand: status.on_demand,
                 running: status.running,
+                memory_bytes: if status.running {
+                    state.plugins.memory_bytes(&status.code).await
+                } else {
+                    None
+                },
             });
         }
     }

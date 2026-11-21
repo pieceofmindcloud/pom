@@ -221,6 +221,7 @@ mod prefix_cache_lab;
 #[cfg(test)]
 #[path = "inference/prefix_reuse_lab.rs"]
 mod prefix_reuse_lab;
+mod process_memory;
 mod process_tree;
 #[path = "profile.rs"]
 pub(crate) mod profile;

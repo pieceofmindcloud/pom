@@ -3359,6 +3359,14 @@ impl PluginManager {
             .unwrap_or_default()
     }
 
+    /// Resident memory of a running plugin's host and everything it started
+    /// (`process_memory`); `None` when stopped or not measurable here.
+    pub(crate) async fn memory_bytes(&self, code: &str) -> Option<u64> {
+        let runtime = self.runtime_for(code)?;
+        let pid = runtime.host.lock().await.as_ref()?.pid().await?;
+        crate::process_memory::resident_tree_bytes(pid)
+    }
+
     pub(crate) fn runtime_for(&self, code: &str) -> Option<Arc<PluginRuntime>> {
         self.runtimes
             .read()

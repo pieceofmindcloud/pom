@@ -95,6 +95,8 @@ export interface ActivePluginUi {
   on_demand?: boolean;
   /** The host process is running now. */
   running?: boolean;
+  /** Resident memory of the running host's process tree, where the node can measure it. */
+  memory_bytes?: number;
 }
 
 /** A plugin component mounted inside a native screen (see `pluginSlot`). */

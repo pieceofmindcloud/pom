@@ -78,18 +78,22 @@ city.
   with the other members, you run models nobody could run alone. Best if you have
   little hardware; keep sensitive data on a private network.
 
-## Plugins and POM Enterprise
+## Plugins and the Business Pack
 
-The free POM is complete. It grows with plugins, some free and some paid, which
-you install from the POM dashboard and which run isolated in their own process.
-The store lives at <https://pieceofmind.cloud/plugins/>; paid plugins are
-optional monthly or yearly subscriptions (for example *POM Logs / Statistics*
-and *RAG Vector Database (Qdrant)*), see <https://pieceofmind.cloud/precos/>.
+POM is complete on its own, and everything in this repository is open source
+(MIT). It grows with plugins, which you install from the POM dashboard and which
+run isolated in their own process: inference engines, agents, image generation
+and more. The catalog lives at <https://pieceofmind.cloud/plugins/>. The plugin
+contract is open, so anyone can write and publish a plugin.
 
-**POM Enterprise** is the edition for companies that want AI fully under control:
-private network only, logs and auditing (who asked, when and on which machine),
-usage statistics per machine and model, and connection to the team's coding
-agents.
+**The Business Pack** (`pom-plugin-logs`) is a plugin we built for companies that
+want local AI under their own control: quotas per team, person and project,
+single sign-on, request logs and auditing, telemetry per request, usage
+statistics, and energy and cost per machine. It started as a separate closed
+source plugin meant to fund the project. It has never been sold and has not been
+released to the public. Our preference is to make it part of the open project, and
+we are open to discussing how - its license, its timing and how it joins the
+core.
 
 To build a plugin, start from `.claude/skills/creating-pom-plugins/`; the
 contract is in `docs/subsystems/enterprise-licensing.md` and

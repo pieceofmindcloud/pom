@@ -73,6 +73,14 @@ pub(super) fn routes() -> Router<GatewayState> {
         )
         .route("/api/plugin-host/sign", post(crate::plugin_host_api::sign))
         .route(
+            "/api/plugin-host/message",
+            post(crate::plugin_host_api::message),
+        )
+        .route(
+            "/api/plugin-host/notify",
+            post(crate::plugin_host_api::notify),
+        )
+        .route(
             "/api/plugin-host/catalog/images",
             get(crate::plugin_host_api::catalog_images),
         )

@@ -2,6 +2,9 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub mod abi;
+pub mod sandbox;
+
+pub use sandbox::{sandbox_widens, PluginSandbox, SandboxListen, SandboxNetwork};
 
 pub const LICENSE_PROTOCOL: &str = "pom-license/v1";
 pub const IPC_PROTOCOL: &str = "pom-enterprise-ipc/v1";
@@ -162,6 +165,10 @@ pub struct PluginManifest {
     /// by the operator are stored by POM locally and are never license data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferences: Option<PluginPreferencesSchema>,
+    /// The sandbox this release asks for; absent for a legacy plugin, which
+    /// runs without one (`sandbox.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<PluginSandbox>,
     pub key_id: String,
     pub signature: String,
 }

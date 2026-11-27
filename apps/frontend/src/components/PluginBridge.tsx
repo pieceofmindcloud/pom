@@ -3,7 +3,9 @@
  *
  * Publishes the current language and theme whenever they change, relays to the screens the
  * events the node publishes (`GET /api/ui/plugins/events`: deployment
- * started, model serving or stopped, preferences saved), executes the
+ * started, model serving or stopped, preferences saved, messages between
+ * plugins), shows the notices a plugin's own process raises (`plugin.notice`)
+ * in the bell and as a toast, executes the
  * commands the plugins ask for (local notice, notice to the network, Accept/Refuse
  * confirmation in the bell or in a dialog) and turns each plugin notice that
  * arrives over the network into a toast and a `notification.received` event. It draws nothing
@@ -16,6 +18,7 @@ import { addPendingPluginConfirm, addPluginNotice } from "../lib/pluginInbox";
 import {
   forwardNodeEvent,
   installPluginCommandExecutor,
+  readNodeNotice,
   listenForPluginCommands,
   publishPluginEvent,
   type ConfirmRequest,
@@ -129,6 +132,17 @@ export function PluginBridge() {
   useEffect(() => {
     let after: number | null = null;
     let stopped = false;
+    // A notice a plugin's own process raised (`POST /api/plugin-host/notify`):
+    // shown like the screen's local `notification.notify`. True when handled.
+    const showNodeNotice = (value: unknown): boolean => {
+      const notice = readNodeNotice(value);
+      if (notice === undefined) return false;
+      if (notice === null) return true;
+      const { toast: show, locale: currentLocale } = latest.current;
+      addPluginNotice({ ...notice, id: notice.id ?? randomId(), source: "local" });
+      show[notice.level](`${pluginDisplayName(notice.code, currentLocale)}: ${notice.title}`, notice.body);
+      return true;
+    };
     const poll = async () => {
       // A signed-in person has no node events (`user_may_call`).
       if (isUserSession()) return;
@@ -137,7 +151,9 @@ export function PluginBridge() {
         const response = await api.get<{ latest?: unknown; events?: unknown }>(`/api/ui/plugins/events${query}`);
         if (stopped) return;
         if (Array.isArray(response.events)) {
-          for (const item of response.events as Array<{ event?: unknown }>) forwardNodeEvent(item.event);
+          for (const item of response.events as Array<{ event?: unknown }>) {
+            if (!showNodeNotice(item.event)) forwardNodeEvent(item.event);
+          }
         }
         if (typeof response.latest === "number") after = response.latest;
       } catch {

@@ -127,6 +127,8 @@ pub(crate) struct BuiltPlugin {
     pub plugin_code: String,
     pub bytes: Vec<u8>,
     pub elapsed_ms: u64,
+    /// The source's release manifest `sandbox`; `None` for a legacy plugin.
+    pub sandbox: Option<enterprise_protocol::PluginSandbox>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,6 +148,7 @@ struct Source {
     cargo_manifest: PathBuf,
     /// The manifest's rebuild steps for this machine's operating system.
     prepare: Vec<PrepareStep>,
+    sandbox: Option<enterprise_protocol::PluginSandbox>,
 }
 
 /// One `development.rebuild` entry: a script inside the source and its
@@ -332,7 +335,7 @@ fn canonical_source(root: &Path, repository: &str) -> Result<Source, DevPluginEr
     if !cargo_manifest.starts_with(&source) || !cargo_manifest.is_file() {
         return Err(DevPluginError::new(DevPluginErrorCode::InvalidSource));
     }
-    let (plugin_code, menu_label, prepare) = validate_plugin_manifests(&source)?;
+    let (plugin_code, menu_label, prepare, sandbox) = validate_plugin_manifests(&source)?;
     Ok(Source {
         repository: repository.to_owned(),
         plugin_code,
@@ -340,6 +343,7 @@ fn canonical_source(root: &Path, repository: &str) -> Result<Source, DevPluginEr
         root: source,
         cargo_manifest,
         prepare,
+        sandbox,
     })
 }
 
@@ -478,13 +482,23 @@ fn menu_label(value: &serde_json::Value, plugin_code: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-type PluginManifests = (String, Option<String>, Vec<PrepareStep>);
+type PluginManifests = (
+    String,
+    Option<String>,
+    Vec<PrepareStep>,
+    Option<enterprise_protocol::PluginSandbox>,
+);
 
 fn validate_plugin_manifests(root: &Path) -> Result<PluginManifests, DevPluginError> {
     let mut plugin_code = None;
     let mut label = None;
     let mut prepare = Vec::new();
-    for relative in [Path::new("manifest.json"), Path::new("ui/manifest.json")] {
+    let mut sandbox = None;
+    for relative in [
+        Path::new("manifest.json"),
+        Path::new("release/manifest.json"),
+        Path::new("ui/manifest.json"),
+    ] {
         let path = root.join(relative);
         if !path.exists() {
             continue;
@@ -519,6 +533,14 @@ fn validate_plugin_manifests(root: &Path) -> Result<PluginManifests, DevPluginEr
         }
         if relative == Path::new("ui/manifest.json") {
             label = menu_label(&value, code);
+        } else if let Some(section) = value.get("sandbox") {
+            let parsed: enterprise_protocol::PluginSandbox =
+                serde_json::from_value(section.clone())
+                    .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
+            parsed
+                .validate()
+                .map_err(|_| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
+            sandbox = Some(parsed);
         }
         plugin_code = Some(code.to_owned());
         prepare.extend(rebuild_steps(root, &value)?);
@@ -528,7 +550,7 @@ fn validate_plugin_manifests(root: &Path) -> Result<PluginManifests, DevPluginEr
     }
     let plugin_code =
         plugin_code.ok_or_else(|| DevPluginError::new(DevPluginErrorCode::InvalidSource))?;
-    Ok((plugin_code, label, prepare))
+    Ok((plugin_code, label, prepare, sandbox))
 }
 
 pub(crate) fn list_mounted_sources(
@@ -738,6 +760,7 @@ pub(crate) async fn build_source(
         plugin_code: source.plugin_code,
         bytes,
         elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        sandbox: source.sandbox,
     })
 }
 

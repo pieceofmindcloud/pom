@@ -9,7 +9,7 @@ import { PluginUpdatesDialog, type UpdateItem } from "../components/PluginUpdate
 import { ApiError, api } from "../lib/api";
 import { keys, useDevelopmentPluginSources, useGithubRepositories, useNode, usePlugins, usePublicPlugin, usePublicPluginCatalog } from "../lib/queries";
 import { useSearchParams } from "react-router-dom";
-import type { DevelopmentPluginError, DevelopmentPluginRebuildResult, DevelopmentPluginSource, GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginStatus, PomCoreUpdateStatus } from "../lib/types";
+import type { DevelopmentPluginError, DevelopmentPluginRebuildResult, DevelopmentPluginSource, GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginSandbox, PluginStatus, PomCoreUpdateStatus } from "../lib/types";
 import { releaseForTarget, supportedPlatforms, type PublicPluginCatalogEntry } from "../lib/pluginCatalog";
 import { navigateToPluginContact, navigateToPluginPurchase } from "../lib/pluginPurchase";
 import { promotionEnd, promotionFor, salesByContact, termPrice, type PlanInterval } from "../lib/pluginPricing";
@@ -37,6 +37,22 @@ export const PAGE_SIZE = 20;
 const EXAMPLE_PLUGIN_CODE = "base";
 const EXAMPLE_PLUGIN_REPOSITORY = "https://github.com/pieceofmindcloud/pom-plugin-base";
 const PUBLISH_PLUGIN_URL = "https://pieceofmind.cloud/plugins/publicar/";
+
+/** The badge's tooltip: what the sandbox grants, or why a legacy plugin has none. */
+export function sandboxSummary(
+  sandbox: PluginSandbox | null | undefined,
+  enforced: boolean,
+  t: (key: string, values?: Record<string, string | number>) => string,
+): string {
+  if (!sandbox) return t("plugins.unsandboxedHint");
+  const parts = [
+    t(sandbox.network === "internet" ? "plugins.sandboxInternet" : "plugins.sandboxLoopback"),
+    sandbox.listen === "network" ? t("plugins.sandboxListenNetwork") : null,
+    sandbox.gpu ? t("plugins.sandboxGpu") : null,
+    sandbox.read_paths?.length ? t("plugins.sandboxReadPaths", { paths: sandbox.read_paths.join(", ") }) : null,
+  ];
+  return [t(enforced ? "plugins.sandboxedHint" : "plugins.sandboxDeclaredHint"), ...parts.filter(Boolean)].join("\n");
+}
 
 function formatDateTime(value: string | null | undefined, locale: string, time = true): string | null {
   if (!value) return null;
@@ -514,6 +530,15 @@ function PluginCard({
             {entry?.pom_team === false && <Badge tone="neutral">{t("plugins.community")}</Badge>}
             {fromGithub && <Badge tone="neutral">GitHub</Badge>}
             {status?.development_install && <Badge tone="neutral">{t("plugins.devInstalled")}</Badge>}
+            {status && (status.active || status.plugin_version || status.development_install) && (
+              <span title={sandboxSummary(status.sandbox, status.sandbox_enforced === true, t)} data-testid={`plugin-sandbox-${code}`}>
+                {!status.sandbox
+                  ? <Badge tone="amber">{t("plugins.unsandboxed")}</Badge>
+                  : status.sandbox_enforced
+                    ? <Badge tone="aqua">{t("plugins.sandboxed")}</Badge>
+                    : <Badge tone="neutral">{t("plugins.sandboxDeclared")}</Badge>}
+              </span>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">

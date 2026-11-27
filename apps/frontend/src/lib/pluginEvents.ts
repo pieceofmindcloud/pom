@@ -37,6 +37,8 @@ export type PluginEventType =
   | "deployment.started"
   | "model.serving"
   | "model.stopped"
+  /** A message from another plugin of this machine (`POST /api/plugin-host/message`), to the target only. */
+  | "plugin.message"
   /** The person clicked "Try again" on the plugin's loader error (`lib/pluginLoader.ts`). */
   | "loader.retry";
 
@@ -46,6 +48,7 @@ const NODE_EVENT_TYPES: readonly PluginEventType[] = [
   "deployment.started",
   "model.serving",
   "model.stopped",
+  "plugin.message",
 ];
 
 export interface PluginEvent<P = Record<string, unknown>> {
@@ -138,6 +141,39 @@ export function publishPluginEvent<P extends Record<string, unknown>>(
   target = "*",
 ): PluginEvent<P> {
   return deliver(envelope(type, payload, target));
+}
+
+export interface NodeNotice {
+  id: string | null;
+  code: string;
+  title: string;
+  body?: string;
+  level: "info" | "success" | "warning" | "error";
+  createdAt: string;
+}
+
+/**
+ * A `plugin.notice` the node published for a notice a plugin's own process
+ * raised (`POST /api/plugin-host/notify`). `undefined`: not a notice; `null`: a
+ * notice too malformed to show.
+ */
+export function readNodeNotice(value: unknown): NodeNotice | null | undefined {
+  const event = value as { type?: unknown; payload?: unknown } | null;
+  if (typeof event !== "object" || event === null || event.type !== "plugin.notice") return undefined;
+  const payload = event.payload as Record<string, unknown> | null;
+  if (typeof payload !== "object" || payload === null) return null;
+  const code = typeof payload.plugin_code === "string" ? payload.plugin_code : "";
+  const title = typeof payload.title === "string" ? payload.title.trim() : "";
+  if (!code || !title) return null;
+  const levels = ["info", "success", "warning", "error"] as const;
+  return {
+    id: typeof payload.message_id === "string" ? payload.message_id : null,
+    code,
+    title,
+    body: typeof payload.body === "string" && payload.body ? payload.body : undefined,
+    level: levels.find((level) => level === payload.level) ?? "info",
+    createdAt: typeof payload.sent_at === "string" ? payload.sent_at : new Date().toISOString(),
+  };
 }
 
 /**

@@ -805,6 +805,9 @@ pub(crate) struct PersistedPluginState {
     pub plugin_path: Option<String>,
     #[serde(default)]
     pub preferences_schema: Option<enterprise_protocol::PluginPreferencesSchema>,
+    /// The installed release's sandbox; `None` for a legacy plugin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<enterprise_protocol::PluginSandbox>,
     /// Last installation/handshake failure, without changing the license state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub installation_error: Option<String>,
@@ -827,6 +830,8 @@ struct PublicPluginInstallState {
     size: u64,
     plugin_path: String,
     preferences_schema: Option<enterprise_protocol::PluginPreferencesSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sandbox: Option<enterprise_protocol::PluginSandbox>,
     installed_at: String,
 }
 
@@ -839,6 +844,9 @@ struct DevelopmentPluginInstallState {
     size: u64,
     plugin_path: String,
     installed_at: String,
+    /// From the source's release manifest at rebuild time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sandbox: Option<enterprise_protocol::PluginSandbox>,
 }
 
 /// A version update available for installation - of the plugin itself, never of
@@ -895,6 +903,15 @@ pub(crate) struct PluginStatus {
     pub preferences_schema: Option<enterprise_protocol::PluginPreferencesSchema>,
     #[serde(default)]
     pub preferences: Option<enterprise_protocol::PluginPreferences>,
+    /// The sandbox the installed release declares. `None` is a legacy plugin,
+    /// which runs without a sandbox; the Plugins screen says so.
+    #[serde(default)]
+    pub sandbox: Option<enterprise_protocol::PluginSandbox>,
+    /// Whether the plugin's host runs inside that sandbox. Always `false`
+    /// until `pom-plugin-host` applies it (phase 2 of the sandbox plan): the
+    /// screen must not claim an isolation the node does not give yet.
+    #[serde(default)]
+    pub sandbox_enforced: bool,
     /// On-demand plugin on this machine: the operator's choice, else the
     /// manifest's `lifecycle: "on_demand"`.
     #[serde(default)]
@@ -936,6 +953,8 @@ impl PluginStatus {
             github_repository: None,
             preferences_schema: None,
             preferences: None,
+            sandbox: None,
+            sandbox_enforced: false,
             on_demand: false,
             lifecycle_default: None,
             lifecycle_override: None,
@@ -1259,6 +1278,14 @@ impl PluginRuntime {
             .clone()
             .filter(|installed| installed.fingerprint == self.fingerprint);
         status.development_install = development_install.is_some();
+        // The artifact that runs: a development build replaces the release.
+        status.sandbox = match development_install.as_ref() {
+            Some(development) => development.sandbox.clone(),
+            None => match self.persisted.lock().await.as_ref() {
+                Some(persisted) => persisted.sandbox.clone(),
+                None => public_install.as_ref().and_then(|installed| installed.sandbox.clone()),
+            },
+        };
         status.github_repository = public_install
             .as_ref()
             .and_then(|installed| installed.repository_url.clone());
@@ -1712,6 +1739,7 @@ impl PluginRuntime {
         persisted.plugin_sha256 = manifest.manifest.sha256.clone();
         persisted.plugin_path = Some(path.to_string_lossy().into_owned());
         persisted.preferences_schema = manifest.manifest.preferences.clone();
+        persisted.sandbox = manifest.manifest.sandbox.clone();
         persisted.installation_error = None;
         persisted.last_success_at = Some(chrono::Utc::now().to_rfc3339());
         if let Some(database) = &self.database {
@@ -1860,6 +1888,7 @@ impl PluginRuntime {
             plugin_sha256: response.plugin_manifest.sha256,
             plugin_path: None,
             preferences_schema: response.plugin_manifest.preferences.clone(),
+            sandbox: response.plugin_manifest.sandbox.clone(),
             installation_error: None,
         };
         if let Some(database) = &self.database {
@@ -2781,6 +2810,7 @@ impl PluginRuntime {
         persisted.plugin_sha256 = manifest.manifest.sha256.clone();
         persisted.plugin_path = Some(path.to_string_lossy().into_owned());
         persisted.preferences_schema = manifest.manifest.preferences.clone();
+        persisted.sandbox = manifest.manifest.sandbox.clone();
         persisted.installed_at = Some(chrono::Utc::now().to_rfc3339());
         persisted.last_success_at = Some(chrono::Utc::now().to_rfc3339());
         if let Some(database) = &self.database {
@@ -2865,6 +2895,7 @@ impl PluginRuntime {
             size: manifest.size,
             plugin_path: path.to_string_lossy().into_owned(),
             preferences_schema: manifest.preferences.clone(),
+            sandbox: manifest.sandbox.clone(),
             installed_at: chrono::Utc::now().to_rfc3339(),
         };
         if let Some(old_host) = self.host.lock().await.take() {
@@ -2955,6 +2986,7 @@ impl PluginRuntime {
     async fn install_development_artifact(
         &self,
         bytes: &[u8],
+        sandbox: Option<enterprise_protocol::PluginSandbox>,
     ) -> Result<String, LicenseClientError> {
         let _guard = self.update_lock.lock().await;
         if bytes.is_empty() || bytes.len() as u64 > 512 * 1024 * 1024 {
@@ -3039,6 +3071,7 @@ impl PluginRuntime {
             size: bytes.len() as u64,
             plugin_path: path.to_string_lossy().into_owned(),
             installed_at: installed_at.clone(),
+            sandbox,
         };
 
         let save_result = if let Some(database) = &self.database {
@@ -3137,6 +3170,30 @@ pub(crate) struct PluginManager {
     events: PluginEventHub,
 }
 
+/// The largest `payload` of a plugin-to-plugin message.
+pub(crate) const MAX_PLUGIN_MESSAGE_BYTES: usize = 64 * 1024;
+const MAX_NOTICE_TITLE_BYTES: usize = 200;
+const MAX_NOTICE_BODY_BYTES: usize = 4000;
+
+/// Why a plugin message or notice was not delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PluginMessageError {
+    Invalid,
+    TooLarge,
+    NotInstalled,
+    NotRunning,
+}
+
+/// A message `type`: what the receiving plugin dispatches on.
+fn valid_message_type(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().next().is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 /// How many `pom-plugin-events/v1` events the node keeps for the interface to
 /// read through `GET /api/ui/plugins/events`.
 const PLUGIN_EVENT_BACKLOG: usize = 100;
@@ -3194,6 +3251,77 @@ impl PluginManager {
             tokio::spawn(async move { runtime.send_host_event(envelope).await });
         }
         seq
+    }
+
+    /// `plugin.message` from one plugin to another on this machine
+    /// (`POST /api/plugin-host/message`): to the target's native backend
+    /// (`host.event`) and, through the queue the interface reads, to the
+    /// target's screens only. `from` is the sender's token, never a field the
+    /// sender fills. Answers the message id.
+    pub(crate) async fn send_plugin_message(
+        &self,
+        from: &str,
+        target: &str,
+        message_type: &str,
+        payload: serde_json::Value,
+    ) -> Result<String, PluginMessageError> {
+        if !is_valid_plugin_code(target) || !valid_message_type(message_type) {
+            return Err(PluginMessageError::Invalid);
+        }
+        if serde_json::to_vec(&payload).map_or(true, |bytes| bytes.len() > MAX_PLUGIN_MESSAGE_BYTES) {
+            return Err(PluginMessageError::TooLarge);
+        }
+        let runtime = self.runtime_for(target).ok_or(PluginMessageError::NotInstalled)?;
+        let status = runtime.status().await;
+        if !status.active {
+            return Err(PluginMessageError::NotInstalled);
+        }
+        if !status.running {
+            return Err(PluginMessageError::NotRunning);
+        }
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let envelope = plugin_event_envelope(
+            "plugin.message",
+            target,
+            serde_json::json!({ "id": id, "from": from, "type": message_type, "payload": payload }),
+        );
+        self.events.push(envelope.clone());
+        runtime.send_host_event(envelope).await;
+        Ok(id)
+    }
+
+    /// A notice a plugin's own process raises (`POST /api/plugin-host/notify`):
+    /// the interface shows it like the screen's `notification.notify` with
+    /// `scope: "local"`, in the bell and as a toast. Answers the notice id.
+    pub(crate) fn plugin_notice(
+        &self,
+        from: &str,
+        title: &str,
+        body: Option<&str>,
+        level: &str,
+    ) -> Result<String, PluginMessageError> {
+        let title = title.trim();
+        if title.is_empty()
+            || title.len() > MAX_NOTICE_TITLE_BYTES
+            || body.is_some_and(|body| body.len() > MAX_NOTICE_BODY_BYTES)
+            || !matches!(level, "info" | "success" | "warning" | "error")
+        {
+            return Err(PluginMessageError::Invalid);
+        }
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        self.events.push(plugin_event_envelope(
+            "plugin.notice",
+            from,
+            serde_json::json!({
+                "message_id": id,
+                "plugin_code": from,
+                "title": title,
+                "body": body.unwrap_or_default(),
+                "level": level,
+                "sent_at": chrono::Utc::now().to_rfc3339(),
+            }),
+        ));
+        Ok(id)
     }
 
     /// Events with a sequence greater than `after`. Without `after`, only the
@@ -3575,7 +3703,7 @@ impl PluginManager {
                 exit_code: None,
             })?;
         let installed_at = runtime
-            .install_development_artifact(&built.bytes)
+            .install_development_artifact(&built.bytes, built.sandbox.clone())
             .await
             .map_err(|_| crate::plugin_dev::DevPluginError {
                 code: crate::plugin_dev::DevPluginErrorCode::InstallFailed,
@@ -6043,6 +6171,7 @@ mod tests {
             size: 1,
             plugin_path: "/data/plugins/strata/lib.so".into(),
             installed_at: "now".into(),
+            sandbox: None,
         };
         let key = format!("{DEVELOPMENT_INSTALL_SETTING_PREFIX}strata");
         host.save_local_setting(&key, &serde_json::to_value(&installed).unwrap()).unwrap();
@@ -6109,6 +6238,7 @@ mod tests {
                 download_expires_at: None,
                 changelog: None,
                 preferences: None,
+                sandbox: None,
                 key_id: "test".into(),
                 signature: "test-signature".into(),
             },
@@ -6391,6 +6521,48 @@ mod tests {
         assert_eq!(version.to_string(), persisted.plugin_version);
     }
 
+    #[test]
+    fn install_states_saved_before_the_sandbox_field_still_read_as_legacy() {
+        let fingerprint = Fingerprint::from_components("linux", "x86_64", "n", "m", "b", "i");
+        let sandbox = Some(enterprise_protocol::PluginSandbox::default());
+        let development = DevelopmentPluginInstallState {
+            fingerprint: fingerprint.clone(),
+            plugin_sha256: "abc".into(),
+            size: 1,
+            plugin_path: "/p.so".into(),
+            installed_at: "now".into(),
+            sandbox: sandbox.clone(),
+        };
+        let public = PublicPluginInstallState {
+            fingerprint,
+            repository_id: None,
+            repository_url: None,
+            installed_release_id: "r".into(),
+            plugin_version: "1.0.0".into(),
+            features: Vec::new(),
+            plugin_sha256: "abc".into(),
+            size: 1,
+            plugin_path: "/p.so".into(),
+            preferences_schema: None,
+            sandbox,
+            installed_at: "now".into(),
+        };
+        // What an older node saved: the same state without the field.
+        let mut old_development = serde_json::to_value(&development).unwrap();
+        assert!(old_development.as_object_mut().unwrap().remove("sandbox").is_some());
+        let mut old_public = serde_json::to_value(&public).unwrap();
+        assert!(old_public.as_object_mut().unwrap().remove("sandbox").is_some());
+
+        let development: DevelopmentPluginInstallState =
+            serde_json::from_value(old_development).expect("an older development install reads");
+        let public: PublicPluginInstallState =
+            serde_json::from_value(old_public).expect("an older public install reads");
+        assert_eq!(development.sandbox, None, "read as a legacy plugin");
+        assert_eq!(public.sandbox, None, "read as a legacy plugin");
+        // A legacy state is saved without the field, as an older node expects.
+        assert!(serde_json::to_value(&development).unwrap().get("sandbox").is_none());
+    }
+
     #[tokio::test]
     async fn public_install_state_is_persisted_separately_from_license_entitlement() {
         let directory = tempfile::tempdir().expect("tempdir");
@@ -6412,6 +6584,7 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
             preferences_schema: None,
+            sandbox: None,
             installed_at: "2026-09-24T00:00:00Z".into(),
         };
         database
@@ -7233,6 +7406,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_plugin_message_reaches_only_the_running_target_and_names_the_sender() {
+        let _serial = REAL_HOST.lock().await;
+        let directory = tempfile::tempdir().expect("tempdir");
+        let _environment = RestoreEnvironment::capture(&[
+            "POM_HOME",
+            "POM_PLUGIN_HOST",
+            "POM_FAKE_HOST_LOG",
+            "POM_FAKE_HOST_UPSTREAM",
+            "POM_FAKE_HOST_READY_ERROR",
+        ]);
+        let host_log = directory.path().join("host.log");
+        let data_dir = directory.path().join("data");
+        std::fs::create_dir(&data_dir).expect("create persistent directory");
+        std::env::set_var("POM_HOME", directory.path());
+        std::env::set_var("POM_PLUGIN_HOST", fake_host_binary());
+        std::env::set_var("POM_FAKE_HOST_LOG", &host_log);
+        std::env::remove_var("POM_FAKE_HOST_UPSTREAM");
+        std::env::remove_var("POM_FAKE_HOST_READY_ERROR");
+        let database =
+            Arc::new(crate::db::PomDb::open(data_dir.join("pom.db")).expect("open POM database"));
+        let service = Arc::new(MockLicenseService::new());
+        let manager = PluginManager::test_manager_with_database(
+            &["receiver", "sender"],
+            service.clone(),
+            database.clone(),
+        );
+        let receiver = manager.runtime_for("receiver").expect("runtime");
+        receiver
+            .install_development_artifact(b"receiver build", None)
+            .await
+            .expect("install the receiving plugin");
+        let (before, _) = manager.events_after(None);
+
+        let id = manager
+            .send_plugin_message("sender", "receiver", "index.ready", serde_json::json!({"files": 42}))
+            .await
+            .expect("delivered to the running plugin");
+
+        let (_, events) = manager.events_after(Some(before));
+        let [(_, event)] = events.as_slice() else { panic!("one event: {events:?}") };
+        assert_eq!(event["type"], "plugin.message");
+        assert_eq!(event["target"], "receiver", "only the target's screens get it");
+        assert_eq!(event["payload"], serde_json::json!({"id": id, "from": "sender", "type": "index.ready", "payload": {"files": 42}}));
+        let log = std::fs::read_to_string(&host_log).expect("host log");
+        let delivered = log
+            .lines()
+            .filter(|line| line.starts_with("query ") && line.contains("\"host.event\""))
+            .find(|line| line.contains("plugin.message"))
+            .expect("the target's native backend got host.event");
+        assert!(delivered.contains("\"from\":\"sender\""), "{delivered}");
+        assert_eq!(
+            manager
+                .send_plugin_message("receiver", "sender", "index.ready", serde_json::json!({}))
+                .await,
+            Err(PluginMessageError::NotInstalled),
+            "a plugin that is not installed gets nothing"
+        );
+        receiver.deactivate().await.expect("uninstall");
+    }
+
+    #[tokio::test]
     async fn a_local_development_install_runs_without_granting_or_deactivating_a_license() {
         let _serial = REAL_HOST.lock().await;
         let directory = tempfile::tempdir().expect("tempdir");
@@ -7262,14 +7496,24 @@ mod tests {
         );
         let runtime = manager.runtime_for("local_plugin").expect("runtime");
 
+        let sandbox = enterprise_protocol::PluginSandbox {
+            gpu: true,
+            ..Default::default()
+        };
         runtime
-            .install_development_artifact(b"local development artifact")
+            .install_development_artifact(b"local development artifact", Some(sandbox.clone()))
             .await
             .expect("install local development build");
 
         let status = runtime.status().await;
         assert!(status.active, "the local plugin host should be ready");
         assert!(status.development_install);
+        assert_eq!(status.sandbox, Some(sandbox), "the screen reads the declared sandbox");
+        let saved = database
+            .local_setting_json("plugin_dev_install:local_plugin")
+            .expect("development install lookup")
+            .expect("development install saved");
+        assert!(saved.contains("\"sandbox\""), "{saved}");
         assert_eq!(status.state, LicenseState::NeedsActivation);
         assert!(status.features.is_empty());
         assert!(status.licensed_plugins.is_empty());

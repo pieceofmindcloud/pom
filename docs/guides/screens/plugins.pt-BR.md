@@ -18,6 +18,8 @@ Plugins é a loja desta máquina: cada plugin do catálogo, gratuito ou pago, co
 :::cards
 ### Selos
 **Licença ativa** ou **Não exige licença**, **Destaque** e **Equipe PoM** para plugins publicados pela equipe do PoM, e de onde ele veio: GitHub, ou um **Build local**.
+
+Um plugin instalado também mostra se roda isolado: **Sem sandbox** para um plugin que não declara sandbox e roda como qualquer programa da máquina, como os plugins sempre rodaram; **Sandbox declarado** para um que declara o que precisa (rede, GPU, pastas), mas que esta versão do POM ainda não isola; **Sandbox** quando o POM o roda no próprio sandbox. Aponte para o selo para ver o que o plugin pede.
 ### Versão e plataformas
 A versão instalada (ou a mais nova que esta máquina pode instalar) e os sistemas que o plugin suporta. Uma versão feita para outro sistema nunca é oferecida.
 ### Ativações

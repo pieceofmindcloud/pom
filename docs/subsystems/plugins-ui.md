@@ -404,6 +404,23 @@ node when saving is refused. An absolute storage directory that does not exist
 yet is created on save. After saving, the node resends `host.configure` and
 sends `host.event` with `preferences.changed`.
 
+The same release manifest may carry a `sandbox` section
+(`PluginManifest.sandbox`, `enterprise_protocol::sandbox`): `network`
+(`loopback` default, `internet`), `listen` (`loopback` default, `network`),
+`gpu` and `read_paths` (absolute or `~/`, no `..`, at most 16). Absent, the
+plugin is a legacy plugin and runs as it always did, with no sandbox; that is
+the compatibility rule of the plugin sandbox
+(`docs/superpowers/specs/2026-11-27-plugin-sandbox-design.md`). Unknown fields
+and values are accepted and an unknown value reads as the narrowest one. The
+node keeps the declaration of the installed release (license, GitHub and
+development installs, the last read from the source's `release/manifest.json`
+or root `manifest.json` at rebuild time) and the Plugins screen shows it as a
+badge on the card: "Not sandboxed" for a legacy plugin, "Sandbox declared"
+while the node only reads the declaration (`PluginStatus.sandbox_enforced` is
+`false` until `pom-plugin-host` applies it), "Sandbox" once applied; the
+tooltip lists what it asks for. `enterprise_protocol::sandbox_widens` tells
+whether an update asks for more (leaving the sandbox counts).
+
 `host.configure` includes the local values under `preferences`, together with
 the gateway context, for the active plugin itself. This is IPC between the node
 and the local host, not traffic to the license server. The **Add from GitHub**
@@ -704,6 +721,8 @@ plugin, so a plugin only ever speaks as itself.
 | `POST /api/plugin-host/image-deploy` | `{name, components: [{component, node_id, path}]}` deploys as `POST /api/ui/image-deploy` does: `{deploy_id}`, 400 for a choice the survey refuses, 502 when a machine could not serve |
 | `POST /api/plugin-host/image-undeploy` | `{deploy_id}` releases it everywhere: `{released: [{node_id, ok, error?}]}` |
 | `POST /api/plugin-host/sign` | `{statement}` signed by the node key: `{signature, public_key, did_key}` (hex) |
+| `POST /api/plugin-host/message` | `{target, type, payload}` delivers `plugin.message {id, from, type, payload}` to another plugin of this machine: to its native backend (`host.event`) and to its screens only (the event's `target` is the receiver). `from` is the caller's token, never a field it fills; `type` is `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; `payload` at most 64 KiB (413). Answers `{id}`; 404 `not_installed`, 409 `not_running` (an on-demand plugin that is closed), 400 `invalid` (`PluginManager::send_plugin_message`) |
+| `POST /api/plugin-host/notify` | `{title, body?, level?}` (`info` default, `success`, `warning`, `error`; title at most 200 bytes, body 4000) shows a notice of the caller in the bell and as a toast, like the screen's `notification.notify` with `scope: "local"`: the node queues a `plugin.notice` that `PluginBridge` turns into the notice (`readNodeNotice`) instead of relaying it to the screens. Answers `{id}` |
 
 The node key also signs announces, control envelopes, grants and the pkarr
 record, so `sign` never signs arbitrary bytes: only one line of printable
@@ -823,6 +842,7 @@ envelope, whatever the channel:
 | `plugin.installed` / `plugin.updated` | `{code, version}` | a plugin was installed on this machine, or its version changed |
 | `plugin.removed` | `{code}` | a plugin was uninstalled from this machine |
 | `loader.retry` | `{}` | the person clicked "Try again" on the plugin's loader error (to that plugin only) |
+| `plugin.message` | `{id, from, type, payload}` | another plugin of this machine sent one (`POST /api/plugin-host/message`), to the target only, on both channels |
 
 Browser channels (`lib/pluginEvents.ts`, fed by `components/PluginBridge.tsx`):
 

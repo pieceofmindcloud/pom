@@ -24,12 +24,14 @@ What a plugin keeps:
 
 ## Decisions
 
-1. **Mandatory, at once.** No plugin runs outside a sandbox once this ships.
-   It is a breaking change, written in the release notes: an installed plugin
-   whose release has no `sandbox` section runs with the most restrictive
-   default (below) and may stop working until its new release is installed.
-   The `pom-plugin-*` repositories ship their new releases in the same window.
-   Operator decision, 2026-11-27.
+1. **Gradual, with backward compatibility** (operator decision, 2026-11-27,
+   replacing the earlier "mandatory at once"). A plugin whose release
+   manifest has a `sandbox` section is a sandboxed plugin: it runs in its
+   sandbox and, if the machine cannot provide one, it does not run. A plugin
+   whose manifest has no `sandbox` section is a legacy plugin: it keeps
+   running exactly as before, with no sandbox, and the panel marks it
+   "not sandboxed". A cutoff date for legacy plugins, if ever, is a later
+   decision written in the release notes. So no released plugin breaks.
 2. **Network is declared in the manifest** (operator decision, option 1).
    The operator's first idea was that plugins only reach `localhost` and that
    every outside access comes through the POM API; the verification of the
@@ -52,14 +54,14 @@ What a plugin keeps:
    Landlock and seccomp are inherited; a Seatbelt profile is inherited; an
    AppContainer token is inherited by children). The node never loads plugin
    code, so it stays outside.
-4. **A machine that cannot sandbox does not run plugins.** (Amended
-   2026-11-27 after the Linux spike: the minimum on Linux is Landlock ABI >= 6
-   + seccomp; the PID namespace is an extra layer, used where the system
-   allows it and shown in the panel, not a requirement. See
-   `docs/reports/2026-11-27-plugin-sandbox-linux-spike.md`.) If the host cannot
-   establish the minimum isolation of its system (below), it refuses to load
-   the plugin and the panel names the reason (`sandbox_unavailable:<why>`).
-   There is no "run without sandbox" switch in a release build;
+4. **A machine that cannot sandbox does not run sandboxed plugins.** On
+   Linux the minimum is Landlock ABI >= 6 + seccomp; the PID and network
+   namespaces are an extra layer, used where the system allows it and shown
+   in the panel (amended after the Linux spike,
+   `docs/reports/2026-11-27-plugin-sandbox-linux-spike.md`). If the host
+   cannot establish the minimum for a plugin that declares `sandbox`, it
+   refuses to load it and the panel names the reason
+   (`sandbox_unavailable:<why>`); legacy plugins are not affected.
    `POM_DEV_MODE=1` alone may add `POM_PLUGIN_SANDBOX=off` for debugging.
 
 ## Manifest: the `sandbox` section
@@ -76,8 +78,11 @@ canonicalization of older manifests, per the compatibility policy):
 }
 ```
 
-Absent section = `{network: loopback, listen: loopback, gpu: false,
-read_paths: []}`. `loopback` always includes the node's gateway port, so
+Absent section = a legacy plugin, run without a sandbox (decision 1).
+A present section with omitted fields takes `{network: loopback, listen:
+loopback, gpu: false, read_paths: []}` for them. Unknown fields are ignored,
+so a newer plugin still installs on an older node, which grants only what it
+knows. `loopback` always includes the node's gateway port, so
 `host_api` and `/v1` work with every value. The Plugins screen shows the
 declared permissions before install and update, and an update that asks for
 more permissions asks the operator again.

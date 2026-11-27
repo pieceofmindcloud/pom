@@ -70,6 +70,15 @@ Two files, never merged:
  "storage_directory": {"label": "Data directory", "default": null}}
 ```
 
+Optional `sandbox` (`enterprise_protocol::sandbox`): `{"network":
+"loopback"|"internet", "listen": "loopback"|"network", "gpu": bool,
+"read_paths": ["/abs", "~/rel"]}`. Absent = legacy plugin, run without a
+sandbox as before; present = the plugin declares what it needs and the
+Plugins card shows it. Declare `internet` when the plugin downloads anything
+or runs an engine whose processes talk over TCP (vLLM with several GPUs),
+`listen: "network"` only for a server other machines reach (Qdrant), `gpu` for
+any GPU work. Nodes released before this field refuse a manifest that has it.
+
 Preference values live in `pom.db` per plugin, reach the plugin only through
 `host.configure` / `preferences.changed`, and never go to the license server.
 The Plugins card shows a gear while the plugin is active and has a schema.
@@ -159,6 +168,8 @@ loopback only. The token names the plugin, new at every node start.
 | `GET /api/plugin-host/peers` | `{peers: [{node_id, hostname, principal, visitor}]}` |
 | `GET /api/plugin-host/plugins` | `{plugins: [{code, version, lifecycle, running}]}`: plugins installed on this machine (caller included) |
 | `POST /api/plugin-host/peer` | `{node_id, op, params}` -> `{reply}` from `peer.<op>` of the same plugin on that machine (`caller.local: true` for this node) |
+| `POST /api/plugin-host/message` | `{target, type, payload<=64KiB}` -> `{id}`; the target gets `plugin.message {id, from, type, payload}` natively and on its screens; 404 `not_installed`, 409 `not_running` |
+| `POST /api/plugin-host/notify` | `{title, body?, level?}` -> `{id}`: a notice in the bell and a toast, from the plugin's process |
 | `POST /api/plugin-host/sign` | `{statement}` -> `{signature, public_key, did_key}`; only known identity statements naming this node's `did:key` |
 
 Reference client: `pom-plugin-ghostly/src/node_api.rs`.
@@ -182,6 +193,7 @@ Envelope: `{protocol, id, type, target ("*" or code), source: "pom", at, payload
 | `model.serving` / `model.stopped` | `{model, deploy_ids, node_ids}` / `{model}` |
 | `plugin.installed` / `plugin.updated` / `plugin.removed` | `{code, version}` / `{code, version}` / `{code}` |
 | `loader.retry` | `{}` ("Try again" on this plugin's loader error) |
+| `plugin.message` | `{id, from, type, payload}` (from another plugin of this machine, to this one only) |
 
 Browser channels: SDK `plugin(code).events.subscribe(type|"*", h, {replay})`,
 DOM `pom:plugin-event` on `window`, `postMessage` to

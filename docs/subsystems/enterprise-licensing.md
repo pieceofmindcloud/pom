@@ -350,8 +350,13 @@ the UI manifest, while ABI, features, preferences and the binary name come from
 the per-platform manifest attached to the selected release. `feature_set`
 belongs to the `plugin_code` and can be omitted if the plugin announces no
 features; `preferences` is also optional and uses the typed schema documented
-below. POM validates code, ABI, platform, extension, features, preferences and
-manifest size limits before showing releases. The public GitHub API provides
+below, and so is `sandbox` (`plugins-ui.md`, "Release preferences and host
+context"). Both GitHub manifest types ignore fields they do not know, so a
+field a newer plugin adds does not make this node refuse it; nodes released
+before the sandbox section refused unknown fields, so a release that adds
+`sandbox` does not install on them. POM validates code, ABI, platform,
+extension, features, preferences, the sandbox and manifest size limits before
+showing releases. The public GitHub API provides
 the published releases and assets. The node walks pages of 100 until it lists
 every published release, including prereleases and excluding drafts. Reading
 is capped at 16 MiB of metadata and fails explicitly if it goes over that

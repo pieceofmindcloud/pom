@@ -8,6 +8,7 @@ import {
   PLUGIN_EVENTS_PROTOCOL,
   PLUGIN_REQUEST_DOM,
   publishPluginEvent,
+  readNodeNotice,
   resetPluginEventsForTest,
   runPluginCommand,
   scopedPluginApi,
@@ -138,6 +139,39 @@ describe("pom-plugin-events/v1", () => {
     expect(forwardNodeEvent({ ...envelope, id: "y", protocol: "other" })).toBeNull();
     expect(forwardNodeEvent(null)).toBeNull();
     expect(seen.map((event) => `${event.type}:${event.id}`)).toEqual(["model.serving:node-1"]);
+  });
+
+  it("relays a message between plugins to the target plugin only", () => {
+    const target: PluginEvent[] = [];
+    const other: PluginEvent[] = [];
+    subscribePluginEvents("plugin.message", (event) => target.push(event), { plugin: "qdrant" });
+    subscribePluginEvents("plugin.message", (event) => other.push(event), { plugin: "comfyui" });
+    const envelope = {
+      protocol: PLUGIN_EVENTS_PROTOCOL,
+      id: "m-1",
+      type: "plugin.message",
+      target: "qdrant",
+      source: "pom",
+      at: "2026-11-27T12:00:00Z",
+      payload: { id: "m-1", from: "harness", type: "index.ready", payload: { files: 42 } },
+    };
+    expect(forwardNodeEvent(envelope)?.id).toBe("m-1");
+    expect(target.map((event) => event.payload)).toEqual([envelope.payload]);
+    expect(other).toEqual([]);
+  });
+
+  it("reads the notice a plugin process raised and refuses what is not one", () => {
+    const notice = {
+      type: "plugin.notice",
+      payload: { message_id: "n-1", plugin_code: "qdrant", title: " Index ready ", body: "42 files", level: "success", sent_at: "2026-11-27T12:00:00Z" },
+    };
+    expect(readNodeNotice(notice)).toEqual({
+      id: "n-1", code: "qdrant", title: "Index ready", body: "42 files", level: "success", createdAt: "2026-11-27T12:00:00Z",
+    });
+    expect(readNodeNotice({ ...notice, payload: { ...notice.payload, level: "loud", body: "" } })).toMatchObject({ level: "info", body: undefined });
+    expect(readNodeNotice({ ...notice, payload: { plugin_code: "qdrant" } })).toBeNull();
+    expect(readNodeNotice({ type: "model.serving", payload: {} })).toBeUndefined();
+    expect(readNodeNotice(null)).toBeUndefined();
   });
 
   it("defaults confirmations to the notification bell and accepts an explicit dialog", async () => {

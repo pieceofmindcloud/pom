@@ -379,6 +379,18 @@ export interface PluginStatus {
   github_repository?: string | null;
   preferences_schema?: PluginPreferencesSchema | null;
   preferences?: PluginPreferences | null;
+  /** The sandbox the installed release declares; null for a legacy plugin, which runs without one. */
+  sandbox?: PluginSandbox | null;
+  /** The host runs inside that sandbox; false while the node only reads the declaration. */
+  sandbox_enforced?: boolean;
+}
+
+/** The `sandbox` section of a plugin's release manifest (`enterprise_protocol::sandbox`). */
+export interface PluginSandbox {
+  network: "loopback" | "internet";
+  listen: "loopback" | "network";
+  gpu: boolean;
+  read_paths?: string[];
 }
 
 /**

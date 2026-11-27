@@ -34,6 +34,13 @@
 //!   `POST .../image-deploy` and `POST .../image-undeploy`: the image deploy
 //!   screen's list, survey, deploy and undeploy, only on a principal or admin
 //!   node (403 otherwise), with the node's own authority.
+//! - `POST /api/plugin-host/message`: `{target, type, payload}` delivers
+//!   `plugin.message {id, from, type, payload}` to another plugin of this
+//!   machine (its native backend and its screens); `from` is the caller's
+//!   token. `404 not_installed`, `409 not_running`, payload at most 64 KiB.
+//! - `POST /api/plugin-host/notify`: `{title, body?, level?}` shows a notice
+//!   of the caller in the interface's bell and as a toast, like the screen's
+//!   `notification.notify` with `scope: "local"`.
 //! - `POST /api/plugin-host/sign`: `{statement}` is signed with the node key
 //!   only when it is an external identity statement in which this node's
 //!   `did:key` vouches for a key (see [`signable_statement`]). The node key
@@ -556,6 +563,64 @@ pub(crate) async fn peer_call(
     }
 }
 
+fn message_refusal(error: crate::plugins::PluginMessageError) -> Response {
+    use crate::plugins::PluginMessageError;
+    match error {
+        PluginMessageError::Invalid => refuse(StatusCode::BAD_REQUEST, "invalid"),
+        PluginMessageError::TooLarge => refuse(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),
+        PluginMessageError::NotInstalled => refuse(StatusCode::NOT_FOUND, "not_installed"),
+        PluginMessageError::NotRunning => refuse(StatusCode::CONFLICT, "not_running"),
+    }
+}
+
+/// `POST /api/plugin-host/message`.
+pub(crate) async fn message(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let code = match caller_code(&state, &headers) {
+        Ok(code) => code,
+        Err(response) => return response,
+    };
+    let (Some(target), Some(message_type)) = (body["target"].as_str(), body["type"].as_str())
+    else {
+        return refuse(StatusCode::BAD_REQUEST, "target and type are required");
+    };
+    let payload = body.get("payload").cloned().unwrap_or(Value::Null);
+    match state
+        .plugins
+        .send_plugin_message(&code, target, message_type, payload)
+        .await
+    {
+        Ok(id) => Json(json!({ "id": id })).into_response(),
+        Err(error) => message_refusal(error),
+    }
+}
+
+/// `POST /api/plugin-host/notify`.
+pub(crate) async fn notify(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let code = match caller_code(&state, &headers) {
+        Ok(code) => code,
+        Err(response) => return response,
+    };
+    let Some(title) = body["title"].as_str() else {
+        return refuse(StatusCode::BAD_REQUEST, "title is required");
+    };
+    let level = body["level"].as_str().unwrap_or("info");
+    match state
+        .plugins
+        .plugin_notice(&code, title, body["body"].as_str(), level)
+    {
+        Ok(id) => Json(json!({ "id": id })).into_response(),
+        Err(error) => message_refusal(error),
+    }
+}
+
 /// `POST /api/plugin-host/sign`.
 pub(crate) async fn sign(
     State(state): State<GatewayState>,
@@ -667,6 +732,88 @@ mod tests {
             let keys: Vec<&String> = entry.as_object().unwrap().keys().collect();
             assert_eq!(keys, ["code", "lifecycle", "running", "version"]);
         }
+    }
+
+    #[tokio::test]
+    async fn a_message_speaks_as_the_token_and_refuses_what_cannot_arrive() {
+        let (state, token) = state_with_plugin().await;
+        let send =
+            |headers: HeaderMap, body: Value| message(State(state.clone()), headers, Json(body));
+        let response = send(
+            HeaderMap::new(),
+            json!({"target": "ghostly", "type": "ping"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for body in [
+            json!({"type": "ping"}),
+            json!({"target": "ghostly"}),
+            json!({"target": "Not A Code", "type": "ping"}),
+            json!({"target": "ghostly", "type": "-bad"}),
+            json!({"target": "ghostly", "type": "has space"}),
+        ] {
+            let response = send(headers(&token), body.clone()).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+        }
+        let big = "x".repeat(crate::plugins::MAX_PLUGIN_MESSAGE_BYTES + 1);
+        let response = send(
+            headers(&token),
+            json!({"target": "ghostly", "type": "ping", "payload": big}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let response = send(headers(&token), json!({"target": "nobody", "type": "ping"})).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["error"], "not_installed");
+        // Known to this node but not installed and running.
+        let response = send(
+            headers(&token),
+            json!({"target": "ghostly", "type": "ping"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_notice_from_the_plugin_process_reaches_the_interface_as_itself() {
+        let (state, token) = state_with_plugin().await;
+        let response = notify(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(json!({"title": "x"})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for body in [
+            json!({}),
+            json!({"title": "  "}),
+            json!({"title": "x", "level": "loud"}),
+        ] {
+            let response = notify(State(state.clone()), headers(&token), Json(body.clone())).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+        }
+        let (before, _) = state.plugins.events_after(None);
+        let response = notify(
+            State(state.clone()),
+            headers(&token),
+            Json(json!({"title": "Index ready", "body": "42 files", "level": "success", "plugin_code": "forged"})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let (_, events) = state.plugins.events_after(Some(before));
+        let [(_, event)] = events.as_slice() else {
+            panic!("one event: {events:?}")
+        };
+        assert_eq!(event["type"], "plugin.notice");
+        assert_eq!(event["target"], "ghostly");
+        assert_eq!(
+            event["payload"]["plugin_code"], "ghostly",
+            "the token names the sender"
+        );
+        assert_eq!(event["payload"]["title"], "Index ready");
+        assert_eq!(event["payload"]["body"], "42 files");
+        assert_eq!(event["payload"]["level"], "success");
     }
 
     async fn with_profile(state: &GatewayState, profile: crate::profile::NodeProfile) {

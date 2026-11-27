@@ -17,7 +17,8 @@ const MAX_GITHUB_RELEASE_NOTES_BYTES: usize = 8 * 1024;
 const MAX_PLUGIN_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Unknown fields are ignored (they were refused until the sandbox section
+/// arrived): a field a newer plugin adds must not make an older node refuse it.
 pub(crate) struct GithubRepositoryManifest {
     pub schema: u32,
     pub plugin_code: String,
@@ -32,6 +33,10 @@ pub(crate) struct GithubRepositoryManifest {
     pub artifacts: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub preferences: Option<PluginPreferencesSchema>,
+    /// The sandbox the plugin asks for, shown before install; absent for a
+    /// legacy plugin (`enterprise_protocol::sandbox`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<enterprise_protocol::PluginSandbox>,
     /// Screenshots: paths relative to the repository root or `https://` URLs,
     /// with the same rules as `pom-plugin-ui/v1`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -76,7 +81,7 @@ pub(crate) struct GithubRepository {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Unknown fields are ignored, like `GithubRepositoryManifest`.
 pub(crate) struct GithubPluginManifest {
     pub schema: u32,
     pub plugin_code: String,
@@ -94,6 +99,8 @@ pub(crate) struct GithubPluginManifest {
     pub changelog: Option<String>,
     #[serde(default)]
     pub preferences: Option<PluginPreferencesSchema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<enterprise_protocol::PluginSandbox>,
 }
 
 #[derive(Debug, Clone)]
@@ -324,6 +331,7 @@ impl GithubReleaseClient {
                 feature_set: latest.map(|release| release.feature_set.clone()).unwrap_or_default(),
                 artifacts: [(target, LICENSE_MANIFEST_PATH.to_owned())].into_iter().collect(),
                 preferences: None,
+                sandbox: None,
                 screenshots: Vec::new(),
             },
             ui_manifest: None,
@@ -422,6 +430,7 @@ impl GithubReleaseClient {
             feature_set: release.feature_set.clone(),
             changelog: None,
             preferences: repository.manifest.preferences.clone(),
+            sandbox: repository.manifest.sandbox.clone(),
         };
         validate_manifest(&manifest, plugin_code, &release.release_id, os, arch)?;
         validate_integrity(&manifest, &bytes, None)?;
@@ -799,6 +808,7 @@ impl GithubReleaseClient {
                     feature_set: distribution.feature_set,
                     artifacts: std::collections::BTreeMap::from([(target, distribution.asset)]),
                     preferences: distribution.preferences,
+                    sandbox: distribution.sandbox,
                     screenshots: Vec::new(),
                 };
                 validate_repository_manifest(&manifest)?;
@@ -1030,6 +1040,7 @@ impl GithubReleaseClient {
             feature_set: repository.manifest.feature_set.clone(),
             changelog: release.body,
             preferences: repository.manifest.preferences.clone(),
+            sandbox: repository.manifest.sandbox.clone(),
         };
         validate_manifest(&manifest, &manifest.plugin_code, release_id, os, arch)?;
         validate_integrity(&manifest, &binary, asset.digest.as_deref())?;
@@ -1577,6 +1588,30 @@ fn github_status_error(status: StatusCode, action: &str) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn release_manifests_read_the_sandbox_and_ignore_fields_they_do_not_know() {
+        let release: GithubPluginManifest = serde_json::from_value(serde_json::json!({
+            "schema": 1, "plugin_code": "vllm", "release_id": "r1", "version": "1.0.0",
+            "os": "linux", "arch": "x86_64", "plugin_abi": 1, "asset": "p.so",
+            "sha256": "sha256:00", "size": 1,
+            "sandbox": {"network": "internet", "gpu": true},
+            "a_field_from_the_future": true,
+        }))
+        .expect("a newer release manifest still reads");
+        let sandbox = release.sandbox.expect("sandbox read");
+        assert_eq!(
+            sandbox.network,
+            enterprise_protocol::SandboxNetwork::Internet
+        );
+        assert!(sandbox.gpu);
+        let repository: GithubRepositoryManifest = serde_json::from_value(serde_json::json!({
+            "schema": 1, "plugin_code": "vllm", "display_name": "vLLM", "plugin_abi": 1,
+            "artifacts": {}, "a_field_from_the_future": 1,
+        }))
+        .expect("a newer repository manifest still reads");
+        assert_eq!(repository.sandbox, None, "no section: a legacy plugin");
+    }
+
     use super::*;
 
     #[tokio::test]
@@ -1814,6 +1849,7 @@ pub(crate) mod tests {
             feature_set: vec!["analytics.reports".into()],
             changelog: None,
             preferences: None,
+            sandbox: None,
         };
         validate_manifest(
             &manifest,
@@ -2401,6 +2437,7 @@ pub(crate) mod tests {
                 "acme-plugin.so".into(),
             )]),
             preferences: None,
+            sandbox: None,
             screenshots: vec!["docs/screenshots/overview.png".into()],
         };
         validate_repository_manifest(&manifest).unwrap();

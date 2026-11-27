@@ -2606,6 +2606,17 @@ plugins.devExitCode,(exit code {code}),(código de saída {code})
 plugins.devInstall,Build and install locally,Compilar e instalar localmente
 plugins.devInstallFailed,The rebuilt plugin could not be installed.,Não foi possível instalar o plugin recompilado.
 plugins.devInstalled,Local build,Build local
+plugins.sandboxed,Sandbox,Sandbox
+plugins.sandboxDeclared,Sandbox declared,Sandbox declarado
+plugins.sandboxDeclaredHint,"This plugin declares a sandbox, which this version of POM does not apply yet: for now it runs like any program of this machine. It asks for:","Este plugin declara um sandbox, que esta versão do POM ainda não aplica: por enquanto ele roda como qualquer programa desta máquina. Ele pede:"
+plugins.unsandboxed,Not sandboxed,Sem sandbox
+plugins.unsandboxedHint,"This plugin's release declares no sandbox, so it runs like any program of this machine, as plugins always have.","A release deste plugin não declara sandbox, então ele roda como qualquer programa desta máquina, como os plugins sempre rodaram."
+plugins.sandboxedHint,"Runs in its own sandbox: it cannot see or touch other processes, and reads only its own folder and the workspace.","Roda no próprio sandbox: não vê nem mexe em outros processos e só acessa a própria pasta e o workspace."
+plugins.sandboxLoopback,Network: this machine only,Rede: só esta máquina
+plugins.sandboxInternet,Network: internet,Rede: internet
+plugins.sandboxListenNetwork,Accepts connections from other machines,Aceita conexões de outras máquinas
+plugins.sandboxGpu,Uses the GPU,Usa a GPU
+plugins.sandboxReadPaths,Also reads: {paths},Também lê: {paths}
 plugins.devInvalidSource,This mounted source is invalid or does not match its known plugin.,Esta fonte montada é inválida ou não corresponde ao plugin conhecido.
 plugins.devListFailed,Could not inspect mounted plugin sources.,Não foi possível verificar as fontes de plugins montadas.
 plugins.devLoading,Checking mounted plugin sources…,Verificando fontes de plugins montadas…

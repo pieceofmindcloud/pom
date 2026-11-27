@@ -1083,6 +1083,33 @@ describe("Plugins", () => {
     expect(screen.getByText("Digite sua chave de licença")).toBeTruthy();
   });
 
+  it("marks an installed plugin as not sandboxed, sandbox declared, or sandboxed", () => {
+    mocks.node.data = { profile: "admin", pom_dev_mode: false, system: { os: "linux", arch: "x86_64" } };
+    mocks.catalog.data = { plugins: [publicPlugin("legacy"), publicPlugin("declared"), publicPlugin("enforced"), publicPlugin("absent")] };
+    const sandbox = { network: "internet", listen: "loopback", gpu: true, read_paths: ["/opt/cuda"] };
+    mocks.plugins.data = [
+      pluginStatus("legacy", { active: true, plugin_version: "1.0.0" }),
+      pluginStatus("declared", { active: true, plugin_version: "1.0.0", sandbox }),
+      pluginStatus("enforced", { active: true, plugin_version: "1.0.0", sandbox, sandbox_enforced: true }),
+      pluginStatus("absent"),
+    ];
+    renderPage();
+
+    const legacy = screen.getByTestId("plugin-sandbox-legacy");
+    expect(legacy.textContent).toBe("Sem sandbox");
+    expect(legacy.getAttribute("title")).toContain("não declara sandbox");
+    const declared = screen.getByTestId("plugin-sandbox-declared");
+    expect(declared.textContent).toBe("Sandbox declarado");
+    expect(declared.getAttribute("title")).toContain("ainda não aplica");
+    expect(declared.getAttribute("title")).toContain("Rede: internet");
+    expect(declared.getAttribute("title")).toContain("Usa a GPU");
+    expect(declared.getAttribute("title")).toContain("Também lê: /opt/cuda");
+    const enforced = screen.getByTestId("plugin-sandbox-enforced");
+    expect(enforced.textContent).toBe("Sandbox");
+    expect(enforced.getAttribute("title")).toContain("Roda no próprio sandbox");
+    expect(screen.queryByTestId("plugin-sandbox-absent")).toBeNull();
+  });
+
   it("shows a safe build failure stage and exit code without compiler output", async () => {
     mocks.node.data = { profile: "admin", pom_dev_mode: true, system: { os: "linux", arch: "x86_64" } };
     mocks.developmentSources.data = {

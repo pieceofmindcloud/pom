@@ -412,7 +412,13 @@ running host: `deployment.started` comes from the deploy and redeploy handlers,
 `model.serving`/`model.stopped` from `spawn_serving_watcher`. `plugin.installed`/`plugin.updated`/`plugin.removed` come
 from `spawn_installed_watcher` (a 5 s diff of `installed_summaries`, so every
 install path is covered), and `plugin_host_api::plugins` serves the same summary
-to plugins at `GET /api/plugin-host/plugins`. `PluginManager::acp_agents` merges the live `acp_agent`
+to plugins at `GET /api/plugin-host/plugins`. `PluginManager::send_plugin_message`
+(`POST /api/plugin-host/message`) delivers `plugin.message` to one running
+target only, natively and in the queue with that `target`; `plugin_notice`
+(`POST /api/plugin-host/notify`) queues a `plugin.notice` the interface shows
+in the bell. Each install state keeps the release's `sandbox` declaration
+(`PluginStatus.sandbox`, the running artifact's: a development build wins);
+`sandbox_enforced` stays `false` until `pom-plugin-host` applies it. `PluginManager::acp_agents` merges the live `acp_agent`
 services with the ones saved under `plugin_acp_agents:<code>` for stopped
 on-demand plugins (`plugin_services::chat_agents`); `deactivate` forgets them. `plugin_ui::chat_agents`
 serves them at `GET /api/ui/chat/agents` (empty for a user session), and

@@ -13,7 +13,11 @@ activatable release, expiration and activation usage per `plugin_code`; POM
 keeps this data in the local status without exposing tokens.
 `PluginManifest.preferences` is optional and typed to preserve older responses;
 it only defines the schema of the local preferences interface and is never an
-entitlement.
+entitlement. `PluginManifest.sandbox` (`src/sandbox.rs`) is optional the same
+way: absent is a legacy plugin, run without a sandbox; present, it declares
+network, listening, GPU and extra read-only paths, ignores unknown fields and
+reads an unknown value as the narrowest one, so a newer release installs on an
+older node. `sandbox_widens` decides whether an update asks for more.
 
 It also publishes `MAX_IPC_FRAME_BYTES`, the shared limit for JSON frames in
 the local stdin/stdout communication between `pom` and `pom-plugin-host`.

@@ -20,6 +20,8 @@ export interface UpdateItem {
   unverified?: boolean;
   /** Why this node cannot install it itself, when it cannot. */
   blocked?: string | null;
+  /** The new release asks for more than the installed one: what it asks for, one per line. */
+  morePermissions?: string | null;
   install: () => Promise<unknown>;
 }
 
@@ -112,6 +114,11 @@ export function PluginUpdatesDialog({
                         {item.name}
                         {item.kind === "pom" && <Badge tone="iris">{t("plugins.updatesRestarts")}</Badge>}
                         {item.unverified && <Badge tone="amber">{t("plugins.unverifiedTitle")}</Badge>}
+                        {item.morePermissions && (
+                          <span title={item.morePermissions} data-testid={`update-more-permissions-${item.key}`}>
+                            <Badge tone="amber">{t("plugins.sandboxWidens")}</Badge>
+                          </span>
+                        )}
                       </p>
                       <p className="font-mono text-[0.7rem] text-muted">
                         {item.from ? `${item.from} → ${item.to}` : item.to}

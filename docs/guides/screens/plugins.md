@@ -19,7 +19,7 @@ Plugins is the store of this machine: every plugin of the catalog, free or paid,
 ### Badges
 **License active** or **No license required**, **Featured** and **PoM team** for plugins published by the PoM team, and where it came from: GitHub, or a **Local build**.
 
-An installed plugin also says whether it runs isolated: **Not sandboxed** for a plugin that declares no sandbox, which runs like any program of the machine, as plugins always have; **Sandbox declared** for one that declares what it needs (network, GPU, folders) but that this version of POM does not isolate yet; **Sandbox** once POM runs it in its own sandbox. Point at the badge to see what the plugin asks for.
+An installed plugin also says whether it runs isolated: **Not sandboxed** for a plugin that declares no sandbox, which runs like any program of the machine, as plugins always have; **Sandbox declared** for one that declares what it needs (network, GPU, folders) but that this version of POM does not isolate yet; **Sandbox** once POM runs it in its own sandbox. Point at the badge to see what the plugin asks for. Before installing a plugin from GitHub that declares a sandbox, the dialog lists what it asks for, and an update that asks for more than the installed version (or leaves the sandbox) is marked in amber, in that dialog and in the updates list.
 ### Version and platforms
 The installed version (or the newest this machine can install) and the systems the plugin supports. A release built for another system is never offered.
 ### Activations

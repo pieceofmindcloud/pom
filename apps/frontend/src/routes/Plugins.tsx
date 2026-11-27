@@ -9,11 +9,12 @@ import { PluginUpdatesDialog, type UpdateItem } from "../components/PluginUpdate
 import { ApiError, api } from "../lib/api";
 import { keys, useDevelopmentPluginSources, useGithubRepositories, useNode, usePlugins, usePublicPlugin, usePublicPluginCatalog } from "../lib/queries";
 import { useSearchParams } from "react-router-dom";
-import type { DevelopmentPluginError, DevelopmentPluginRebuildResult, DevelopmentPluginSource, GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginSandbox, PluginStatus, PomCoreUpdateStatus } from "../lib/types";
+import type { DevelopmentPluginError, DevelopmentPluginRebuildResult, DevelopmentPluginSource, GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginStatus, PomCoreUpdateStatus } from "../lib/types";
 import { releaseForTarget, supportedPlatforms, type PublicPluginCatalogEntry } from "../lib/pluginCatalog";
 import { navigateToPluginContact, navigateToPluginPurchase } from "../lib/pluginPurchase";
 import { promotionEnd, promotionFor, salesByContact, termPrice, type PlanInterval } from "../lib/pluginPricing";
 import { pluginAssetUrl, pluginUiSnapshot } from "../lib/pluginUi";
+import { sandboxPermissions, sandboxSummary, sandboxWidens } from "../lib/pluginSandbox";
 import { useI18n } from "../i18n/provider";
 import { isDemoUser } from "../lib/session";
 
@@ -37,22 +38,6 @@ export const PAGE_SIZE = 20;
 const EXAMPLE_PLUGIN_CODE = "base";
 const EXAMPLE_PLUGIN_REPOSITORY = "https://github.com/pieceofmindcloud/pom-plugin-base";
 const PUBLISH_PLUGIN_URL = "https://pieceofmind.cloud/plugins/publicar/";
-
-/** The badge's tooltip: what the sandbox grants, or why a legacy plugin has none. */
-export function sandboxSummary(
-  sandbox: PluginSandbox | null | undefined,
-  enforced: boolean,
-  t: (key: string, values?: Record<string, string | number>) => string,
-): string {
-  if (!sandbox) return t("plugins.unsandboxedHint");
-  const parts = [
-    t(sandbox.network === "internet" ? "plugins.sandboxInternet" : "plugins.sandboxLoopback"),
-    sandbox.listen === "network" ? t("plugins.sandboxListenNetwork") : null,
-    sandbox.gpu ? t("plugins.sandboxGpu") : null,
-    sandbox.read_paths?.length ? t("plugins.sandboxReadPaths", { paths: sandbox.read_paths.join(", ") }) : null,
-  ];
-  return [t(enforced ? "plugins.sandboxedHint" : "plugins.sandboxDeclaredHint"), ...parts.filter(Boolean)].join("\n");
-}
 
 function formatDateTime(value: string | null | undefined, locale: string, time = true): string | null {
   if (!value) return null;
@@ -978,6 +963,9 @@ export function Plugins() {
           to: newest.tag_name,
           changelog: newest.changelog,
           unverified: publicEntries.find((entry) => entry.code === status.code)?.pom_team !== true,
+          morePermissions: sandboxWidens(status.sandbox, (fresh ?? repository).manifest.sandbox)
+            ? permissionsText((fresh ?? repository).manifest.sandbox ?? null)
+            : null,
           install: () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(repository.id)}/install`, {
             release_id: newest.release_id,
           }),
@@ -1262,6 +1250,27 @@ export function Plugins() {
     repository_url: repositoryUrl,
   }));
 
+  /** What a release's sandbox asks for, one permission per line. */
+  function permissionsText(sandbox: GithubRepository["manifest"]["sandbox"]): string {
+    return sandbox ? sandboxPermissions(sandbox, t).join("\n") : t("plugins.sandboxLeaves");
+  }
+
+  /** The install dialog's permissions: what the release asks for and whether an update asks for more. */
+  function installSandboxNote(target: { repository: GithubRepository; update: boolean }) {
+    const next = target.repository.manifest.sandbox ?? null;
+    const installed = cardFor(target.repository.manifest.plugin_code)?.status?.sandbox ?? null;
+    const widens = target.update && sandboxWidens(installed, next);
+    if (!next && !widens) return null;
+    return (
+      <div data-testid="install-sandbox-note" className={`rounded-lg border px-3 py-2.5 text-xs text-fg ${widens ? "border-amber/40 bg-amber/10" : "border-line bg-raised/40"}`}>
+        <p className="font-medium">{t(widens ? "plugins.sandboxWidensTitle" : "plugins.sandboxAsks")}</p>
+        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted">
+          {(next ? sandboxPermissions(next, t) : [t("plugins.sandboxLeaves")]).map((line) => <li key={line}>{line}</li>)}
+        </ul>
+      </div>
+    );
+  }
+
   /** Registers a catalog plugin's repository and installs its newest release
    * for this node; only an unverified plugin asks first. */
   async function installLatest(code: string, repositoryUrl: string, trusted: boolean) {
@@ -1279,7 +1288,8 @@ export function Plugins() {
         setGithubFailureMessage(t("plugins.githubNoCompatibleReleases"));
         return;
       }
-      if (trusted) {
+      // A plugin that declares a sandbox shows what it asks for first.
+      if (trusted && !repository.manifest.sandbox) {
         await api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(repository.id)}/install`, {
           release_id: newest.release_id,
         });
@@ -1333,8 +1343,9 @@ export function Plugins() {
         onGithubInstall={(target, release, update) => {
           const trusted = entry?.pom_team === true;
           // A POM team plugin installs its latest release at once; anything
-          // else (and every update) is confirmed first.
-          if (trusted && !update) {
+          // else (and every update) is confirmed first, and so is a plugin
+          // that declares a sandbox, so the operator sees what it asks for.
+          if (trusted && !update && !target.manifest.sandbox) {
             void runGithubAction(target.id, () => api.post(`/api/ui/plugins/github-repositories/${encodeURIComponent(target.id)}/install`, {
               release_id: release.release_id,
             }));
@@ -1608,6 +1619,7 @@ export function Plugins() {
         description={installTarget ? (
           <div className="space-y-3">
             <p>{t(installTarget.update ? "plugins.githubInstallConfirmDescription" : "plugins.githubInstallLatestDescription", { version: installTarget.release.tag_name })}</p>
+            {installSandboxNote(installTarget)}
             {!installTarget.trusted && (
               <div role="alert" className="flex gap-2 rounded-lg border border-amber/40 bg-amber/10 px-3 py-2.5 text-xs text-fg">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber" aria-hidden="true" />

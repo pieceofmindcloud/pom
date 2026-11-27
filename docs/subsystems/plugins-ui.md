@@ -418,8 +418,14 @@ or root `manifest.json` at rebuild time) and the Plugins screen shows it as a
 badge on the card: "Not sandboxed" for a legacy plugin, "Sandbox declared"
 while the node only reads the declaration (`PluginStatus.sandbox_enforced` is
 `false` until `pom-plugin-host` applies it), "Sandbox" once applied; the
-tooltip lists what it asks for. `enterprise_protocol::sandbox_widens` tells
-whether an update asks for more (leaving the sandbox counts).
+tooltip lists what it asks for. `enterprise_protocol::sandbox_widens` (and its
+mirror `lib/pluginSandbox.ts` on the screen) tells whether an update asks for
+more, leaving the sandbox included. The GitHub install dialog lists what a
+release with a sandbox asks for (a POM team plugin that declares one goes
+through the dialog instead of installing at once) and, on an update that asks
+for more, says so in amber; the "Check for updates" list marks such an update
+"Asks for more permissions". A license-server release shows nothing before
+install, because the store's listing does not carry the sandbox.
 
 `host.configure` includes the local values under `preferences`, together with
 the gateway context, for the active plugin itself. This is IPC between the node

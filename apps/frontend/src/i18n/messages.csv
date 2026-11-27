@@ -2617,6 +2617,10 @@ plugins.sandboxInternet,Network: internet,Rede: internet
 plugins.sandboxListenNetwork,Accepts connections from other machines,Aceita conexões de outras máquinas
 plugins.sandboxGpu,Uses the GPU,Usa a GPU
 plugins.sandboxReadPaths,Also reads: {paths},Também lê: {paths}
+plugins.sandboxAsks,This plugin asks for:,Este plugin pede:
+plugins.sandboxWidens,Asks for more permissions,Pede mais permissões
+plugins.sandboxWidensTitle,This update asks for more than the installed version:,Esta atualização pede mais que a versão instalada:
+plugins.sandboxLeaves,"No sandbox: it runs like any program of this machine","Sem sandbox: roda como qualquer programa desta máquina"
 plugins.devInvalidSource,This mounted source is invalid or does not match its known plugin.,Esta fonte montada é inválida ou não corresponde ao plugin conhecido.
 plugins.devListFailed,Could not inspect mounted plugin sources.,Não foi possível verificar as fontes de plugins montadas.
 plugins.devLoading,Checking mounted plugin sources…,Verificando fontes de plugins montadas…

@@ -290,6 +290,8 @@ export interface GithubRepositoryManifest {
   feature_set: string[];
   artifacts: Record<string, string>;
   preferences: PluginPreferencesSchema | null;
+  /** The sandbox the plugin asks for; absent for a legacy plugin. */
+  sandbox?: PluginSandbox | null;
 }
 
 export interface GithubRepositoryRelease {

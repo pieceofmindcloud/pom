@@ -832,6 +832,55 @@ describe("Plugins", () => {
     expect(mocks.post).not.toHaveBeenCalledWith(expect.stringContaining("license"), expect.anything());
   });
 
+  it("shows what an update's sandbox asks for and warns when it asks for more", () => {
+    const repositoryUrl = "https://github.com/acme/new-plugin";
+    const repository = (sandbox: unknown) => ({
+      id: "repo-id",
+      repository_url: repositoryUrl,
+      manifest: {
+        schema: 1, plugin_code: "acme_plugin", display_name: "Acme Plugin", description: null, plugin_abi: 1,
+        feature_set: [], artifacts: { "linux-x86_64": "acme_plugin.so" }, preferences: null, sandbox,
+      },
+      releases: [
+        { release_id: "101", tag_name: "v0.9.0", name: null, changelog: null, published_at: "2025-01-01T00:00:00Z", prerelease: false, asset_name: "a.so", asset_size: 1, available_for_node: true },
+        { release_id: "103", tag_name: "v2.0.0", name: null, changelog: null, published_at: "2026-09-24T00:00:00Z", prerelease: false, asset_name: "a.so", asset_size: 1, available_for_node: true },
+      ],
+      checked_at: "2026-09-24T00:00:00Z",
+      check_error: null,
+    });
+    const narrow = { network: "loopback", listen: "loopback", gpu: false };
+    const installed = (sandbox: unknown) => [pluginStatus("acme_plugin", {
+      active: true, state: "active", public_install: true, github_repository: repositoryUrl, plugin_version: "0.9.0", sandbox,
+    })];
+    const openUpdate = () => {
+      fireEvent.click(screen.getByRole("button", { name: "Atualizar" }));
+      return within(screen.getByRole("dialog", { name: "Atualizar Acme Plugin?" })).getByTestId("install-sandbox-note");
+    };
+
+    mocks.githubRepositories.data = [repository({ ...narrow, gpu: true })];
+    mocks.plugins.data = installed(narrow);
+    renderPage();
+    let note = openUpdate();
+    expect(note.textContent).toContain("Esta atualização pede mais que a versão instalada:");
+    expect(note.textContent).toContain("Usa a GPU");
+    cleanup();
+
+    mocks.githubRepositories.data = [repository(narrow)];
+    mocks.plugins.data = installed(narrow);
+    renderPage();
+    note = openUpdate();
+    expect(note.textContent).toContain("Este plugin pede:");
+    expect(note.textContent).toContain("Rede: só esta máquina");
+    cleanup();
+
+    mocks.githubRepositories.data = [repository(null)];
+    mocks.plugins.data = installed(narrow);
+    renderPage();
+    note = openUpdate();
+    expect(note.textContent).toContain("Esta atualização pede mais");
+    expect(note.textContent).toContain("Sem sandbox");
+  });
+
   it("offers only the newer compatible releases of an installed plugin as updates", async () => {
     const repositoryUrl = "https://github.com/acme/new-plugin";
     const githubRelease = (release_id: string, tag_name: string, published_at: string, available_for_node = true) => ({

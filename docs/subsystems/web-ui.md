@@ -258,9 +258,9 @@ local-only notice. Routes:
   parameters, and undeploying). Full screen, like Logs, and clicking a
   version's row opens on the right the **same** inspector as the deploy screen,
   read-only, with the parameters that version started with
-- `/deployments/logs` -> DeploymentLogs, a terminal console of the whole
-  cluster's process log, in arrival order at the principal and filterable by
-  `deploy_id`; not to be confused with the request audit at `/logs`. The
+- `/deployments/logs` -> redirects to `/logs/console` (the Cluster console
+  tab, filterable by `deploy_id`); not to be confused with the request audit
+  at `/logs`. The
   history is capped on the principal at the last seven days or 500,000
   records, whichever comes first; `cluster_logs_min_level` in `pom.json`
   controls the minimum captured level and defaults to `info`.
@@ -1150,17 +1150,16 @@ fallback.
 
 ## Deployment process logs
 
-`DeploymentLogs.tsx`, at `/deployments/logs`, is the terminal console of the
-cluster's process and not the request audit of `/logs`. The black background
-and monospace font leave each line with the machine name, level and origin
-time; the lines come from the admin's local replica in arrival order and the
-screen polls for new batches every second. The deployment selector sends
-`deploy_id`, allowing the same logs to be opened from a deployment in History.
-
-This screen reads the logs plugin's history (`pom-plugin-logs`); without the
-plugin active it says so instead of polling. The terminal is the shared
-`ClusterConsole` component, the same the Dashboard's cluster console draws.
-While
+`LogsConsole.tsx`, the Logs screen's Cluster console tab at `/logs/console`,
+is the terminal console of the cluster's process and not the request audit
+of `/logs`. Each line carries the machine name, level and origin time, in
+arrival order, polled every second, and the deployment selector sends
+`deploy_id` (History opens it filtered). It is one screen for both sources:
+with the logs plugin active it reads the plugin's persisted history
+(`/api/ui/cluster-logs`), without it the core's in-memory tail
+(`/api/ui/cluster-console`); the panel says which. `/deployments/logs`, the
+old plugin-only screen, redirects there keeping the query. The terminal is
+the shared `ClusterConsole`, the same the Dashboard's dock draws. While
 `NodeInfo.cluster_logs_enabled` is false the console and the dock show
 "Collection off" instead of "Live", since no new line arrives.
 
@@ -1189,8 +1188,7 @@ Request logs (`/logs`, only when a plugin serves that route), Cluster console
 (`/logs/console`, admins: the network's process lines, the core's live tail,
 `routes/LogsConsole.tsx`), one tab per log source (`/logs/source/<code>`,
 `routes/LogSource.tsx`: llama.cpp and every plugin service that publishes a
-log, `plugins-ui.md`), and Deployment logs (`/deployments/logs`, admins, when
-the plugin keeps that history). A worker sees its own machine's sources; an
+log, `plugins-ui.md`). A worker sees its own machine's sources; an
 admin sees every machine's and picks the machine in the tab (`?node=`), read
 through `GET /api/ui/logs/read`. An inference engine's tab shows its facts
 above the log (model, context, requests in flight, runtime). Without a plugin serving `/logs`, the entry

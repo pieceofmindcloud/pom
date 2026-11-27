@@ -21,7 +21,7 @@ A deployment keeps a version per change of settings or machines. Expanding the r
 ### Re-deploy with new settings
 Opens the same inspector as the Deploy screen, seeded with the active version; **Reload with these settings** sends only what changed, on the same machines and the same layers.
 ### View process logs
-Opens the Deployment logs filtered to this deployment.
+Opens the Cluster console of the Logs screen filtered to this deployment.
 :::
 
 :::note The panel on the right

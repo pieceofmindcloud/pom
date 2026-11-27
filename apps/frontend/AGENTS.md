@@ -162,8 +162,9 @@ a choice.
 - `/deployments` -> Deployments, full-bleed like Logs: the same
   `DeploymentInspector` from the deploy screen opens on the right, in read-only
   mode, with the parameters of the chosen version
-- `/deployments/logs` -> DeploymentLogs, the terminal console of the cluster's
-  process logs, in arrival order on the principal and filterable by `deploy_id`
+- `/logs/console`, `/logs/source/:code` -> the Logs screen's own tabs (cluster
+  console, engine and service logs, `lib/logsHub.ts`); `/deployments/logs`
+  redirects to `/logs/console`
 - `/setup` is not a route: the deprecated wizard has no path.
 - `/transfers` -> Transfers, off the menu (the bell links to it): an older
   admin's file offers and transfers only, the model downloads being the Hugging

@@ -214,7 +214,7 @@ Per-file list:
 - `LogsTabs.tsx` - the Logs screen's tab row (`lib/logsHub.ts`): the
   plugin's Request logs, the Cluster console (admin), one tab per log source
   (llama.cpp and plugin services with a log; an admin's covers every machine,
-  `useLogSources`) and the plugin's Deployment logs. No row with one tab or for
+  `useLogSources`). The console reads the plugin's history when it is active. No row with one tab or for
   a demonstration visitor. Tests in `LogsTabs.test.tsx`.
 - `nav.ts` - `NAV`: the menu as data. Logs is one leaf (`/logs`). `DEV_ONLY_ROUTES` (Payments and Credit, features still in development) leave the menu unless `navForProfile` gets `devMode` (`pom_dev_mode`, from `POM_DEV_MODE`), and `App.tsx`'s `DevOnly` sends their addresses back to the Dashboard outside that mode. Deploy (`nav.deployments`) is a single entry to
   `/deploy` with `Rocket`; History (`/deployments`) has no menu entry and opens

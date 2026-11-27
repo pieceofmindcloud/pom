@@ -21,7 +21,7 @@ Uma implantação guarda uma versão a cada mudança de configuração ou de má
 ### Reimplantar com novos parâmetros
 Abre o mesmo inspetor da tela Implantar, preenchido com a versão ativa; **Recarregar com estes valores** manda só o que mudou, nas mesmas máquinas e nas mesmas camadas.
 ### Ver logs de processo
-Abre os Logs da implantação filtrados para esta implantação.
+Abre o Console do cluster da tela Logs filtrado para esta implantação.
 :::
 
 :::note O painel da direita

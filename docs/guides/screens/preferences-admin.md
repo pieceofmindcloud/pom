@@ -17,7 +17,7 @@ Administrative preferences are the switches that change the whole network, not j
 ### QUIC transport
 When on, new inference hops prefer HTTP/3 over QUIC. QUIC always carries TLS 1.3 and falls back to HTTP or HTTPS when a peer cannot use it.
 ### Process logs between nodes
-When on, every node sends a copy of its process log to each administrator over a separate channel; the Deployment logs screen reads it. The queue drops lines under pressure, so inference is never held up.
+When on, every node sends a copy of its process log to each administrator over a separate channel; the Cluster console of the Logs screen reads it, with no plugin; the Logs plugin also keeps a history. The queue drops lines under pressure, so inference is never held up.
 ### Network chat
 The low-priority conversation channel between the participants. Messages and files travel over the network and are validated by the principal machine.
 ### Relays

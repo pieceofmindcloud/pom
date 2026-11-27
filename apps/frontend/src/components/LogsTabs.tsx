@@ -7,12 +7,10 @@ import { useCluster, useNode } from "../lib/queries";
 import { isDemoUser } from "../lib/session";
 import { Tabs } from "./ui";
 
-export { DEPLOYMENT_LOGS_ROUTE } from "../lib/logsHub";
-
 /**
  * The tab row of the Logs screen (`lib/logsHub.ts`): the cluster console and
  * this machine's engines are the POM's, for every admin and worker; the logs
- * plugin adds Request logs and Deployment logs. One tab, or a demonstration
+ * plugin adds Request logs (and gives the console its history). One tab, or a demonstration
  * visitor, draws no row.
  */
 /** The log sources this profile reads: this machine's, or every machine's for an admin. */

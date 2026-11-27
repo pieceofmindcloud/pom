@@ -333,6 +333,10 @@ describe("profile guard per route", () => {
     expect(await screen.findByText("tela-console")).toBeTruthy();
     expect(screen.queryByText("tela-plugin:logs:logs")).toBeNull();
     cleanup();
+    // The old deployment logs address lands on the console.
+    open("/deployments/logs?deploy_id=d1", "admin");
+    expect(await screen.findByText("tela-console")).toBeTruthy();
+    cleanup();
     // A worker opens its engine tabs and, beside them, the plugin's Request logs.
     open("/logs/source/llama.cpp", "worker");
     expect(await screen.findByText("tela-log")).toBeTruthy();

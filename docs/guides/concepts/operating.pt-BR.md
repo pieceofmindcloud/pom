@@ -44,8 +44,8 @@ curl -sf localhost:8181/health
 Rodar dois nós no mesmo diretório faz os dois carregarem a mesma identidade e o cluster os trata como uma máquina só. Portas diferentes não bastam: o segundo nó precisa de um diretório de trabalho próprio (POM_HOME).
 :::
 
-:::note Logs da implantação
-Implantações > Logs reúne os logs de processo de todas as máquinas na ordem em que chegaram, e pode ser filtrada por implantação.
+:::note Console do cluster
+Logs > Console do cluster reúne os logs de processo de todas as máquinas na ordem em que chegaram, e pode ser filtrado por implantação; com o plugin de Logs, lê o histórico do plugin.
 :::
 
 :::deep docs/subsystems/operations.md

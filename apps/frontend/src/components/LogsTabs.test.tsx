@@ -34,10 +34,11 @@ const tabNames = () => screen.queryAllByRole("tab").map((tab) => tab.textContent
 describe("LogsTabs", () => {
   afterEach(() => { cleanup(); state.served = true; state.demo = false; state.profile = "admin"; });
 
-  it("gives the admin the console, every machine's log sources and the plugin's tabs", () => {
-    renderAt("/deployments/logs");
-    expect(tabNames()).toEqual(["nav.requestLogs", "logs.console", "llama.cpp", "vLLM", "Qdrant", "nav.deploymentLogs"]);
-    expect(screen.getByRole("tab", { name: "nav.deploymentLogs" }).getAttribute("aria-selected")).toBe("true");
+  it("gives the admin the console, every machine's log sources and the plugin's Request logs", () => {
+    renderAt("/logs/console");
+    // The deployment logs joined the console: no tab of their own.
+    expect(tabNames()).toEqual(["nav.requestLogs", "logs.console", "llama.cpp", "vLLM", "Qdrant"]);
+    expect(screen.getByRole("tab", { name: "logs.console" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByText("content")).toBeTruthy();
   });
 

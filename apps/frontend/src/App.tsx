@@ -290,7 +290,6 @@ export const routeLoaders = {
   chat: () => import("./routes/Chat").then(({ Chat }) => Chat),
   networkChat: () => import("./routes/NetworkChat").then(({ NetworkChat }) => NetworkChat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
-  deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
   logsConsole: () => import("./routes/LogsConsole").then(({ LogsConsole }) => LogsConsole),
   logSource: () => import("./routes/LogSource").then(({ LogSource }) => LogSource),
   plugins: () => import("./routes/Plugins").then(({ Plugins }) => Plugins),
@@ -329,7 +328,6 @@ const Chat = lazyRoute(routeLoaders.chat);
 const MyKeys = lazyRoute(routeLoaders.myKeys);
 const NetworkChat = lazyRoute(routeLoaders.networkChat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
-const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
 const LogsConsole = lazyRoute(routeLoaders.logsConsole);
 const LogSource = lazyRoute(routeLoaders.logSource);
 const Plugins = lazyRoute(routeLoaders.plugins);
@@ -466,7 +464,6 @@ export default function App() {
       location.pathname === "/deploy" ||
       location.pathname === "/deployments" ||
       pluginRoute?.route.full_bleed === true ||
-      location.pathname === "/deployments/logs" ||
       isLogsHubPath(location.pathname) ||
       location.pathname === "/public-networks" ||
       location.pathname === "/network-chat" ||
@@ -687,7 +684,8 @@ export default function App() {
                         <Route path="/deployments" element={<Page><Deployments /></Page>} />
                         <Route path="/logs/console" element={<Page><LogsTabs><LogsConsole /></LogsTabs></Page>} />
                         <Route path="/logs/source/:code" element={<Page><LogsTabs><LogSource /></LogsTabs></Page>} />
-                        <Route path="/deployments/logs" element={<Page>{isDemoUser() ? <Navigate to="/logs" replace /> : <LogsTabs><DeploymentLogs /></LogsTabs>}</Page>} />
+                        {/* The plugin's deployment logs joined the Cluster console tab. */}
+                        <Route path="/deployments/logs" element={<Navigate to={`/logs/console${location.search}`} replace />} />
                         {/* Keep the former deploy URL working for old bookmarks. */}
                         <Route path="/shards/deploy" element={<Navigate to="/deploy" replace />} />
                         <Route path="/transfers" element={<Page><Transfers /></Page>} />

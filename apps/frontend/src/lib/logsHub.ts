@@ -4,13 +4,12 @@
  *
  * - Request logs (`/logs`) - only when a plugin serves that route;
  * - Cluster console (`/logs/console`) - admins: every node's process lines,
- *   the network's deployment log, kept live by the core;
+ *   filterable by deployment: the logs plugin's history when it is active,
+ *   the core's live tail otherwise (`/deployments/logs` redirects here);
  * - one tab per log source (`/logs/source/<code>`): llama.cpp, and each
  *   plugin service that publishes a log (`PluginService.logs`, or any
  *   inference service). A worker sees its own machine's; an admin sees the
  *   sources of every machine and picks the machine inside the tab;
- * - Deployment logs (`/deployments/logs`) - admins, when the logs plugin
- *   keeps that history.
  *
  * The plugin only adds its tabs; the rest is the POM's.
  */
@@ -21,7 +20,6 @@ import { pluginRouteProfiles } from "./pluginUi";
 export const LLAMA_CPP_SOURCE = "llama.cpp";
 export const CONSOLE_ROUTE = "/logs/console";
 export const SOURCE_ROUTE_PREFIX = "/logs/source/";
-export const DEPLOYMENT_LOGS_ROUTE = "/deployments/logs";
 
 export type LogsTab = { value: string; label: string };
 
@@ -79,7 +77,6 @@ export function logsTabs(profile: Profile, sources: LogSource[], t: (key: string
   if (!hasLogsHub(profile)) return tabs;
   if (profile === "admin") tabs.push({ value: CONSOLE_ROUTE, label: t("logs.console") });
   for (const source of sources) tabs.push({ value: sourceRoute(source.code), label: source.name });
-  if (plugin && profile === "admin") tabs.push({ value: DEPLOYMENT_LOGS_ROUTE, label: t("nav.deploymentLogs") });
   return tabs;
 }
 

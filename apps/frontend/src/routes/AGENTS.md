@@ -717,18 +717,15 @@ while the node does not answer.
   Test: `Deployments.test.tsx` (expansion, the active badge, `{version}` in the API).
 ## Logs, keys and the audit
 - `LogsConsole.tsx` - the Logs screen's Cluster console tab (`/logs/console`,
-  admin): the core's live tail (`useClusterConsole`) on `ClusterConsole`, no
-  plugin. `LogSource.tsx` - one log source tab (`/logs/source/:code`):
+  admin), filterable by `deploy_id`: the logs plugin's history
+  (`useClusterLogs`) when it is active, the core's live tail
+  (`useClusterConsole`) otherwise, on `ClusterConsole`; collection off,
+  dropped lines and errors show above the terminal. It replaced
+  `DeploymentLogs` (`/deployments/logs` redirects here). Test:
+  `LogsConsole.test.tsx`. `LogSource.tsx` - one log source tab (`/logs/source/:code`):
   llama.cpp or a plugin service, read through `useLogSource`
   (`/api/ui/logs/read`); an admin picks the machine (`?node=`), this machine
   first. Test: `LogSource.test.tsx`.
-- `DeploymentLogs.tsx` - the full-bleed console of the cluster's process log on
-  `/deployments/logs`. It queries the admin's local replica, refreshes every
-  second, keeps the arrival order the API returns and can filter by
-  `deploy_id`; while the node reports `cluster_logs_enabled: false` it shows a "Collection off" badge and a notice (with a link to Administrative preferences for the principal) instead of "Live", since no new line arrives; it keeps only the black terminal, follows the end while the
-  reader is at the end, pauses the follow when scrolling up, offers a visible state button to
-  reactivate it and copies the last 500 lines. It is not the
-  request audit, which belongs to the `enterprise` plugin.
 - `Keys.tsx` - Two screens in one file. `TokenKeys` delegates the full-bleed table
   `ApiKeysTable`: per-node API tokens for
   harnesses - `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:id`. The

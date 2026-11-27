@@ -44,8 +44,8 @@ curl -sf localhost:8181/health
 Running two nodes from the same directory makes both load the same identity, and the cluster treats them as one machine. Different ports are not enough: the second node needs its own working directory (POM_HOME).
 :::
 
-:::note Deployment logs
-Deployments > Logs gathers the process logs of every machine in arrival order, and can be filtered by deployment.
+:::note Cluster console
+Logs > Cluster console gathers the process logs of every machine in arrival order, and can be filtered by deployment; with the Logs plugin it reads the plugin's history.
 :::
 
 :::deep docs/subsystems/operations.md

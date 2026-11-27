@@ -444,7 +444,7 @@ function Row({
         <td className="whitespace-nowrap px-5 py-3">
           <div className="flex flex-col items-start gap-1">
             <a
-              href={`/deployments/logs?deploy_id=${encodeURIComponent(d.deploy_id)}`}
+              href={`/logs/console?deploy_id=${encodeURIComponent(d.deploy_id)}`}
               className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-line px-2.5 text-[0.8rem] font-medium text-muted transition-colors hover:border-line-strong hover:text-fg"
             >
               <Terminal className="h-3.5 w-3.5" />

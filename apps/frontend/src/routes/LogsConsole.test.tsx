@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
-import { DeploymentLogs } from "./DeploymentLogs";
+import { LogsConsole } from "./LogsConsole";
 
 const queryMocks = vi.hoisted(() => ({
   logs: {
@@ -39,6 +39,13 @@ const queryMocks = vi.hoisted(() => ({
     error: null,
     refetch: vi.fn(),
   },
+  core: {
+    data: { entries: [] as unknown[], dropped: 0 },
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  },
   deployments: { data: { deployments: [] } },
   logsPlugin: { data: { active: true }, isLoading: false },
   node: { data: { cluster_logs_enabled: true, cluster_logs_authority: true } as Record<string, unknown> | undefined },
@@ -47,11 +54,12 @@ const queryMocks = vi.hoisted(() => ({
 vi.mock("../lib/queries", () => ({
   useEnterpriseStatus: () => queryMocks.logsPlugin,
   useClusterLogs: () => queryMocks.logs,
+  useClusterConsole: () => queryMocks.core,
   useDeployments: () => queryMocks.deployments,
   useNode: () => queryMocks.node,
 }));
 
-describe("DeploymentLogs", () => {
+describe("LogsConsole", () => {
   beforeEach(() => {
     HTMLElement.prototype.scrollTo = vi.fn();
     queryMocks.node.data = { cluster_logs_enabled: true, cluster_logs_authority: true };
@@ -90,7 +98,7 @@ describe("DeploymentLogs", () => {
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeploymentLogs />
+          <LogsConsole />
         </LocaleProvider>
       </MemoryRouter>,
     );
@@ -109,7 +117,7 @@ describe("DeploymentLogs", () => {
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeploymentLogs />
+          <LogsConsole />
         </LocaleProvider>
       </MemoryRouter>,
     );
@@ -119,30 +127,37 @@ describe("DeploymentLogs", () => {
     expect(screen.queryByText(/nó principal/i)).toBeNull();
   });
 
-  it("without the Logs plugin active explains where the process logs live", () => {
-    queryMocks.logs.data = { entries: [], dropped: 0 };
+  it("without the Logs plugin reads the core's live tail instead of asking for the plugin", () => {
     queryMocks.logsPlugin.data.active = false;
+    queryMocks.core.data = {
+      entries: [{ ...queryMocks.logs.data.entries[0], received_seq: 9, message: "da memória do nó" }],
+      dropped: 0,
+    };
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeploymentLogs />
+          <LogsConsole />
         </LocaleProvider>
       </MemoryRouter>,
     );
 
-    expect(screen.getByText("O plugin de Logs não está ativo aqui")).toBeTruthy();
+    expect(screen.getByText("da memória do nó")).toBeTruthy();
+    expect(screen.queryByText("chegou primeiro")).toBeNull();
+    expect(screen.getByText(/em memória/)).toBeTruthy();
+    expect(screen.queryByText("O plugin de Logs não está ativo aqui")).toBeNull();
     queryMocks.logsPlugin.data.active = true;
+    queryMocks.core.data = { entries: [], dropped: 0 };
   });
 
   it("follows new lines at the end while auto-scroll is on", async () => {
     const { rerender } = render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeploymentLogs />
+          <LogsConsole />
         </LocaleProvider>
       </MemoryRouter>,
     );
-    const terminal = screen.getByTestId("deployment-log-terminal") as HTMLDivElement;
+    const terminal = screen.getByTestId("logs-console-terminal") as HTMLDivElement;
     Object.defineProperties(terminal, {
       clientHeight: { configurable: true, value: 100 },
       scrollHeight: { configurable: true, value: 1000 },
@@ -160,7 +175,7 @@ describe("DeploymentLogs", () => {
     rerender(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeploymentLogs />
+          <LogsConsole />
         </LocaleProvider>
       </MemoryRouter>,
     );
@@ -172,11 +187,11 @@ describe("DeploymentLogs", () => {
     const { rerender } = render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeploymentLogs />
+          <LogsConsole />
         </LocaleProvider>
       </MemoryRouter>,
     );
-    const terminal = screen.getByTestId("deployment-log-terminal") as HTMLDivElement;
+    const terminal = screen.getByTestId("logs-console-terminal") as HTMLDivElement;
     Object.defineProperties(terminal, {
       clientHeight: { configurable: true, value: 100 },
       scrollHeight: { configurable: true, value: 1000 },
@@ -198,7 +213,7 @@ describe("DeploymentLogs", () => {
     rerender(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeploymentLogs />
+          <LogsConsole />
         </LocaleProvider>
       </MemoryRouter>,
     );
@@ -225,7 +240,7 @@ describe("DeploymentLogs", () => {
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeploymentLogs />
+          <LogsConsole />
         </LocaleProvider>
       </MemoryRouter>,
     );
@@ -243,12 +258,12 @@ describe("DeploymentLogs", () => {
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeploymentLogs />
+          <LogsConsole />
         </LocaleProvider>
       </MemoryRouter>,
     );
 
-    const terminal = screen.getByTestId("deployment-log-terminal");
+    const terminal = screen.getByTestId("logs-console-terminal");
     const page = terminal.closest(".bg-ink");
     expect(page).toBeTruthy();
     expect(page?.className).not.toContain("bg-[#050505]");
@@ -260,7 +275,7 @@ describe("DeploymentLogs", () => {
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
-          <DeploymentLogs />
+          <LogsConsole />
         </LocaleProvider>
       </MemoryRouter>,
     );

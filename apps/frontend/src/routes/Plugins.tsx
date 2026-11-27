@@ -1366,7 +1366,8 @@ export function Plugins() {
         ]}
       />}
 
-      <div className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5">
+      {/* Services is a desktop that fills the tab, edge to edge. */}
+      <div className={tab === "services" ? "relative min-h-0 min-w-0 flex-1 overflow-hidden" : "min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5"}>
         {tab === "services" ? (
           <BackgroundServices embedded />
         ) : tab === "catalog" ? (

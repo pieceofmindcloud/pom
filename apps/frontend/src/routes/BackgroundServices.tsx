@@ -1,14 +1,47 @@
-import { Blocks, Cpu, Layers, Lock, MemoryStick, Power, X } from "lucide-react";
+import { Blocks, Cpu, Layers, MemoryStick, Power, X } from "lucide-react";
 import clsx from "clsx";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Confirm, Modal } from "../components/Confirm";
-import { Button, Empty, PageHeader } from "../components/ui";
+import { Button, Empty } from "../components/ui";
 import { useI18n } from "../i18n/provider";
 import { closePlugin, openPlugin, setPluginLifecycle } from "../lib/api";
 import { pluginAssetUrl, pluginDisplayName, type ActivePluginUi } from "../lib/pluginUi";
 import { useNode, usePluginUi, usePublicPluginCatalog } from "../lib/queries";
 import type { PublicPluginCatalogEntry } from "../lib/pluginCatalog";
 import { useToast } from "../lib/toast";
+import { storageKey } from "../lib/brand";
+import { PuzzleBackdrop } from "../components/PuzzleBackdrop";
+
+type DeskPosition = { x: number; y: number };
+const TILE_W = 96;
+const TILE_H = 96;
+/** Room the dock takes at the bottom: a desktop icon is not dropped under it. */
+const DOCK_SPACE = 120;
+const POSITIONS_KEY = storageKey("services.desktop");
+
+/** The desktop's first layout: columns from the top-left, like a desktop. */
+function defaultPosition(index: number): DeskPosition {
+  const rows = 4;
+  return { x: 24 + Math.floor(index / rows) * 112, y: 24 + (index % rows) * 116 };
+}
+
+function readPositions(): Record<string, DeskPosition> {
+  try {
+    const raw = window.localStorage.getItem(POSITIONS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, DeskPosition>) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePositions(positions: Record<string, DeskPosition>) {
+  try {
+    window.localStorage.setItem(POSITIONS_KEY, JSON.stringify(positions));
+  } catch {
+    // No storage (private window): the layout lasts until the page reloads.
+  }
+}
 
 /** `314572800` -> `300 MB`; one decimal above 1 GB. */
 export function formatMemory(bytes: number): string {
@@ -38,7 +71,7 @@ function AppIcon({ plugin, engine, dim, storeIcon }: { plugin: ActivePluginUi; e
       className={clsx(
         "relative flex h-16 w-16 items-center justify-center overflow-hidden rounded-[1.1rem] shadow-[0_6px_16px_rgb(0_0_0/0.25)] ring-1 ring-white/10",
         image && !broken ? "bg-surface" : "bg-gradient-to-br from-iris/80 to-aqua/70 text-white",
-        dim && "opacity-60 grayscale",
+        dim && "opacity-80 saturate-50",
       )}
     >
       {image && !broken ? (
@@ -102,126 +135,150 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
       });
   };
 
-  const tile = (plugin: ActivePluginUi) => {
+  // Where the operator put each available app on the desktop, in this browser.
+  const [positions, setPositions] = useState<Record<string, DeskPosition>>(readPositions);
+  const desk = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ code: string; dx: number; dy: number; sx: number; sy: number; moved: boolean } | null>(null);
+  const justDragged = useRef(false);
+  const [dragging, setDragging] = useState<string | null>(null);
+
+  const iconButton = (plugin: ActivePluginUi, running: boolean) => {
     const name = nameOf(plugin);
-    const engine = engines.has(plugin.code);
-    const running = isOpen(plugin);
-    const working = busy === plugin.code;
-    const memory = running && plugin.memory_bytes != null ? formatMemory(plugin.memory_bytes) : null;
-    const details = [
-      serving === plugin.code && servedModel ? t("backgroundServices.serving", { model: servedModel }) : null,
-      engine ? t("backgroundServices.engine") : null,
-      !plugin.on_demand ? t("backgroundServices.alwaysOn") : null,
-    ].filter(Boolean) as string[];
     return (
-      <li
-        key={plugin.code}
-        data-testid={`background-service-${plugin.code}`}
-        className="group relative flex w-24 flex-col items-center gap-1.5 text-center"
+      <button
+        type="button"
+        disabled={busy === plugin.code}
+        onClick={() => {
+          if (justDragged.current) {
+            justDragged.current = false;
+            return;
+          }
+          setSettingsCode(plugin.code);
+        }}
+        aria-label={t("backgroundServices.settingsNamed", { name })}
+        title={name}
+        className={clsx(
+          "relative rounded-[1.1rem] transition-transform duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aqua/70",
+          dragging === plugin.code ? "scale-110" : "hover:-translate-y-1.5 hover:scale-110",
+          busy === plugin.code && "animate-pulse",
+        )}
       >
-        <button
-          type="button"
-          disabled={working}
-          onClick={() => setSettingsCode(plugin.code)}
-          aria-label={t("backgroundServices.settingsNamed", { name })}
-          title={[name, ...details].join(" · ")}
-          className={clsx(
-            "relative rounded-[1.1rem] transition-transform duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aqua/70",
-            "hover:-translate-y-1.5 hover:scale-110 disabled:cursor-default",
-            working && "animate-pulse",
-          )}
-        >
-          <AppIcon plugin={plugin} engine={engine} dim={!running} storeIcon={entryOf(plugin.code)?.icon_url} />
-          {!running && (
-            <span className="absolute inset-0 flex items-center justify-center rounded-[1.1rem] bg-black/35 text-white opacity-0 transition-opacity group-hover:opacity-100">
-              <Power size={22} />
-            </span>
-          )}
-          {engine && (
-            <span className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface text-iris shadow">
-              <Cpu size={11} />
-            </span>
-          )}
-        </button>
-        {running && plugin.on_demand && (
+        <AppIcon plugin={plugin} engine={engines.has(plugin.code)} dim={!running} storeIcon={entryOf(plugin.code)?.icon_url} />
+      </button>
+    );
+  };
+
+  const label = (name: string) => (
+    <span className="w-full truncate text-[0.72rem] font-medium text-white [text-shadow:0_1px_3px_rgb(0_0_0/0.9)]">{name}</span>
+  );
+
+  /** An open app on the dock: icon, name and the running light. */
+  const dockTile = (plugin: ActivePluginUi) => {
+    const name = nameOf(plugin);
+    return (
+      <li key={plugin.code} data-testid={`background-service-${plugin.code}`} className="group relative flex w-20 flex-col items-center gap-1 text-center">
+        {iconButton(plugin, true)}
+        {plugin.on_demand && (
           <button
             type="button"
-            disabled={working}
+            disabled={busy === plugin.code}
             onClick={() => setConfirming(plugin)}
             aria-label={t("backgroundServices.closeNamed", { name })}
             title={t("backgroundServices.close")}
-            className="absolute -left-0.5 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface text-muted opacity-0 shadow transition-opacity hover:text-rose focus-visible:opacity-100 group-hover:opacity-100"
+            className="absolute -left-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-white/20 bg-black/70 text-white/80 opacity-0 shadow transition-opacity hover:text-rose focus-visible:opacity-100 group-hover:opacity-100"
           >
             <X size={12} />
           </button>
         )}
-        {running && !plugin.on_demand && (
-          <span className="absolute -left-0.5 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface text-faint opacity-0 shadow group-hover:opacity-100" title={t("backgroundServices.alwaysOn")}>
-            <Lock size={10} />
-          </span>
-        )}
-        <span className="w-full truncate text-[0.72rem] font-medium text-fg">{name}</span>
-        {memory && (
-          <span
-            data-testid={`background-service-memory-${plugin.code}`}
-            title={t("backgroundServices.memoryHint")}
-            className="-mt-0.5 inline-flex items-center gap-1 rounded-full border border-aqua/40 bg-aqua/15 px-2 py-0.5 font-mono text-[0.66rem] font-semibold text-aqua"
-          >
-            <MemoryStick size={11} />
-            {memory}
-          </span>
-        )}
-        {details.length > 0 && (
-          <span className="w-full truncate text-[0.6rem] text-faint" data-testid={`background-service-detail-${plugin.code}`}>
-            {details[0]}
-          </span>
-        )}
-        {/* The Dock's running light. */}
-        <span className={clsx("h-1 w-1 rounded-full", running ? "bg-fg/70" : "bg-transparent")} aria-hidden="true" />
+        {label(name)}
+        <span className="h-1 w-1 rounded-full bg-white/80" aria-hidden="true" />
       </li>
     );
   };
 
+  /** An available app on the desktop, where the operator drags it. */
+  const deskIcon = (plugin: ActivePluginUi, index: number) => {
+    const pos = positions[plugin.code] ?? defaultPosition(index);
+    const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0 || (event.target as HTMLElement).closest("[data-no-drag]")) return;
+      const box = desk.current?.getBoundingClientRect();
+      if (!box) return;
+      drag.current = { code: plugin.code, dx: event.clientX - box.left - pos.x, dy: event.clientY - box.top - pos.y, sx: event.clientX, sy: event.clientY, moved: false };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    };
+    const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+      const current = drag.current;
+      const box = desk.current?.getBoundingClientRect();
+      if (!current || current.code !== plugin.code || !box) return;
+      if (!current.moved && Math.hypot(event.clientX - current.sx, event.clientY - current.sy) < 5) return;
+      current.moved = true;
+      setDragging(plugin.code);
+      const x = Math.min(Math.max(0, event.clientX - box.left - current.dx), Math.max(0, box.width - TILE_W));
+      const y = Math.min(Math.max(0, event.clientY - box.top - current.dy), Math.max(0, box.height - TILE_H - DOCK_SPACE));
+      setPositions((all) => ({ ...all, [plugin.code]: { x, y } }));
+    };
+    const onPointerUp = () => {
+      const current = drag.current;
+      drag.current = null;
+      setDragging(null);
+      if (current?.moved) {
+        justDragged.current = true;
+        setPositions((all) => {
+          writePositions(all);
+          return all;
+        });
+      }
+    };
+    return (
+      <div
+        key={plugin.code}
+        data-testid={`background-service-${plugin.code}`}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        style={{ left: pos.x, top: pos.y, width: TILE_W, touchAction: "none" }}
+        className={clsx("absolute flex select-none flex-col items-center gap-1.5 text-center", dragging === plugin.code ? "z-20 cursor-grabbing" : "z-10 cursor-grab")}
+      >
+        {iconButton(plugin, false)}
+        {label(nameOf(plugin))}
+      </div>
+    );
+  };
+
   return (
-    <div className={clsx("flex flex-col", embedded ? "min-h-full" : "min-h-[calc(100dvh-8.5rem)]")}>
-      {embedded ? (
-        <p className="mb-4 max-w-3xl text-sm text-muted">{t("backgroundServices.subtitle")}</p>
-      ) : (
-        <PageHeader title={t("backgroundServices.title")} subtitle={t("backgroundServices.subtitle")} />
-      )}
+    <div
+      data-testid="services-desktop"
+      className={clsx("relative overflow-hidden bg-[#06040f]", embedded ? "h-full min-h-[34rem]" : "h-[calc(100dvh-8.5rem)] rounded-2xl")}
+    >
+      {/* The night sky and the POM pieces, behind everything. */}
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_50%_10%,#1a1035_0%,#0a0718_55%,#05030c_100%)]" />
+      <PuzzleBackdrop />
       {plugins.length === 0 ? (
-        <Empty icon={<Layers size={18} />} title={t("backgroundServices.empty")} />
+        <div className="relative z-10 flex h-full items-center justify-center">
+          <Empty icon={<Layers size={18} />} title={t("backgroundServices.empty")} />
+        </div>
       ) : (
         <>
-          {/* The stopped apps, like the apps folder: what can be opened. */}
-          <section aria-label={t("backgroundServices.stoppedList")} className="flex-1 pb-8">
-            <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-faint">
-              {t("backgroundServices.stoppedList")}
-            </h2>
-            {stopped.length === 0 ? (
-              <p className="text-sm text-faint">{t("backgroundServices.noneStopped")}</p>
-            ) : (
-              <ul className="grid grid-cols-[repeat(auto-fill,minmax(6rem,1fr))] justify-items-center gap-y-6">
-                {stopped.map(tile)}
-              </ul>
-            )}
+          <section ref={desk} aria-label={t("backgroundServices.stoppedList")} className="absolute inset-0">
+            {stopped.map(deskIcon)}
           </section>
-          {/* The open apps on a dock at the bottom of the screen, as on macOS:
-              the ones that cannot be closed pinned first, then a divider. */}
+          {/* The open apps on a dock over the animation, as on macOS: the ones
+              that cannot be closed pinned first, then a divider. */}
           <section
             aria-label={t("backgroundServices.running", { count: open.length })}
-            className="sticky bottom-3 z-10 mt-auto flex justify-center"
+            className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex justify-center px-4"
           >
             <ul
               data-testid="services-dock"
-              className="flex max-w-full flex-wrap items-start justify-center gap-x-3 gap-y-3 rounded-[1.75rem] border border-white/15 bg-surface/70 px-5 pb-2 pt-4 shadow-[0_18px_50px_rgb(0_0_0/0.35)] backdrop-blur-2xl"
+              className="pointer-events-auto flex max-w-full flex-wrap items-start justify-center gap-x-2.5 gap-y-3 rounded-[1.75rem] border border-white/15 bg-white/[0.07] px-4 pb-2 pt-3 shadow-[0_18px_50px_rgb(0_0_0/0.5)] backdrop-blur-2xl"
             >
-              {open.length === 0 && <li className="px-6 py-4 text-sm text-faint">{t("backgroundServices.noneOpen")}</li>}
-              {pinned.map(tile)}
+              {open.length === 0 && <li className="px-6 py-4 text-sm text-white/60">{t("backgroundServices.noneOpen")}</li>}
+              {pinned.map(dockTile)}
               {pinned.length > 0 && closable.length > 0 && (
-                <li aria-hidden="true" data-testid="dock-divider" className="mx-1 w-px self-stretch bg-line-strong" />
+                <li aria-hidden="true" data-testid="dock-divider" className="mx-1 w-px self-stretch bg-white/20" />
               )}
-              {closable.map(tile)}
+              {closable.map(dockTile)}
             </ul>
           </section>
         </>

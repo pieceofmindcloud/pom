@@ -46,40 +46,69 @@ afterEach(() => {
 });
 
 describe("Services", () => {
-  it("names and draws an app as the store does, pins the resident ones before a divider and stresses RAM", () => {
+  it("draws a desktop: available apps on it, open ones on the dock, resident ones pinned before a divider", () => {
     mocks.catalog = [{ code: "logs", display_name: "Business Pack", icon_url: "https://store.example/logs.png" }];
     mocks.plugins = [
       { code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true, memory_bytes: 314572800 },
       { code: "logs", version: "1.0.0", manifest: manifest("logs"), on_demand: false, running: true, memory_bytes: 34603008 },
+      { code: "hermes", version: "0.2.0", manifest: manifest("hermes"), on_demand: true, running: false },
     ];
     mount();
-    const shelf = screen.getByRole("region", { name: "Open (2)" });
-    const items = Array.from(shelf.querySelectorAll("li")).map((li) => li.getAttribute("data-testid"));
-    // Pinned (cannot close) first, then the divider, then the closable ones.
+    expect(screen.getByTestId("puzzle-backdrop")).toBeTruthy();
+    const dock = screen.getByTestId("services-dock");
+    const items = Array.from(dock.querySelectorAll(":scope > li")).map((li) => li.getAttribute("data-testid"));
     expect(items).toEqual(["background-service-logs", "dock-divider", "background-service-goose"]);
     const logs = screen.getByTestId("background-service-logs");
     expect(within(logs).getByText("Business Pack")).toBeTruthy();
     expect(logs.querySelector("img")?.getAttribute("src")).toBe("https://store.example/logs.png");
-    expect(screen.getByTestId("background-service-memory-goose").textContent).toBe("300 MB");
-    expect(screen.getByTestId("background-service-memory-logs").textContent).toBe("33 MB");
+    // The labels left the icons: no memory, no "always on" on the desktop.
+    expect(screen.queryByText("300 MB")).toBeNull();
+    expect(screen.queryByText("always on")).toBeNull();
+    const desktop = screen.getByRole("region", { name: "Available" });
+    expect(within(desktop).getByText("Hermes")).toBeTruthy();
     mocks.catalog = [];
   });
 
-  it("shows open apps on the shelf and stopped ones in the folder, with their names", () => {
+  it("keeps the memory and the served model in the app's settings window", () => {
     mocks.plugins = [
-      { code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true, memory_bytes: 314572800 },
-      { code: "logs", version: "1.0.0", manifest: manifest("logs"), on_demand: false, running: true },
-      { code: "hermes", version: "0.2.0", manifest: manifest("hermes"), on_demand: true, running: false },
+      { code: "vllm", version: "1.2.0", manifest: manifest("vllm"), on_demand: true, running: true, memory_bytes: 314572800 },
     ];
+    mocks.node = {
+      plugin_services: [{ plugin_code: "vllm", id: "vllm", kind: "inference", name: "vLLM", status: "ready" }],
+      config: { model_label: "Qwen3", inference_service: "vllm" },
+    };
     mount();
-    const shelf = screen.getByRole("region", { name: "Open (2)" });
-    expect(within(shelf).getByText("Goose")).toBeTruthy();
-    expect(within(shelf).getByText("300 MB")).toBeTruthy();
-    // A resident plugin is an open app too, always on and with no close.
-    expect(within(screen.getByTestId("background-service-logs")).getByText("always on")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Close Logs" })).toBeNull();
-    const folder = screen.getByRole("region", { name: "Available" });
-    expect(within(folder).getByText("Hermes")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Settings of Vllm" }));
+    expect(within(screen.getByTestId("app-settings")).getByText("300 MB")).toBeTruthy();
+    // Stopping the engine that serves the model warns first.
+    fireEvent.click(screen.getByRole("button", { name: "Close Vllm" }));
+    expect(screen.getByText(/releases that model first/)).toBeTruthy();
+    mocks.node = { plugin_services: [], config: null };
+  });
+
+  it("lets the operator drag an available app anywhere on the desktop and keeps it there", () => {
+    // jsdom has no PointerEvent: a MouseEvent carries the coordinates.
+    if (!("PointerEvent" in window)) {
+      class PointerEventShim extends MouseEvent {
+        pointerId: number;
+        constructor(type: string, init: PointerEventInit = {}) {
+          super(type, init);
+          this.pointerId = init.pointerId ?? 1;
+        }
+      }
+      (window as unknown as { PointerEvent: typeof MouseEvent }).PointerEvent = PointerEventShim;
+    }
+    mocks.plugins = [{ code: "hermes", version: "0.2.0", manifest: manifest("hermes"), on_demand: true, running: false }];
+    mount();
+    const desk = screen.getByRole("region", { name: "Available" });
+    desk.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 800, right: 1000, bottom: 800, x: 0, y: 0, toJSON: () => ({}) });
+    const icon = screen.getByTestId("background-service-hermes");
+    fireEvent.pointerDown(icon, { button: 0, clientX: 40, clientY: 40, pointerId: 1 });
+    fireEvent.pointerMove(icon, { clientX: 340, clientY: 240, pointerId: 1 });
+    fireEvent.pointerUp(icon, { pointerId: 1 });
+    expect(icon.style.left).toBe("324px");
+    expect(icon.style.top).toBe("224px");
+    expect(window.localStorage.getItem(Object.keys(window.localStorage).find((k) => k.endsWith("services.desktop")) ?? "")).toContain("hermes");
   });
 
   it("closes an open app after a confirmation", async () => {
@@ -126,21 +155,6 @@ describe("Services", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings of Logs" }));
     fireEvent.click(screen.getByTestId("lifecycle-resident"));
     await waitFor(() => expect(mocks.setPluginLifecycle).toHaveBeenCalledWith("logs", null));
-  });
-
-  it("marks an inference engine, names the model it serves and warns before stopping it", () => {
-    mocks.plugins = [
-      { code: "vllm", version: "1.2.0", manifest: manifest("vllm"), on_demand: true, running: true, memory_bytes: 1048576 },
-    ];
-    mocks.node = {
-      plugin_services: [{ plugin_code: "vllm", id: "vllm", kind: "inference", name: "vLLM", status: "ready" }],
-      config: { model_label: "Qwen3", inference_service: "vllm" },
-    };
-    mount();
-    expect(screen.getByTestId("background-service-detail-vllm").textContent).toBe("serving Qwen3");
-    fireEvent.click(screen.getByRole("button", { name: "Close Vllm" }));
-    expect(screen.getByText(/releases that model first/)).toBeTruthy();
-    mocks.node = { plugin_services: [], config: null };
   });
 
   it("says so when no plugin is installed", () => {

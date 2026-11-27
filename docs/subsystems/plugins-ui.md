@@ -321,9 +321,10 @@ engine needs a node that has it.
   screen's first tab once a plugin is installed, `/plugins?tab=services`;
   `/config/services` and `/config/background-services` redirect) shows every
   plugin as an app icon with its name (the store's name and icon first, then
-  `display_name` / `app_icon`): the stopped ones at the top, the open ones on
-  a dock at the bottom of the screen, resident ones pinned before a divider
-  and closable ones after it, each with the RAM it uses. An
+  `display_name` / `app_icon`) on a desktop: the POM pieces animate on a dark
+  sky behind it, the stopped apps are free icons the operator drags anywhere
+  (kept in the browser), and the open ones sit on a dock over the animation,
+  resident ones pinned before a divider and closable ones after it. An
   open on-demand app closes from its X (confirmed, then `/close`); a click on
   the icon opens the app's settings window: open or close it, its memory, and
   how it loads on this machine. It is the only place to close a plugin with no

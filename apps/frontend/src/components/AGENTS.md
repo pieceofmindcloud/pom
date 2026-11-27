@@ -196,6 +196,11 @@ Per-file list:
 - `DeploymentLogDock.tsx` - the Dashboard's cluster console for any admin,
   with no plugin: a collapsed bar that expands upwards to half the area and
   reads the core's live tail (`useClusterConsole`, `/api/ui/cluster-console`).
+- `PuzzleBackdrop.tsx` - the Services desktop's background: the site's hero
+  animation (four glowing particle pieces drift in, spiral, lock, light runs
+  along the seams, then they drift apart) on a canvas that fills its parent,
+  behind the content, with only the POM pieces. One still frame under reduced
+  motion; paused while the tab is hidden.
 - `Terminal.tsx` - the panel's one log terminal: lines as strings or
   `{source, time, level, text}`, level tones, follow-the-bottom (`scrollTop`,
   no `scrollTo`), copy of the last lines, empty state from the caller.

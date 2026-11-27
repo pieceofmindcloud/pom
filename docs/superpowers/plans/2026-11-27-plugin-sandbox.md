@@ -17,12 +17,25 @@ Spec: `docs/superpowers/specs/2026-11-27-plugin-sandbox-design.md`.
 
 ## Phase 1 - contract
 
-- `crates/enterprise-protocol`: `PluginManifest.sandbox` (optional, omitted
-  when absent), validation, default.
-- Plugins screen: permissions shown at install, re-asked on an update that
-  widens them; i18n.
-- `host_api`: `POST /api/plugin-host/message`, `POST /api/plugin-host/notify`,
-  native `plugin.message` event, browser event; `gateway::testkit` tests.
+Delivered 2026-11-27, with backward compatibility (spec decision 1: a release
+without `sandbox` is a legacy plugin and runs as before).
+
+- [x] `crates/enterprise-protocol`: `PluginManifest.sandbox` (optional,
+  omitted when absent), validation, defaults, unknown values read as the
+  narrowest, `sandbox_widens`. The GitHub manifests ignore unknown fields.
+- [x] The node keeps each install path's declaration; `PluginStatus.sandbox`
+  and `sandbox_enforced` (false until phase 2).
+- [x] Plugins screen: Not sandboxed / Sandbox declared / Sandbox badge,
+  permissions in the install dialog, an update that asks for more marked in
+  the dialog and in the updates list; i18n and the screen guide.
+- [x] `host_api`: `POST /api/plugin-host/message`, `POST /api/plugin-host/notify`,
+  native `plugin.message` event, browser event, `plugin.notice` in the bell.
+- [x] `host_api` over a Unix socket (`host_api.socket_path`), for plugins in
+  their own network namespace.
+- [x] The plugin template's package metadata carries `sandbox`.
+- [ ] The license server must carry `sandbox` from the package metadata into
+  the signed `PluginManifest` (outside this repository); until then a
+  licensed release reads as legacy.
 
 ## Phase 2 - Linux
 

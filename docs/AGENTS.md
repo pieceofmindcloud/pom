@@ -168,6 +168,10 @@ Notable pairs:
 - `2026-11-10-validators-design.md` - validators (workers that re-run sampled
   work, several per sample, paid a share) and keeping the first and last
   layers on trusted machines so other machines see no prompts.
+- `2026-11-27-plugin-sandbox-design.md` and its plan - every plugin in its
+  own sandbox on Linux, macOS and Windows, applied by `pom-plugin-host`: the
+  manifest's `sandbox` section, the shared workspace and plugin-to-plugin
+  messages through `host_api`.
 
 Plans worth knowing: `2026-09-12-windows-crash-root-cause.md` (`model_loaded`
 tracing and the native `/health` boundaries),

@@ -52,7 +52,11 @@ What a plugin keeps:
    Landlock and seccomp are inherited; a Seatbelt profile is inherited; an
    AppContainer token is inherited by children). The node never loads plugin
    code, so it stays outside.
-4. **A machine that cannot sandbox does not run plugins.** If the host cannot
+4. **A machine that cannot sandbox does not run plugins.** (Amended
+   2026-11-27 after the Linux spike: the minimum on Linux is Landlock ABI >= 6
+   + seccomp; the PID namespace is an extra layer, used where the system
+   allows it and shown in the panel, not a requirement. See
+   `docs/reports/2026-11-27-plugin-sandbox-linux-spike.md`.) If the host cannot
    establish the minimum isolation of its system (below), it refuses to load
    the plugin and the panel names the reason (`sandbox_unavailable:<why>`).
    There is no "run without sandbox" switch in a release build;

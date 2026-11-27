@@ -94,6 +94,43 @@ Two environments:
   plugin a loopback port range for its servers and grants it plus the
   gateway port; `internet` is an explicit, louder permission because it also
   reaches the other loopback services.
-- Next Linux step: the same probe with a PID namespace allowed (an AppArmor
-  profile on the host, a seccomp profile in a test container) and the vLLM
-  plugin end to end under the sandbox.
+- Next Linux step: the vLLM plugin end to end under the sandbox.
+
+## PID namespace as the extra layer
+
+Operator decision, 2026-11-27: the PID namespace is an extra layer, not a
+requirement. The spike added it before the baseline: `unshare` of user + PID
++ mount + IPC, the id maps, a `fork` so the plugin is PID 1 of the new
+namespace, `/` made private and a fresh `/proc` mounted. A refusal before the
+namespaces exist leaves the baseline alone.
+
+| Environment | What it needed | Result |
+|---|---|---|
+| Host, no profile | - | refused: AppArmor denies the `uid_map` write |
+| Host, AppArmor profile for the binary (`flags=(unconfined) { userns, }`, loaded as root) | the profile | **works**: PID 1, no other process visible, `cmdline`/`environ`/`kill` of the target answer "no such process", every baseline probe unchanged |
+| Host, same, with the GPU grant | the profile | `nvidia-smi` lists both GPUs through the new `/proc` |
+| Docker, default flags | - | `unshare` refused by the default seccomp profile |
+| Docker, custom AppArmor profile (userns) + default seccomp | - | `unshare` still refused by seccomp |
+| Docker, custom AppArmor + `seccomp=unconfined` | - | `unshare` works, mounting `/proc` refused: Docker masks paths of the container's `/proc` and the kernel refuses a new procfs over a masked one |
+| Docker, custom AppArmor + `seccomp=unconfined` + `systempaths=unconfined` | all three | **works**, same results as the host |
+
+What this means:
+
+- **Host packages** (`.deb` and others on Ubuntu 23.10+): the installer
+  ships one AppArmor profile for `pom-plugin-host` with `userns,`, the way
+  Ubuntu's own browser profiles do. One root step at install; without it the
+  plugins run on the baseline.
+- **Docker**: the layer costs three relaxations of the container -
+  a custom AppArmor profile, a seccomp profile that allows `unshare`
+  (a narrower one than `unconfined`, to be written) and
+  `systempaths=unconfined`, which unmasks `/proc/kcore`, `/proc/sys` and the
+  like for the whole container. That weakens the container's own isolation
+  from the host to strengthen the plugins' isolation from each other, and a
+  container already hides the host's processes from the plugins: only POM
+  and the other plugins are visible there. Recommendation: the published
+  image stays on the baseline by default, and the compose file documents the
+  three options as an opt-in.
+- Distributions without Ubuntu's userns restriction (Debian, Fedora, Arch by
+  default) get the layer with no extra step on the host.
+- The panel shows the level each plugin got: `baseline` or `baseline +
+  pid namespace`.

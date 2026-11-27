@@ -1135,11 +1135,27 @@ clear the journal, since a native crash can happen during that confirmation.
 When the idle monitor unloads the model, it records `idle` and keeps the
 deployment active so `reload_model` can restore it. The journal counts pending
 attempts across processes and blocks automatic resume at
-`MAX_AUTOMATIC_ATTEMPTS=3`. The supervisor waits `RESTART_INTERVAL` (30 s)
+`MAX_AUTOMATIC_ATTEMPTS=3` (`MAX_PROCESS_RESUMES`: on Windows a `pending`
+slice that took the process down is not resumed at all, because each resume
+is the desktop supervisor closing the POM window and opening a new one; the
+in-process retries keep the budget of three). The supervisor waits `RESTART_INTERVAL` (30 s)
 between a failed load and the next one, so the dead attempt's VRAM and RAM are
 back before it retries; a newer deployment cuts that wait short. That state decides what a restart resumes
 (`serving` or `idle`), not the `apply`. See `slicing.md` section 6 and the
 `AGENTS.md` of `inference/`.
+
+**Why a load failed.** `RuntimeStatus.failure` (`EngineFailure`: engine,
+message, attempts, the engine's last log lines) is set by the supervisor on
+every attempt that ends with an error and by `note_unloadable_slice` after a
+crash, and cleared by a load that reaches `/health` or a new deployment. The
+lines come from `inference/engine_log.rs`: llama.cpp/ggml log and abort
+callbacks feed a ring in memory and `<project_root>/engine-last-load.log`,
+which the start after a native crash reads (the abort message is the last
+line). Warnings and errors also go to `tracing` (target `engine`), so the
+cluster console carries them when collected. A plugin engine runs out of
+process and its failure carries only the error it returned. The failure
+travels in the node's status (`/api/ui/node`, relayed by `/api/ui/cluster`),
+so an admin sees every machine's reason on its card with no plugin.
 
 The `POST /api/ui/leave` path is a control operation independent of the model:
 any profile can take its own machine off the network, even with an empty,

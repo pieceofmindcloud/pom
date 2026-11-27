@@ -101,6 +101,17 @@ export interface RuntimeStatus {
    *  Negative is "all", in llama.cpp's convention. See `layerPlacement`. */
   reported_gpu_layers: number | null;
   changed_at: string;
+  /** Why the last load failed, in the engine's words. Absent on older nodes. */
+  failure?: EngineFailure | null;
+}
+
+/** A failed load, the same for every engine (`EngineFailure` in `src/inference/runtime.rs`). */
+export interface EngineFailure {
+  engine: string;
+  message: string;
+  log_tail: string[];
+  attempts: number;
+  at: string;
 }
 
 export interface NodeConfig {

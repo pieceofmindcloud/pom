@@ -17,6 +17,7 @@ import { motion } from "framer-motion";
 import { ChevronRight, Lock } from "lucide-react";
 import { type ReactNode } from "react";
 import { Modal } from "./Confirm";
+import { EngineFailure } from "./EngineFailure";
 import { GpuTemperature } from "./GpuTemperature";
 import { servedSystem } from "../lib/gpu";
 import { MachineIcon, gpuDisplayName, machineKind } from "./MachineIcon";
@@ -514,6 +515,9 @@ export function PeerDetailCard({
         </div>
       ) : (
         <>
+          {n?.status.failure && (
+            <EngineFailure failure={n.status.failure} machine={n.hostname || peer.short_id} />
+          )}
           {/*
             The machine's toolbar, at the top.
             They were scattered across the foot of the card, one per section, and to restart

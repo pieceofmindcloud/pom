@@ -804,6 +804,39 @@ pub struct RuntimeStatus {
     /// treat it as the whole range, not as zero.
     pub reported_gpu_layers: Option<i32>,
     pub changed_at: String,
+    /// Why the last load of this generation failed, in the engine's own words.
+    /// Kept while the node retries and after it gives up; cleared by a new
+    /// deployment and by a load that reaches `/health`.
+    pub failure: Option<EngineFailure>,
+}
+
+/// A failed load as the operator reads it, the same for every engine.
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineFailure {
+    /// `llama.cpp` or the plugin service that ran the slice.
+    pub engine: String,
+    /// The error the engine returned, or the crash that took the process down.
+    pub message: String,
+    /// The engine's last log lines (empty for an engine run out of process).
+    pub log_tail: Vec<String>,
+    /// Attempts made so far.
+    pub attempts: u32,
+    pub at: String,
+}
+
+impl EngineFailure {
+    fn new(cfg: &NodeConfig, message: String, log_tail: Vec<String>, attempts: u32) -> Self {
+        Self {
+            engine: cfg
+                .inference_service
+                .clone()
+                .unwrap_or_else(|| "llama.cpp".to_string()),
+            message,
+            log_tail,
+            attempts,
+            at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
 }
 
 impl RuntimeStatus {
@@ -817,6 +850,7 @@ impl RuntimeStatus {
             reported_total_layers: None,
             reported_gpu_layers: None,
             changed_at: chrono::Utc::now().to_rfc3339(),
+            failure: None,
         }
     }
 }
@@ -1633,7 +1667,17 @@ impl NodeRuntime {
             cfg.model_label, cfg.start_layer, cfg.end_layer, attempts
         );
         warn!("⚠️  {detail}");
-        *self.status.write().await = RuntimeStatus::new(ServerState::Disabled, detail);
+        // The process that tried it is gone; what it said before dying is on disk.
+        let log_tail = crate::engine_log::disk_tail(crate::engine_log::TAIL_LINES);
+        let message = log_tail
+            .iter()
+            .rev()
+            .find(|line| line.starts_with("engine aborted:"))
+            .cloned()
+            .unwrap_or_else(|| "the engine took the process down while loading".to_string());
+        let mut status = RuntimeStatus::new(ServerState::Failed, detail);
+        status.failure = Some(EngineFailure::new(cfg, message, log_tail, attempts));
+        *self.status.write().await = status;
     }
 
     /// Start (or restart) the Rust inference server for `generation`.
@@ -1768,6 +1812,7 @@ impl NodeRuntime {
                 }
 
                 let _ = attempt_tx.send(restarts);
+                crate::engine_log::begin_attempt();
                 let result = if cfg.inference_service.is_some() {
                     crate::plugin_engine::run(
                         cfg.clone(),
@@ -1816,6 +1861,18 @@ impl NodeRuntime {
                         capacity_net.set_runtime_capacity_for_generation(generation, None);
                         let _ = capacity_net.announce(None).await;
                         append_log(port, &format!("stopped with an error: {e}"));
+                        let log_tail = crate::engine_log::tail(crate::engine_log::TAIL_LINES);
+                        for line in &log_tail {
+                            append_log(port, &format!("engine: {line}"));
+                        }
+                        status
+                            .set_failure(EngineFailure::new(
+                                &cfg,
+                                format!("{e:#}"),
+                                log_tail,
+                                restarts + 1,
+                            ))
+                            .await;
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
                             // A slice that did get to serve (and for that reason is
@@ -2212,6 +2269,11 @@ impl StatusWriter {
         self.changed.notify_waiters();
     }
 
+    async fn set_failure(&self, failure: EngineFailure) {
+        self.status.write().await.failure = Some(failure);
+        self.changed.notify_waiters();
+    }
+
     async fn set_log(&self, path: &str) {
         self.status.write().await.log_path = Some(path.to_string());
         self.changed.notify_waiters();
@@ -2227,6 +2289,7 @@ impl StatusWriter {
         s.detail = "model loaded".to_string();
         s.reported_total_layers = reported_total_layers;
         s.reported_gpu_layers = reported_gpu_layers;
+        s.failure = None;
         s.changed_at = chrono::Utc::now().to_rfc3339();
         self.changed.notify_waiters();
     }
@@ -2831,6 +2894,40 @@ mod tests {
             .expect("the loading supervisor is kept for the next apply to wait on");
         release.send(()).unwrap();
         supervisor.await.unwrap();
+    }
+
+    /// A slice that took the process down shows, on the next start, what the
+    /// engine said before dying: the screen must not be a bare "failed".
+    #[tokio::test]
+    async fn an_unloadable_slice_carries_the_engine_log_left_on_disk() {
+        let _env_lock = crate::config::TEST_ENVIRONMENT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("POM_HOME", dir.path());
+        std::fs::write(
+            crate::engine_log::path(),
+            "llama_model_load: loading\nengine aborted: ggml-cuda.cu:96: CUDA error: out of memory\n",
+        )
+        .unwrap();
+        let net = Arc::new(
+            Network::testkit("no".into(), "pk".into(), vec![], None, None)
+                .await
+                .expect("UDP socket on an ephemeral port"),
+        );
+        let rt = NodeRuntime::new_with_last_slice_path(
+            net,
+            Arc::new(RwLock::new(None)),
+            dir.path().join("pom.json.last-slice.json"),
+        );
+        rt.note_unloadable_slice(&cfg(), 1).await;
+        let status = rt.status().await;
+        std::env::remove_var("POM_HOME");
+        assert_eq!(status.state, ServerState::Failed);
+        let failure = status.failure.expect("the failure is recorded");
+        assert_eq!(failure.engine, "llama.cpp");
+        assert!(failure.message.contains("CUDA error: out of memory"), "{}", failure.message);
+        assert_eq!(failure.log_tail.len(), 2);
     }
 
     #[tokio::test]

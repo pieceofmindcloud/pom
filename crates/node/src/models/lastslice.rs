@@ -60,6 +60,15 @@ struct Annotation {
 /// going to load on the fourth, and ten attempts only kept the machine busy.
 pub const MAX_AUTOMATIC_ATTEMPTS: u32 = 3;
 
+/// How many times a start resumes a slice that never loaded and took the
+/// process down. On Windows every such resume is the desktop supervisor
+/// closing the POM window and opening a new one, which reads as a frozen
+/// program, and a native crash of the same load repeats: the start after the
+/// first crash shows the failure instead of trying again. Elsewhere the
+/// relaunch is invisible and the full budget stays. The in-process retries
+/// (the engine returned an error) keep `MAX_AUTOMATIC_ATTEMPTS` everywhere.
+pub const MAX_PROCESS_RESUMES: u32 = if cfg!(windows) { 1 } else { MAX_AUTOMATIC_ATTEMPTS };
+
 /// What startup found recorded.
 ///
 /// It is an enum, and not `Option<NodeConfig>`, because the defect it fixes

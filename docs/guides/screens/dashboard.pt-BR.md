@@ -40,6 +40,16 @@ Por privacidade, outra máquina compartilha só um resumo de si: seus discos apa
 É a leitura da versão ativa da implantação: o mesmo inspetor que a tela Implantar edita, com o contexto, as sessões, a amostragem e as configurações do PoM com que ela subiu.
 :::
 
+### Quando uma máquina não carrega
+
+Se uma máquina não conseguiu carregar a sua fatia, o card dela abre com uma
+caixa vermelha dizendo qual motor falhou, depois de quantas tentativas, e o
+erro do próprio motor (por exemplo, falta de memória CUDA). "Linhas do log do
+motor" mostra as últimas linhas que o motor escreveu, e o botão de copiar leva
+o erro inteiro. Cada card mostra o motivo da sua máquina, então o administrador
+lê todos aqui. No Windows, uma fatia que derrubou o POM não é tentada de novo
+depois do reinício; implante de novo com menos camadas ou outros ajustes.
+
 ## Modelos de imagem
 
 Um modelo de imagem escolhido no seletor de modelo (marcado com um ícone de imagem) aparece como a sua pipeline: o **text encoder**, o **modelo de difusão** e o **VAE**, na ordem em que a imagem é feita, cada estágio com as máquinas que o servem. Cada máquina mostra se está pronta, o tempo de ida e volta a partir deste nó e as chamadas que atende agora. O ComfyUI chama cada estágio da máquina onde roda, e cada chamada vai para a réplica pronta mais próxima. **Adicionar réplica** põe mais uma máquina num estágio, entre as que têm o arquivo; **Tirar do ar** libera o modelo em todas as máquinas da lista que mostra antes, a partir do nó de qualquer administrador.

@@ -8,9 +8,12 @@ visualizations (`PipelineRail`, `ModelNetworkCanvas`, `DeployNetworkCanvas`), an
 for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
 `UndeployPipeline`), and `PeerDetailCard`, the one card for a machine shown in
-the Dashboard details tab and in the window the Flow canvas opens. Test files
+the Dashboard details tab and in the window the Flow canvas opens. On top of
+the card, `EngineFailure` shows `status.failure` when a load failed: the
+engine's message, the attempts, a copy button and the engine's last log lines
+folded (no plugin needed; the admin sees it on every machine's card). Test files
 present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `DeploymentInspector.idle.test.tsx`,
-`GpuTemperature.test.tsx`, `LeaveNode.test.tsx`, `UndeployPipeline.test.tsx`,
+`EngineFailure.test.tsx`, `GpuTemperature.test.tsx`, `LeaveNode.test.tsx`, `UndeployPipeline.test.tsx`,
 `ModelNetworkCanvas.test.tsx`,
 `PeerDetailCard.test.tsx`. Fake peers for these tests come from
 `../test/fixtures.ts` and must have the *full* shape the node serves. A partial

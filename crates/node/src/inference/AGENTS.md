@@ -1163,8 +1163,9 @@ reason that only shows up in the error of a tunnel that also failed.
   restart inside the same generation (a Strata stage that stops because the earlier stage
   restarted) writes `Pending` again; before this the watcher had already returned and the
   node stayed "loading" with the engine ready.
-- `note_unloadable_slice` - marks the slice as not resumable and puts the reason in the
-  `status.detail` (what the panel shows); it is what an empty node says instead of staying
+- `note_unloadable_slice` - marks the slice as not resumable (`Failed`), puts the reason in the
+  `status.detail` and an `EngineFailure` with the engine log the dead process left
+  (`engine_log::disk_tail`) in `status.failure`; it is what an empty node says instead of staying
   silent - an empty, silent node is indistinguishable from a machine that never received a
   slice.
 - `free_port` - frees the port before bringing the server up: it finds who holds the port
@@ -1173,6 +1174,9 @@ reason that only shows up in the error of a tunnel that also failed.
   and the supervisor puts that reason in the `status.detail` as `Failed` **from the first
   attempt** - before, the operator only saw "loading" until `MAX_RESTARTS` ran out while the
   server died in a loop.
+- `EngineFailure` / `StatusWriter::set_failure` - the generic reason of a failed load
+  (engine, message, attempts, `log_tail`), set on each failed attempt, cleared by `set_ready`
+  and by a new `RuntimeStatus`. The engine lines are also appended to the port's log.
 - `log_file_path` / `append_log` - `<project_root>/infer_server_<port>.log`,
   one per port, pointed to by `RuntimeStatus.log_path` (`set_log`, called at the supervisor's
   startup). It carries the server's lifecycle (start, attempt, reason of the fall, model
@@ -1189,6 +1193,13 @@ reason that only shows up in the error of a tunnel that also failed.
   in memory or falls during the confirmation, each new process increments `Pending.attempts`. On
   reaching `MAX_AUTOMATIC_ATTEMPTS`, the node comes up without a model and leaves the reason in
   `status.detail`; `pom undeploy` also records a persistent block.
+
+`engine_log.rs`: `install` (once, in `main`) registers llama.cpp/ggml log and abort callbacks;
+lines still go to stderr, debug lines are dropped, the rest fill a 200-line ring and
+`<project_root>/engine-last-load.log` (truncated by `begin_attempt` at each supervisor attempt,
+one write per line so a native abort leaves it). `tail` serves an in-process error,
+`disk_tail` the start after a crash. Warn/error lines are re-emitted on `tracing` target
+`engine`.
 
 `wire.rs`:
 - `BatchFrame`/`BatchItem` - `frame_version=1`, several named items in the same concatenated

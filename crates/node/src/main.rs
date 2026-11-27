@@ -250,6 +250,8 @@ pub mod route;
 pub mod route_plan;
 #[path = "inference/runtime.rs"]
 mod runtime;
+#[path = "inference/engine_log.rs"]
+mod engine_log;
 #[path = "inference/scheduler.rs"]
 mod scheduler;
 #[path = "backend/serve.rs"]
@@ -580,6 +582,7 @@ fn run_main() -> Result<()> {
     // node's own log otherwise.
     crash::install();
     respawn::remember_argv(std::env::args().collect());
+    engine_log::install();
     let (log_capture, log_receiver) =
         cluster_logs::LogCapture::new(cluster_logs::LOG_CAPTURE_QUEUE_CAPACITY);
 
@@ -2205,7 +2208,7 @@ async fn start_node(
                 info!("↩️  idle slice restored after restart: {label} {a}-{b}");
             }
             lastslice::LastSlice::Pending { cfg, attempts } => {
-                if attempts >= lastslice::MAX_AUTOMATIC_ATTEMPTS {
+                if attempts >= lastslice::MAX_PROCESS_RESUMES {
                     node_runtime.note_unloadable_slice(&cfg, attempts).await;
                 } else {
                     match lastslice::resume_attempt(&cfg) {

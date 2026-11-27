@@ -292,14 +292,16 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
       if (event.button !== 0 || (event.target as HTMLElement).closest("[data-no-drag]")) return;
       const box = desk.current?.getBoundingClientRect();
       if (!box) return;
+      // No pointer capture yet: a capture now would send the click to this
+      // wrapper instead of the icon's button, and a plain click would be lost.
       drag.current = { code: plugin.code, dx: event.clientX - box.left - pos.x, dy: event.clientY - box.top - pos.y, sx: event.clientX, sy: event.clientY, moved: false };
-      event.currentTarget.setPointerCapture?.(event.pointerId);
     };
     const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
       const current = drag.current;
       const box = desk.current?.getBoundingClientRect();
       if (!current || current.code !== plugin.code || !box) return;
       if (!current.moved && Math.hypot(event.clientX - current.sx, event.clientY - current.sy) < 5) return;
+      if (!current.moved) event.currentTarget.setPointerCapture?.(event.pointerId);
       current.moved = true;
       setDragging(plugin.code);
       const x = Math.min(Math.max(0, event.clientX - box.left - current.dx), Math.max(0, box.width - TILE_W));

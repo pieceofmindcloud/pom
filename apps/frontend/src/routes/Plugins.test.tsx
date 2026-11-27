@@ -68,6 +68,7 @@ function activationCandidate(plugin_code: string) {
 }
 
 const mocks = vi.hoisted(() => ({
+  installedUi: undefined as unknown[] | undefined,
   post: vi.fn(),
   del: vi.fn(),
   navigateToPluginPurchase: vi.fn(),
@@ -136,6 +137,8 @@ vi.mock("../lib/api", () => ({
 }));
 vi.mock("../lib/queries", () => ({
   keys: { pluginUi: ["plugin-ui"] },
+  // No app installed here unless a test says so: the screen opens on the catalog.
+  usePluginUi: () => ({ data: { plugins: mocks.installedUi ?? [] }, isLoading: false, refetch: vi.fn() }),
   usePlugins: () => mocks.plugins,
   useGithubRepositories: () => mocks.githubRepositories,
   useDevelopmentPluginSources: () => mocks.developmentSources,
@@ -188,6 +191,23 @@ describe("Plugins", () => {
     mocks.navigateToPluginContact.mockReset();
     mocks.queryClient.invalidateQueries.mockReset();
     localStorage.clear();
+  });
+
+  it("opens on the Services tab, first, once a plugin is installed", () => {
+    mocks.installedUi = [{
+      code: "goose",
+      version: "0.1.0",
+      manifest: { schema: "pom-plugin-ui/v1", plugin_code: "goose", menu: [], routes: [], screens: {}, assets: [] },
+      on_demand: true,
+      running: false,
+      lifecycle_default: "on_demand",
+    }];
+    renderPage("en");
+    const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
+    expect(tabs[0]).toBe("Services");
+    expect(screen.getByRole("tab", { name: "Services" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("background-service-goose")).toBeTruthy();
+    mocks.installedUi = undefined;
   });
 
   it("sends the license key once, clears the field and never writes it to storage", async () => {

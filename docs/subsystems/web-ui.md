@@ -185,8 +185,9 @@ the boundary.
 
 ## Menu and routes
 
-`/config/services` (Settings > Services, `routes/BackgroundServices.tsx`;
-`/config/background-services` redirects) shows every plugin as an app, the
+Plugins > Services (`routes/BackgroundServices.tsx`, the first tab of
+`/plugins` once a plugin is installed; `/config/services` and
+`/config/background-services` redirect) shows every plugin as an app, the
 open ones on a dock-like shelf and the stopped ones in a folder, and closes or
 opens the on-demand ones; it is not on the user surface (`USER_ROUTES`).
 

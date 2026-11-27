@@ -48,6 +48,10 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/ui/plugins/:code/close",
             post(crate::plugin_ui::plugin_close),
         )
+        .route(
+            "/api/ui/plugins/:code/lifecycle",
+            post(crate::plugin_ui::plugin_lifecycle_set),
+        )
         .route("/api/ui/chat/agents", get(crate::plugin_ui::chat_agents))
         .route(
             "/api/internal/plugins/services",

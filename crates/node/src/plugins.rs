@@ -66,6 +66,9 @@ const DEVELOPMENT_INSTALL_SETTING_PREFIX: &str = "plugin_dev_install:";
 const GITHUB_REPOSITORIES_SETTING: &str = "plugin_github_repositories";
 const PREFERENCES_SETTING_PREFIX: &str = "plugin_preferences:";
 const UI_MANIFEST_SETTING_PREFIX: &str = "plugin_ui_manifest:";
+/// The operator's choice of how a plugin loads on this machine (`on_demand`
+/// or `resident`), over the manifest's `lifecycle` (`set_lifecycle`).
+const LIFECYCLE_SETTING_PREFIX: &str = "plugin_lifecycle:";
 /// The last ACP agents a plugin announced, kept so the Chat can offer them
 /// (and wake the plugin) while its on-demand process is stopped.
 const ACP_AGENTS_SETTING_PREFIX: &str = "plugin_acp_agents:";
@@ -892,9 +895,16 @@ pub(crate) struct PluginStatus {
     pub preferences_schema: Option<enterprise_protocol::PluginPreferencesSchema>,
     #[serde(default)]
     pub preferences: Option<enterprise_protocol::PluginPreferences>,
-    /// On-demand plugin: the manifest declares `lifecycle: "on_demand"`.
+    /// On-demand plugin on this machine: the operator's choice, else the
+    /// manifest's `lifecycle: "on_demand"`.
     #[serde(default)]
     pub on_demand: bool,
+    /// The manifest's own lifecycle: `on_demand` or `resident`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_default: Option<String>,
+    /// The operator's choice for this machine, when it overrides the manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_override: Option<String>,
     /// `true` when the host process is running. An on-demand plugin can
     /// be `active` (installed and licensed) with `running` false.
     #[serde(default)]
@@ -927,6 +937,8 @@ impl PluginStatus {
             preferences_schema: None,
             preferences: None,
             on_demand: false,
+            lifecycle_default: None,
+            lifecycle_override: None,
             running: false,
         }
     }
@@ -974,6 +986,9 @@ pub(crate) struct PluginRuntime {
     /// `lifecycle: "on_demand"` of the last known manifest. It comes from the cache, so
     /// it applies at boot, before any process starts.
     on_demand: std::sync::atomic::AtomicBool,
+    /// The operator's lifecycle for this machine: 0 none (the manifest
+    /// decides), 1 on demand, 2 resident (`set_lifecycle`).
+    lifecycle_override: std::sync::atomic::AtomicU8,
     /// This plugin's secret for the node's loopback API (`crate::plugin_host_api`),
     /// new at every start of the node and handed over in `host.configure`.
     host_api_token: String,
@@ -1018,6 +1033,20 @@ impl PluginRuntime {
             })
             .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok());
         let on_demand = manifest_is_on_demand(ui_manifest_raw.as_ref());
+        let lifecycle_override = database
+            .as_ref()
+            .and_then(|database| {
+                database
+                    .local_setting_json(&format!("{LIFECYCLE_SETTING_PREFIX}{code}"))
+                    .ok()
+                    .flatten()
+            })
+            .and_then(|value| serde_json::from_str::<String>(&value).ok())
+            .map_or(0, |value| match value.as_str() {
+                "on_demand" => 1,
+                "resident" => 2,
+                _ => 0,
+            });
         Self {
             code: code.to_owned(),
             service,
@@ -1036,13 +1065,63 @@ impl PluginRuntime {
             ui_manifest_raw: Arc::new(Mutex::new(ui_manifest_raw)),
             shell_assets_kept: std::sync::atomic::AtomicBool::new(false),
             on_demand: std::sync::atomic::AtomicBool::new(on_demand),
+            lifecycle_override: std::sync::atomic::AtomicU8::new(lifecycle_override),
             host_api_token: hex::encode(rand::random::<[u8; 32]>()),
         }
     }
 
-    /// `true` when the plugin manifest declares `lifecycle: "on_demand"`.
+    /// Whether the plugin runs on demand on this machine: the operator's
+    /// choice (`set_lifecycle`) when there is one, else the manifest's
+    /// `lifecycle`. Boot, heartbeat, open and close all read it.
     fn on_demand(&self) -> bool {
+        match self.lifecycle_override.load(std::sync::atomic::Ordering::Acquire) {
+            1 => true,
+            2 => false,
+            _ => self.manifest_on_demand(),
+        }
+    }
+
+    /// The manifest's own `lifecycle: "on_demand"`.
+    fn manifest_on_demand(&self) -> bool {
         self.on_demand.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The operator's lifecycle for this machine, if any.
+    fn lifecycle_override(&self) -> Option<&'static str> {
+        match self.lifecycle_override.load(std::sync::atomic::Ordering::Acquire) {
+            1 => Some("on_demand"),
+            2 => Some("resident"),
+            _ => None,
+        }
+    }
+
+    /// Sets how this plugin loads on this machine (`Some(true)` on demand,
+    /// `Some(false)` always on, `None` back to the manifest), kept in
+    /// `pom.db`. Turning it always on starts the process now, as boot would;
+    /// turning it on demand leaves a running process up, to be closed when
+    /// the operator wants.
+    pub(crate) async fn set_lifecycle(&self, on_demand: Option<bool>) -> Result<(), String> {
+        let key = format!("{LIFECYCLE_SETTING_PREFIX}{}", self.code);
+        if let Some(database) = &self.database {
+            let saved = match on_demand {
+                Some(true) => database.save_local_setting(&key, &"on_demand"),
+                Some(false) => database.save_local_setting(&key, &"resident"),
+                None => database.delete_local_setting(&key).map(|_| ()),
+            };
+            saved.map_err(|error| format!("the choice could not be saved: {error}"))?;
+        }
+        self.lifecycle_override.store(
+            match on_demand {
+                Some(true) => 1,
+                Some(false) => 2,
+                None => 0,
+            },
+            std::sync::atomic::Ordering::Release,
+        );
+        if !self.on_demand() && self.status.read().await.active && self.host.lock().await.is_none() {
+            self.start_installed_host().await?;
+        }
+        Ok(())
     }
 
     /// Starts the plugin host and already hands it the node context, if any.
@@ -1163,6 +1242,9 @@ impl PluginRuntime {
     pub(crate) async fn status(&self) -> PluginStatus {
         let mut status = self.status.read().await.clone();
         status.on_demand = self.on_demand();
+        status.lifecycle_default =
+            Some(if self.manifest_on_demand() { "on_demand" } else { "resident" }.to_owned());
+        status.lifecycle_override = self.lifecycle_override().map(str::to_owned);
         status.running = self.host.lock().await.is_some();
         let public_install = self
             .public_install
@@ -2209,6 +2291,11 @@ impl PluginRuntime {
         if !self.on_demand() {
             return Err("this plugin is not on demand".into());
         }
+        self.start_installed_host().await
+    }
+
+    /// Starts the installed plugin's process when it is not running.
+    async fn start_installed_host(&self) -> Result<(), String> {
         if !self.status.read().await.active {
             return Err("the plugin is not active on this node".into());
         }
@@ -3809,6 +3896,14 @@ impl PluginManager {
         }
     }
 
+    /// How a plugin loads on this machine (`PluginRuntime::set_lifecycle`).
+    pub(crate) async fn set_lifecycle(&self, code: &str, on_demand: Option<bool>) -> Result<(), String> {
+        match self.runtime_for(code) {
+            Some(runtime) => runtime.set_lifecycle(on_demand).await,
+            None => Err("unknown plugin on this node".into()),
+        }
+    }
+
     /// Stops the process of an on-demand plugin (the X badge).
     pub(crate) async fn close_on_demand(&self, code: &str) -> Result<(), String> {
         match self.runtime_for(code) {
@@ -4185,6 +4280,7 @@ impl PluginManager {
         if let Some(database) = &self.database {
             let _ = database.delete_local_setting(&format!("{ACP_AGENTS_SETTING_PREFIX}{code}"));
             let _ = database.delete_local_setting(&format!("{INFERENCE_SERVICES_SETTING_PREFIX}{code}"));
+            let _ = database.delete_local_setting(&format!("{LIFECYCLE_SETTING_PREFIX}{code}"));
         }
     }
 
@@ -7749,6 +7845,59 @@ mod tests {
             !status.running && status.active,
             "closing does not remove the license or the installation"
         );
+    }
+
+    /// The operator decides how a plugin loads on the machine, over its
+    /// manifest: always on starts it now and keeps boot starting it, on demand
+    /// again gives the manifest's choice back; the choice survives a restart.
+    #[tokio::test]
+    async fn the_operator_chooses_how_a_plugin_loads() {
+        let _serial = REAL_HOST.lock().await;
+        let fake_host = fake_host_path();
+        assert!(fake_host.is_file(), "helper binary {} was not built", fake_host.display());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plugin_path = dir.path().join("logs-plugin.bin");
+        std::fs::write(&plugin_path, b"fake-plugin").expect("fake plugin");
+        // SAFETY: same criterion as the restart test above; `REAL_HOST` serializes.
+        std::env::set_var("POM_PLUGIN_HOST", fake_host);
+        std::env::set_var("POM_FAKE_HOST_LOG", dir.path().join("ingest.log"));
+        let db = Arc::new(crate::db::PomDb::open(dir.path().join("pom.db")).expect("test db"));
+        let service = Arc::new(MockLicenseService::single("logs", activation("logs", "ent-1")));
+        let manager = PluginManager::test_manager_with_database(&["logs"], service.clone(), db.clone());
+        let runtime = manager.runtime_for("logs").expect("runtime");
+        activate_ready(&runtime, "PM-test-key", "0.1.0").await;
+        runtime.persisted.lock().await.as_mut().unwrap().plugin_path =
+            Some(plugin_path.to_string_lossy().into_owned());
+        runtime
+            .remember_ui_manifest(
+                serde_json::json!({"schema": "pom-plugin-ui/v1", "plugin_code": "logs",
+                    "lifecycle": "on_demand", "screens": {}, "assets": []}),
+                true,
+            )
+            .await;
+        let status = runtime.status().await;
+        assert_eq!(status.lifecycle_default.as_deref(), Some("on_demand"));
+        assert_eq!(status.lifecycle_override, None);
+        assert!(!status.running);
+
+        // Always on: the process starts at once, and the manifest no longer decides.
+        manager.set_lifecycle("logs", Some(false)).await.expect("always on");
+        let status = runtime.status().await;
+        assert!(!status.on_demand && status.running, "{status:?}");
+        assert_eq!(status.lifecycle_override.as_deref(), Some("resident"));
+        assert!(runtime.open_on_demand().await.is_err(), "an always-on plugin is not opened by hand");
+
+        // The choice is kept in pom.db for the next start.
+        let restarted = PluginManager::test_manager_with_database(&["logs"], service, db);
+        let again = restarted.runtime_for("logs").expect("runtime");
+        assert_eq!(again.lifecycle_override(), Some("resident"));
+        assert!(!again.on_demand());
+
+        // Back to the manifest: on demand again, the running process stays up.
+        manager.set_lifecycle("logs", None).await.expect("back to the manifest");
+        let status = runtime.status().await;
+        assert!(status.on_demand && status.lifecycle_override.is_none(), "{status:?}");
+        runtime.close_on_demand().await.expect("close");
     }
 
     #[test]

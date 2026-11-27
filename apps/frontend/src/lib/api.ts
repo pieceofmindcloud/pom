@@ -358,6 +358,14 @@ export function openPlugin(code: string) {
 }
 
 /** Stops the process of an on-demand plugin (X badge). */
+/** How a plugin loads on this machine; `null` follows its manifest again. */
+export function setPluginLifecycle(code: string, lifecycle: "on_demand" | "resident" | null) {
+  return api.post<{ code: string; on_demand: boolean; running: boolean }>(
+    `/api/ui/plugins/${encodeURIComponent(code)}/lifecycle`,
+    { lifecycle },
+  );
+}
+
 export function closePlugin(code: string) {
   return api.post<{ code: string; running: boolean }>(
     `/api/ui/plugins/${encodeURIComponent(code)}/close`,

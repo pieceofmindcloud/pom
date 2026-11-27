@@ -10,13 +10,18 @@ const manifest = (code: string) => ({ schema: "pom-plugin-ui/v1", plugin_code: c
 const mocks = vi.hoisted(() => ({
   openPlugin: vi.fn(),
   closePlugin: vi.fn(),
+  setPluginLifecycle: vi.fn(),
   refetch: vi.fn(),
   plugins: [] as unknown[],
   node: { plugin_services: [], config: null } as unknown,
   catalog: [] as unknown[],
 }));
 
-vi.mock("../lib/api", () => ({ openPlugin: mocks.openPlugin, closePlugin: mocks.closePlugin }));
+vi.mock("../lib/api", () => ({
+  openPlugin: mocks.openPlugin,
+  closePlugin: mocks.closePlugin,
+  setPluginLifecycle: mocks.setPluginLifecycle,
+}));
 vi.mock("../lib/queries", () => ({
   usePluginUi: () => ({ data: { plugins: mocks.plugins }, isLoading: false, refetch: mocks.refetch }),
   useNode: () => ({ data: mocks.node }),
@@ -88,12 +93,39 @@ describe("Services", () => {
     await waitFor(() => expect(mocks.refetch).toHaveBeenCalled());
   });
 
-  it("opens a stopped app with a click on its icon", async () => {
+  it("opens an app's settings from its icon, where a stopped one is started", async () => {
     mocks.plugins = [{ code: "hermes", version: "0.2.0", manifest: manifest("hermes"), on_demand: true, running: false }];
     mocks.openPlugin.mockResolvedValue({ code: "hermes", running: true });
     mount();
-    fireEvent.click(screen.getByRole("button", { name: "Open Hermes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings of Hermes" }));
+    expect(screen.getByTestId("app-settings")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
     await waitFor(() => expect(mocks.openPlugin).toHaveBeenCalledWith("hermes"));
+  });
+
+  it("lets the operator turn an always-on plugin on demand, and give the choice back", async () => {
+    mocks.plugins = [{
+      code: "logs", version: "1.0.0", manifest: manifest("logs"), on_demand: false, running: true,
+      lifecycle_default: "resident",
+    }];
+    mocks.setPluginLifecycle.mockResolvedValue({ code: "logs", on_demand: true, running: true });
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "Settings of Logs" }));
+    expect(screen.getByTestId("lifecycle-resident").getAttribute("aria-checked")).toBe("true");
+    expect(within(screen.getByTestId("lifecycle-resident")).getByText("plugin default")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("lifecycle-on_demand"));
+    await waitFor(() => expect(mocks.setPluginLifecycle).toHaveBeenCalledWith("logs", "on_demand"));
+    await waitFor(() => expect(mocks.refetch).toHaveBeenCalled());
+    cleanup();
+    // Overridden: picking the plugin's default clears the override (null).
+    mocks.plugins = [{
+      code: "logs", version: "1.0.0", manifest: manifest("logs"), on_demand: true, running: true,
+      lifecycle_default: "resident", lifecycle_override: "on_demand",
+    }];
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "Settings of Logs" }));
+    fireEvent.click(screen.getByTestId("lifecycle-resident"));
+    await waitFor(() => expect(mocks.setPluginLifecycle).toHaveBeenCalledWith("logs", null));
   });
 
   it("marks an inference engine, names the model it serves and warns before stopping it", () => {

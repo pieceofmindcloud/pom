@@ -1733,6 +1733,12 @@ principal_unreachable` while the principal is away) and applied locally once
 the principal accepts. The effect needs no restart and is announced as a
 trigger for the other nodes' authenticated fetch.
 
+**`POST /api/ui/plugins/:code/lifecycle`** - `LocalOnly`, same origin:
+`{lifecycle: "on_demand" | "resident" | null}`, how the plugin loads on this
+machine, over its manifest (`null` follows the manifest again). Answers
+`{code, on_demand, running, lifecycle_override}`; turning it always on starts
+the process. See `plugins-ui.md`.
+
 **`GET /api/ui/logs/read?source=<code>&node_id=<id>`** - one log source of one
 machine, for the Logs screen: `{ source, name?, running, previous_run, lines }`.
 `source=llama.cpp` is the in-process engine (`engine_log`: the current load

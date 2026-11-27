@@ -317,15 +317,24 @@ engine needs a node that has it.
   piece paused, "The <name> piece is paused", why (closed, it uses no memory,
   processor or GPU, and keeps its settings), that it can be closed again with
   the X, and an "Open <name>" button.
-- **Settings > Services** (`routes/BackgroundServices.tsx`,
-  `/config/services`; `/config/background-services` redirects) shows every
+- **Plugins > Services** (`routes/BackgroundServices.tsx`, the Plugins
+  screen's first tab once a plugin is installed, `/plugins?tab=services`;
+  `/config/services` and `/config/background-services` redirect) shows every
   plugin as an app icon with its name (the store's name and icon first, then
   `display_name` / `app_icon`): the stopped ones at the top, the open ones on
   a dock at the bottom of the screen, resident ones pinned before a divider
   and closable ones after it, each with the RAM it uses. An
   open on-demand app closes from its X (confirmed, then `/close`); a click on
-  a stopped one opens it. It is the only place to close a plugin with no menu
-  entry (`pom-plugin-goose`, the engines).
+  the icon opens the app's settings window: open or close it, its memory, and
+  how it loads on this machine. It is the only place to close a plugin with no
+  menu entry (`pom-plugin-goose`, the engines).
+- **The operator picks how a plugin loads.** `POST /api/ui/plugins/<code>/lifecycle`
+  `{lifecycle: "on_demand" | "resident" | null}` saves the choice for this
+  machine (`plugin_lifecycle:<code>` in `pom.db`), over the manifest's
+  `lifecycle`; `null` gives it back. `PluginRuntime::on_demand` reads the
+  choice first, so boot, heartbeat, open and close follow it; turning a plugin
+  always on starts it at once. `GET /api/ui/plugins/ui` reports
+  `lifecycle_default` (the manifest's) and `lifecycle_override`.
   `GET /api/ui/plugins/ui` adds `memory_bytes` to a running plugin: the
   resident memory of its host's process tree (`process_memory.rs`, `/proc`
   on Linux; omitted elsewhere or when unmeasurable).

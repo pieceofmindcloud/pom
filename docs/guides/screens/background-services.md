@@ -3,13 +3,15 @@ id: screen-background-services
 label: Services
 summary: Every app this machine runs, open and stopped, like a dock and a folder
 title: Services
-route: /config/services
+route: /plugins
 order: 315
 ---
 
 :::lead
 Services shows every plugin this machine runs as an app: its icon with its name underneath. The apps you can open sit at the top, like a folder of apps; the open ones sit on a dock at the bottom of the screen, like the macOS Dock: first the ones that are always on, then, after a divider, the ones you can close. Each open app shows how much memory (RAM) it uses. It is where you start and stop the apps that have no menu entry, such as the inference engines (vLLM, Avalon) and the Goose agent the Chat talks to.
 :::
+
+Services is the first tab of Plugins once a plugin is installed. Click an app's icon to see its settings: open or close it, the memory it uses, and how it loads on this machine. **On demand** starts it when you open it or something needs it, and you close it to free its memory; **Always on** starts it with POM and keeps it running. The plugin's own choice is marked as its default, and you can change it for any plugin, so a plugin you rarely use does not sit in memory.
 
 :::cards
 ### Open

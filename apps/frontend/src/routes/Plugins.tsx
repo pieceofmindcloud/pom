@@ -7,7 +7,9 @@ import { Confirm, Modal } from "../components/Confirm";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { PluginUpdatesDialog, type UpdateItem } from "../components/PluginUpdatesDialog";
 import { ApiError, api } from "../lib/api";
-import { keys, useDevelopmentPluginSources, useGithubRepositories, useNode, usePlugins, usePublicPlugin, usePublicPluginCatalog } from "../lib/queries";
+import { keys, useDevelopmentPluginSources, useGithubRepositories, useNode, usePluginUi, usePlugins, usePublicPlugin, usePublicPluginCatalog } from "../lib/queries";
+import { BackgroundServices } from "./BackgroundServices";
+import { useSearchParams } from "react-router-dom";
 import type { DevelopmentPluginError, DevelopmentPluginRebuildResult, DevelopmentPluginSource, GithubRepository, GithubRepositoryRelease, PluginPreferences, PluginPreferencesSchema, PluginStatus, PomCoreUpdateStatus } from "../lib/types";
 import { releaseForTarget, supportedPlatforms, type PublicPluginCatalogEntry } from "../lib/pluginCatalog";
 import { navigateToPluginContact, navigateToPluginPurchase } from "../lib/pluginPurchase";
@@ -878,7 +880,18 @@ export function Plugins() {
   // gets them; `pom_dev_mode` is what turns them on.
   const developmentEnabled = node.data?.pom_dev_mode === true;
   const developmentSources = useDevelopmentPluginSources(developmentEnabled);
-  const [tab, setTab] = useState<"catalog" | "develop">("catalog");
+  // Services (the apps installed here) is the first tab once a plugin is
+  // installed, and where the screen opens; `?tab=` picks one (old links).
+  const installedUi = usePluginUi();
+  const hasInstalled = (installedUi.data?.plugins?.length ?? 0) > 0;
+  const [searchParams] = useSearchParams();
+  const askedTab = searchParams.get("tab");
+  const [chosenTab, setTab] = useState<"services" | "catalog" | "develop" | null>(
+    askedTab === "services" || askedTab === "catalog" || askedTab === "develop" ? askedTab : null,
+  );
+  const tab = chosenTab === "services" && !hasInstalled && !installedUi.isLoading
+    ? "catalog"
+    : chosenTab ?? (hasInstalled ? "services" : "catalog");
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -1347,13 +1360,16 @@ export function Plugins() {
         value={tab}
         onChange={setTab}
         items={[
-          { value: "catalog", label: t("plugins.tabCatalog") },
-          { value: "develop", label: t("plugins.tabDevelop") },
+          ...(hasInstalled ? [{ value: "services" as const, label: t("plugins.tabServices") }] : []),
+          { value: "catalog" as const, label: t("plugins.tabCatalog") },
+          { value: "develop" as const, label: t("plugins.tabDevelop") },
         ]}
       />}
 
       <div className="min-h-0 min-w-0 flex-1 overflow-auto px-5 py-5">
-        {tab === "catalog" ? (
+        {tab === "services" ? (
+          <BackgroundServices embedded />
+        ) : tab === "catalog" ? (
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,21rem)]">
           <div className="order-2 min-w-0 space-y-4 lg:order-1">
             <label className="relative block">

@@ -496,14 +496,17 @@ while the node does not answer.
   links, search + clear, empty state, and the mobile nav/reader/`Voltar`
   contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
-- `BackgroundServices.tsx` - Settings > Services at `/config/services`
-  (`/config/background-services` redirects): every plugin from `usePluginUi`
+- `BackgroundServices.tsx` - the Services tab of `/plugins` (`embedded`;
+  first, and the screen's start, once a plugin is installed, `?tab=services`;
+  `/config/services` and `/config/background-services` redirect): every plugin from `usePluginUi`
   as an app: the store's name and icon (`usePublicPluginCatalog`), else the
   manifest's `display_name` / `app_icon` / `icon_image`, else a glyph, with
   its name underneath. The stopped apps are a grid at the top ("Available");
   the open ones sit on a dock stuck to the bottom of the screen, the resident
   ones ("always on") pinned before a divider and the closable ones after it,
-  each with its RAM badge. An open on-demand app has a hover X with a
+  each with its RAM badge. A click on an icon opens `AppSettings`: version,
+  state, RAM, Open/Close and how the plugin loads on this machine (on demand or
+  always on, the plugin's default marked; `setPluginLifecycle`). An open on-demand app has a hover X with a
   confirmed Close (`closePlugin`); a click on a stopped icon opens it
   (`openPlugin`); `memory_bytes` shows as `formatMemory`. Inference engines
   (a `kind: inference` service in `NodeInfo.plugin_services`) get a badge and

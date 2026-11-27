@@ -525,6 +525,11 @@ struct ActivePluginUi {
     manifest: PluginUiManifest,
     /// On-demand plugin: the menu shows the X when `running` and opens the process on click.
     on_demand: bool,
+    /// The manifest's lifecycle and the operator's override on this machine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lifecycle_default: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lifecycle_override: Option<String>,
     running: bool,
     /// Resident memory of the running host's process tree, where measurable.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -547,6 +552,8 @@ pub(crate) async fn list_plugin_ui(State(state): State<crate::gateway::GatewaySt
                 version: status.plugin_version.clone(),
                 manifest,
                 on_demand: status.on_demand,
+                lifecycle_default: status.lifecycle_default.clone(),
+                lifecycle_override: status.lifecycle_override.clone(),
                 running: status.running,
                 memory_bytes: if status.running {
                     state.plugins.memory_bytes(&status.code).await
@@ -666,6 +673,63 @@ async fn plugin_lifecycle(
     crate::plugin_services::invalidate_services();
     match result {
         Ok(()) => axum::Json(json!({ "code": code, "running": open })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            axum::Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct LifecycleRequest {
+    /// `on_demand`, `resident`, or absent/null to follow the manifest again.
+    #[serde(default)]
+    lifecycle: Option<String>,
+}
+
+/// `POST /api/ui/plugins/:code/lifecycle`: how a plugin loads on this
+/// machine - on demand (started when opened or needed, closed to free its
+/// memory) or always on (started with POM, restarted by the heartbeat). The
+/// operator's choice wins over the manifest's `lifecycle`; `null` gives it
+/// back. Local to the machine, like every plugin route.
+pub(crate) async fn plugin_lifecycle_set(
+    State(state): State<crate::gateway::GatewayState>,
+    Path(code): Path<String>,
+    headers: axum::http::HeaderMap,
+    axum::Json(request): axum::Json<LifecycleRequest>,
+) -> Response {
+    if !crate::plugin_proxy::same_origin(&headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({ "error": "cross-origin plugin call" })),
+        )
+            .into_response();
+    }
+    let choice = match request.lifecycle.as_deref() {
+        None => None,
+        Some("on_demand") => Some(true),
+        Some("resident") => Some(false),
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({ "error": format!("unknown lifecycle {other:?}: on_demand or resident") })),
+            )
+                .into_response()
+        }
+    };
+    match state.plugins.set_lifecycle(&code, choice).await {
+        Ok(()) => {
+            crate::plugin_services::invalidate_services();
+            let status = state.plugins.status(&code).await;
+            axum::Json(json!({
+                "code": code,
+                "on_demand": status.as_ref().map(|s| s.on_demand),
+                "running": status.as_ref().map(|s| s.running),
+                "lifecycle_override": status.and_then(|s| s.lifecycle_override),
+            }))
+            .into_response()
+        }
         Err(error) => (
             StatusCode::BAD_GATEWAY,
             axum::Json(json!({ "error": error })),

@@ -1,10 +1,10 @@
 import { Blocks, Cpu, Layers, Lock, MemoryStick, Power, X } from "lucide-react";
 import clsx from "clsx";
 import { useState } from "react";
-import { Confirm } from "../components/Confirm";
-import { Empty, PageHeader } from "../components/ui";
+import { Confirm, Modal } from "../components/Confirm";
+import { Button, Empty, PageHeader } from "../components/ui";
 import { useI18n } from "../i18n/provider";
-import { closePlugin, openPlugin } from "../lib/api";
+import { closePlugin, openPlugin, setPluginLifecycle } from "../lib/api";
 import { pluginAssetUrl, pluginDisplayName, type ActivePluginUi } from "../lib/pluginUi";
 import { useNode, usePluginUi, usePublicPluginCatalog } from "../lib/queries";
 import type { PublicPluginCatalogEntry } from "../lib/pluginCatalog";
@@ -62,7 +62,7 @@ function AppIcon({ plugin, engine, dim, storeIcon }: { plugin: ActivePluginUi; e
  * serves its model with releases that model (the node does it); a deployment
  * starts a stopped engine by itself.
  */
-export function BackgroundServices() {
+export function BackgroundServices({ embedded = false }: { embedded?: boolean } = {}) {
   const { t, locale } = useI18n();
   const toast = useToast();
   const query = usePluginUi();
@@ -73,6 +73,8 @@ export function BackgroundServices() {
   const nameOf = (plugin: ActivePluginUi) => displayName(plugin, locale, entryOf(plugin.code));
   const [confirming, setConfirming] = useState<ActivePluginUi | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // The app whose settings window is open (a click on its icon).
+  const [settingsCode, setSettingsCode] = useState<string | null>(null);
   // The plugins that publish an inference service on this machine (a stopped
   // on-demand engine keeps its service, as `stopped`).
   const engines = new Set(
@@ -119,9 +121,9 @@ export function BackgroundServices() {
       >
         <button
           type="button"
-          disabled={working || running}
-          onClick={() => act(plugin, true)}
-          aria-label={running ? name : t("backgroundServices.openNamed", { name })}
+          disabled={working}
+          onClick={() => setSettingsCode(plugin.code)}
+          aria-label={t("backgroundServices.settingsNamed", { name })}
           title={[name, ...details].join(" · ")}
           className={clsx(
             "relative rounded-[1.1rem] transition-transform duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aqua/70",
@@ -181,8 +183,12 @@ export function BackgroundServices() {
   };
 
   return (
-    <div className="flex min-h-[calc(100dvh-8.5rem)] flex-col">
-      <PageHeader title={t("backgroundServices.title")} subtitle={t("backgroundServices.subtitle")} />
+    <div className={clsx("flex flex-col", embedded ? "min-h-full" : "min-h-[calc(100dvh-8.5rem)]")}>
+      {embedded ? (
+        <p className="mb-4 max-w-3xl text-sm text-muted">{t("backgroundServices.subtitle")}</p>
+      ) : (
+        <PageHeader title={t("backgroundServices.title")} subtitle={t("backgroundServices.subtitle")} />
+      )}
       {plugins.length === 0 ? (
         <Empty icon={<Layers size={18} />} title={t("backgroundServices.empty")} />
       ) : (
@@ -220,6 +226,31 @@ export function BackgroundServices() {
           </section>
         </>
       )}
+      {(() => {
+        const plugin = plugins.find((entry) => entry.code === settingsCode);
+        if (!plugin) return null;
+        return (
+          <AppSettings
+            plugin={plugin}
+            name={nameOf(plugin)}
+            icon={<AppIcon plugin={plugin} engine={engines.has(plugin.code)} dim={false} storeIcon={entryOf(plugin.code)?.icon_url} />}
+            memory={isOpen(plugin) && plugin.memory_bytes != null ? formatMemory(plugin.memory_bytes) : null}
+            busy={busy === plugin.code}
+            onClose={() => setSettingsCode(null)}
+            onOpen={() => act(plugin, true)}
+            onStop={() => setConfirming(plugin)}
+            onLifecycle={(lifecycle) => {
+              setBusy(plugin.code);
+              setPluginLifecycle(plugin.code, lifecycle)
+                .catch((error: unknown) => toast.fromError(t("backgroundServices.lifecycleFailed"), error))
+                .finally(() => {
+                  setBusy(null);
+                  void query.refetch();
+                });
+            }}
+          />
+        );
+      })()}
       <Confirm
         open={confirming !== null}
         title={t("backgroundServices.confirmTitle", { name: confirming ? nameOf(confirming) : "" })}
@@ -236,5 +267,118 @@ export function BackgroundServices() {
         }}
       />
     </div>
+  );
+}
+
+/**
+ * The window a click on an app's icon opens: what it is, whether it runs
+ * now, the memory it uses and how it loads on this machine - on demand
+ * (started when opened or needed, closed to free its memory) or always on
+ * (started with POM). The operator's choice wins over the plugin's own
+ * (`POST /api/ui/plugins/:code/lifecycle`), and can be given back.
+ */
+function AppSettings({
+  plugin,
+  name,
+  icon,
+  memory,
+  busy,
+  onClose,
+  onOpen,
+  onStop,
+  onLifecycle,
+}: {
+  plugin: ActivePluginUi;
+  name: string;
+  icon: React.ReactNode;
+  memory: string | null;
+  busy: boolean;
+  onClose: () => void;
+  onOpen: () => void;
+  onStop: () => void;
+  onLifecycle: (lifecycle: "on_demand" | "resident" | null) => void;
+}) {
+  const { t } = useI18n();
+  const onDemand = plugin.on_demand === true;
+  const running = plugin.running === true || !onDemand;
+  const fallback = plugin.lifecycle_default ?? (onDemand && !plugin.lifecycle_override ? "on_demand" : "resident");
+  const choice = (value: "on_demand" | "resident", title: string, hint: string) => {
+    const selected = (onDemand ? "on_demand" : "resident") === value;
+    return (
+      <button
+        type="button"
+        role="radio"
+        aria-checked={selected}
+        disabled={busy}
+        data-testid={`lifecycle-${value}`}
+        onClick={() => !selected && onLifecycle(value === fallback ? null : value)}
+        className={clsx(
+          "flex flex-1 flex-col items-start gap-1 rounded-lg border px-3 py-2.5 text-left transition-colors disabled:opacity-60",
+          selected ? "border-aqua/60 bg-aqua/10" : "border-line hover:border-line-strong",
+        )}
+      >
+        <span className="flex items-center gap-2 text-sm font-semibold text-fg">
+          {title}
+          {value === fallback && (
+            <span className="rounded border border-line px-1 text-[0.6rem] font-medium uppercase tracking-wide text-faint">
+              {t("backgroundServices.lifecycleDefault")}
+            </span>
+          )}
+        </span>
+        <span className="text-xs text-muted">{hint}</span>
+      </button>
+    );
+  };
+  return (
+    <Modal
+      open
+      title={name}
+      onClose={onClose}
+      footer={
+        <>
+          {onDemand && running && (
+            <Button variant="outline" icon={<X size={14} />} loading={busy} onClick={onStop}>
+              {t("backgroundServices.close")}
+            </Button>
+          )}
+          {!running && (
+            <Button variant="primary" icon={<Power size={14} />} loading={busy} onClick={onOpen}>
+              {t("backgroundServices.open")}
+            </Button>
+          )}
+          <Button variant="ghost" onClick={onClose}>
+            {t("backgroundServices.done")}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4" data-testid="app-settings">
+        <div className="flex items-center gap-3">
+          {icon}
+          <div className="min-w-0 space-y-1 text-sm">
+            <div className="text-muted">
+              {plugin.version ? `${t("backgroundServices.version")} ${plugin.version} · ` : ""}
+              {running ? t("backgroundServices.runningNow") : t("backgroundServices.stopped")}
+            </div>
+            {memory && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-aqua/40 bg-aqua/15 px-2 py-0.5 font-mono text-xs font-semibold text-aqua">
+                <MemoryStick size={12} />
+                {memory}
+              </span>
+            )}
+          </div>
+        </div>
+        <div role="radiogroup" aria-label={t("backgroundServices.lifecycle")} className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-faint">{t("backgroundServices.lifecycle")}</p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            {choice("on_demand", t("backgroundServices.lifecycleOnDemand"), t("backgroundServices.lifecycleOnDemandHint"))}
+            {choice("resident", t("backgroundServices.lifecycleResident"), t("backgroundServices.lifecycleResidentHint"))}
+          </div>
+          {plugin.lifecycle_override && (
+            <p className="text-xs text-faint">{t("backgroundServices.lifecycleChanged")}</p>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }

@@ -95,8 +95,12 @@ export interface ActivePluginUi {
   code: string;
   version?: string | null;
   manifest: PluginUiManifest;
-  /** `lifecycle: "on_demand"` from the manifest: the process starts when opened and can be stopped. */
+  /** Runs on demand on this machine (the operator's choice, else the manifest's `lifecycle`). */
   on_demand?: boolean;
+  /** The manifest's own lifecycle. */
+  lifecycle_default?: "on_demand" | "resident";
+  /** The operator's choice on this machine, when it overrides the manifest. */
+  lifecycle_override?: "on_demand" | "resident";
   /** The host process is running now. */
   running?: boolean;
   /** Resident memory of the running host's process tree, where the node can measure it. */

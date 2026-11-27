@@ -144,7 +144,6 @@ describe("navForProfile", () => {
     expect(settings?.children?.map((child) => child.to)).toEqual([
       "/config/preferences",
       "/config/storage",
-      "/config/services",
       "/config/preferences/admin",
       "/config/about",
     ]);

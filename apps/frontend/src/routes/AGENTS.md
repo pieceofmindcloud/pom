@@ -651,7 +651,12 @@ while the node does not answer.
   card shows that projection, amber over capacity), a **Head** badge on a
   machine serving layer 0, and the per-machine GPU
   layers / KV-on-GPU (llama.cpp only). Its remove button is "Take X off the
-  map", distinct from the card's X. A machine without the model says so.
+  map", distinct from the card's X. The card's title bar also holds
+  `MachineInstanceAction`: "+ Instance" on a host, behind a `Confirm` that
+  explains a second POM node on the same machine (two models on one card, or
+  one per card, if the hardware holds them) and posts `/api/ui/instances`;
+  "Remove instance" on an instance, at once. Test:
+  `DeployModel.instance.test.tsx`. A machine without the model says so.
   There is no inference engine selector: llama.cpp runs every model; a real MoE
   model (`DeployPlan.is_moe`) only blocks Tensor Parallelism. While the survey
   names no head, the projector list comes from the catalog.

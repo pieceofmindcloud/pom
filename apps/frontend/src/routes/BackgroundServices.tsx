@@ -54,7 +54,7 @@ export function BackgroundServices() {
       className="flex items-center gap-3 border-b border-line px-4 py-3 last:border-b-0"
     >
       <div className="min-w-0 flex-1">
-        <div className="font-medium text-ink">{displayName(plugin, locale)}</div>
+        <div className="font-medium text-fg">{displayName(plugin, locale)}</div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-faint">
           {plugin.version && <span>{plugin.version}</span>}
           {plugin.running && plugin.memory_bytes != null && (

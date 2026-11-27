@@ -54,6 +54,8 @@ import {
   ChevronLeft,
   ChevronUp,
   History,
+  Minus,
+  Plus,
   Rocket,
   ServerCog,
   SlidersHorizontal,
@@ -2012,10 +2014,12 @@ export function DeployModel() {
  *  another instance of itself, so the same machine joins the deployment again
  *  on other GPUs; an instance offers its removal. The new instance shows up as
  *  a machine of its own once it is in the network. */
-function MachineInstanceAction({ machine }: { machine: { node_id: string; label: string; machine_id?: string } }) {
+export function MachineInstanceAction({ machine }: { machine: { node_id: string; label: string; machine_id?: string } }) {
   const { t } = useI18n();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  // Adding starts a second POM on the machine: say what it is for, and what it needs, first.
+  const [asking, setAsking] = useState(false);
   const host = machine.machine_id ?? machine.node_id;
   const isInstance = host !== machine.node_id;
   const act = async () => {
@@ -2032,23 +2036,43 @@ function MachineInstanceAction({ machine }: { machine: { node_id: string; label:
       toast.fromError(t(isInstance ? "deployStudio.instanceRemoveFailed" : "deployStudio.instanceAddFailed"), error);
     } finally {
       setBusy(false);
+      setAsking(false);
     }
   };
   return (
-    <div className="flex items-center justify-between gap-2" onClick={(event) => event.stopPropagation()}>
-      {isInstance && <span className="text-[0.58rem] text-sky">{t("deployStudio.instanceOfHost")}</span>}
-      <Button
-        size="sm"
-        variant={isInstance ? "ghost" : "outline"}
-        loading={busy}
-        className="ml-auto"
+    <span className="flex shrink-0 items-center" onClick={(event) => event.stopPropagation()}>
+      <button
+        type="button"
+        disabled={busy}
         data-testid={isInstance ? `instance-remove-${machine.node_id}` : `instance-add-${machine.node_id}`}
         title={t(isInstance ? "deployStudio.instanceRemoveHint" : "deployStudio.instanceAddHint")}
-        onClick={() => void act()}
+        onClick={() => (isInstance ? void act() : setAsking(true))}
+        className={`mr-0.5 flex h-5 items-center gap-0.5 whitespace-nowrap px-1.5 text-[0.6rem] font-medium disabled:opacity-40 ${
+          isInstance ? "text-faint hover:bg-rose/10 hover:text-rose" : "text-aqua hover:bg-aqua/10"
+        }`}
       >
-        {t(isInstance ? "deployStudio.instanceRemove" : "deployStudio.instanceAdd")}
-      </Button>
-    </div>
+        {isInstance ? <Minus className="h-3 w-3" /> : <Plus className="h-3 w-3" />}
+        {t(isInstance ? "deployStudio.instanceRemoveShort" : "deployStudio.instanceAddShort")}
+      </button>
+      {!isInstance && (
+        <Confirm
+          open={asking}
+          title={t("deployStudio.instanceConfirmTitle", { machine: machine.label })}
+          confirmLabel={t("deployStudio.instanceConfirm")}
+          busy={busy}
+          onCancel={() => setAsking(false)}
+          onConfirm={() => void act()}
+          description={
+            <div className="space-y-2 text-sm" data-testid="instance-confirm-text">
+              <p>{t("deployStudio.instanceConfirmWhat")}</p>
+              <p>{t("deployStudio.instanceConfirmSameGpu")}</p>
+              <p>{t("deployStudio.instanceConfirmOtherGpu")}</p>
+              <p className="text-amber">{t("deployStudio.instanceConfirmHardware")}</p>
+            </div>
+          }
+        />
+      )}
+    </span>
   );
 }
 
@@ -2226,8 +2250,12 @@ function MachinesTab({
                   className="h-3 w-3 shrink-0 accent-aqua"
                 />
                 <span className="min-w-0 truncate text-[0.7rem] font-semibold text-fg">{machine.label}</span>
+                {(machine.machine_id ?? machine.node_id) !== machine.node_id && (
+                  <span className="shrink-0 text-[0.58rem] text-sky">{t("deployStudio.instanceOfHost")}</span>
+                )}
               </label>
               <span className="flex shrink-0 items-center">
+              <MachineInstanceAction machine={machine} />
               {onMove && machines.length > 1 && (
                 <>
                   <button
@@ -2264,7 +2292,6 @@ function MachinesTab({
               </span>
             </div>
             <div className="space-y-2 px-2 py-2">
-              <MachineInstanceAction machine={machine} />
               {taking.length === 0 && <p className="text-[0.62rem] text-faint">{t("deployStudio.noLayerAssigned")}</p>}
               {taking.length > 0 && balance && (() => {
                 const sizes = taking.map((row) => balance.bytes(row.start_layer, row.end_layer));

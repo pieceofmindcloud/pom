@@ -561,6 +561,11 @@ const ROUTE_RULES: &[RouteRule] = &[
         scope: RouteScope::AnyAdmin,
     },
     RouteRule {
+        prefix: "/api/ui/cluster-console",
+        method: None,
+        scope: RouteScope::AnyAdmin,
+    },
+    RouteRule {
         prefix: "/api/ui/deploy",
         method: None,
         scope: RouteScope::AnyAdmin,

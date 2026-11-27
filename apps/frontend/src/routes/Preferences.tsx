@@ -19,7 +19,7 @@ import {
   Select,
 } from "../components/ui";
 import { api, clearAdminAccessToken } from "../lib/api";
-import { useAdminAccess, useAdminAccessInfo, useEnterpriseStatus, useInvalidate, useNetworkInfo, useNode } from "../lib/queries";
+import { useAdminAccess, useAdminAccessInfo, useInvalidate, useNetworkInfo, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useProfile } from "../lib/profile";
 import { RELAY_POLICIES, type AdminAccessInfo, type AdminExposure, type RelayPolicy, type ThermalPolicy } from "../lib/types";
@@ -531,7 +531,6 @@ export function Preferences({ administrative = false }: { administrative?: boole
   const node = useNode();
   // Process-log collection is kept by the logs plugin: the switch exists only
   // on an admin whose machine runs it.
-  const logsPlugin = useEnterpriseStatus();
   // An inference node only talks to the models: GPU thermal protection and
   // the Hugging Face token are for machines that serve or download them.
   const { profile } = useProfile();
@@ -678,7 +677,7 @@ export function Preferences({ administrative = false }: { administrative?: boole
       <div className="space-y-5">
         {administrative ? <>
           <QuicPanel enabled={quicEnabled} authority={node.data?.quic_authority ?? false} busy={quicSaving} onToggle={(next) => void toggleQuic(next)} />
-          {logsPlugin.data.active && <ClusterLogsPanel enabled={node.data?.cluster_logs_enabled ?? false} authority={node.data?.cluster_logs_authority ?? false} busy={logsSaving} onToggle={(next) => void toggleLogs(next)} />}
+          {<ClusterLogsPanel enabled={node.data?.cluster_logs_enabled ?? false} authority={node.data?.cluster_logs_authority ?? false} busy={logsSaving} onToggle={(next) => void toggleLogs(next)} />}
           <NetworkChatPanel enabled={node.data?.network_chat_enabled ?? false} authority={node.data?.network_chat_authority ?? false} busy={networkChatSaving} onToggle={(next) => void toggleNetworkChat(next)} />
           {networkInfo.data && <RelayPolicyPanel policy={relayPolicy} authority={node.data?.quic_authority ?? false} busy={relayPolicySaving} onChange={(next) => void saveRelayPolicy(next)} />}
           {autoDiscoveryLoaded && <AutoDiscoveryPanel status={autoDiscovery} authority={node.data?.quic_authority ?? false} busy={autoDiscoverySaving} onToggle={(next) => void toggleAutoDiscovery(next)} />}

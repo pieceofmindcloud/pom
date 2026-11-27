@@ -2832,7 +2832,9 @@ mod tests {
             .await;
 
         let s = rt.status().await;
-        assert_eq!(s.state, ServerState::Disabled, "the node serves nothing");
+        // Failed, not Disabled: the card turns red and carries the reason,
+        // instead of reading as a machine that never got a slice.
+        assert_eq!(s.state, ServerState::Failed, "the slice failed to load");
         assert!(
             s.detail.contains("qwen35") && s.detail.contains("0-15"),
             "the status must name the refused slice, and it says: {}",

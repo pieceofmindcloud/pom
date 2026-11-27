@@ -76,8 +76,10 @@ dedicated or member, with iroh's hole punching), are in
   each accepted batch to it (`cluster_logs` ingest event, one task, bounded
   queue) and the console reads through `cluster_logs.list`; storage, order of
   arrival and retention (seven days, 500,000 lines) live in the plugin. An
-  admin without the plugin active drops the batches, so only the admins need
-  it. `ClusterLogs::list` returns `None` without the plugin.
+  admin without the plugin skips that hand-off silently. Apart from the
+  plugin, `try_ingest` keeps the last `CONSOLE_LINES` (2000) in memory for the
+  core's cluster console (`ClusterLogs::recent`, `GET /api/ui/cluster-console`).
+  `ClusterLogs::list` returns `None` without the plugin.
 - `reqlog.rs` - the request audit's request/response protocol
   (`/pom/request-audit/1.0.0`); the POM replicates `begin` and `complete` to every
   known admin both when the plugin records locally and in the fallback. The

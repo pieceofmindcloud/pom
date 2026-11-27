@@ -241,7 +241,7 @@ mod catalog_under_tls_tests {
 #[cfg(test)]
 mod cluster_logs_settings_tests {
     use super::*;
-    use crate::gateway::testkit::{body_of, state_with};
+    use crate::gateway::testkit::state_with;
 
     #[tokio::test]
     async fn a_regular_node_cannot_turn_logs_on() {
@@ -261,22 +261,21 @@ mod cluster_logs_settings_tests {
     }
 
     #[tokio::test]
-    async fn the_principal_without_the_logs_plugin_cannot_turn_collection_on_but_can_turn_it_off() {
+    async fn the_principal_turns_collection_on_and_off_without_the_logs_plugin() {
         let _guard = crate::peer_client::GLOBAL_POLICY.lock();
         let state = state_with("eu", vec![]).await;
         state.auth.write().await.profile = crate::profile::NodeProfile::Admin;
-        state.network.set_cluster_logs_enabled(true);
-        state.cluster_logs.set_enabled(true);
-        state.auth.write().await.cluster_logs_enabled = true;
 
+        // The cluster console lives in the core: collection needs no plugin.
         let response = save_cluster_logs(
             ConnectionAuth,
             State(state.clone()),
             Json(SaveClusterLogsRequest { logs_enabled: true }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(body_of(response).await["code"], "logs_plugin_required");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(state.cluster_logs.enabled());
+        assert!(state.auth.read().await.cluster_logs_enabled);
 
         let response = save_cluster_logs(
             ConnectionAuth,

@@ -108,8 +108,14 @@ key,en,pt-BR
 "deploymentLogs.collectionOffLink","Turn it on in Administrative preferences","Ligue nas Preferências administrativas"
 "deploymentLogs.collectionOffPrincipal","Collection of the cluster process logs is off on this network, so no new line arrives. An admin turns it on in Administrative preferences.","A coleta dos logs de processo do cluster está desligada nesta rede, então nenhuma linha nova chega. Um admin liga nas Preferências administrativas."
 "deploymentLogs.paused","Collection off","Coleta desligada"
+"engineFailure.close","Close","Fechar"
+"engineFailure.copied","Copied","Copiado"
 "engineFailure.copy","Copy the error","Copiar o erro"
-"engineFailure.log","{count, plural, one {# engine log line} other {# engine log lines}}","{count, plural, one {# linha do log do motor} other {# linhas do log do motor}}"
+"engineFailure.details","Details","Detalhes"
+"engineFailure.dialogTitle","Deployment error on {machine}","Erro de implantação em {machine}"
+"engineFailure.log","{count, plural, =0 {Engine log} one {Last # line of the engine log} other {Last # lines of the engine log}}","{count, plural, =0 {Log do motor} one {Última # linha do log do motor} other {Últimas # linhas do log do motor}}"
+"engineFailure.noLog","This engine runs outside POM, so only the error it returned is shown. Its log is in the plugin's own output.","Este motor roda fora do POM, então só aparece o erro que ele devolveu. O log dele fica na saída do próprio plugin."
+"engineFailure.short","Deploy failed:","Implantação falhou:"
 "engineFailure.title","{engine} failed to load the slice ({attempts, plural, one {# attempt} other {# attempts}})","{engine} falhou ao carregar a fatia ({attempts, plural, one {# tentativa} other {# tentativas}})"
 "enterprise.showcase.quota.title","Quota","Quota"
 "enterprise.store.badgePaddle","Secure payment with Paddle","Pagamento seguro com Paddle"
@@ -2162,7 +2168,7 @@ network.logsDisabled,Process logs turned off,Logs de processo desligados
 network.logsEnable,Turn logs on,Ligar logs
 network.logsEnabled,Process logs turned on,Logs de processo ligados
 network.logsFailed,Could not change the process log policy,Não deu para mudar a política de logs de processo
-network.logsHowItWorks,"The admin only tells the network to collect: every node sends a copy to each admin over a separate p2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.","O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo p2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin."
+network.logsHowItWorks,"The admin only tells the network to collect: every node sends a copy to each admin over a separate p2p protocol. Each admin keeps the latest lines in memory for the cluster console on the Dashboard, with no plugin; the Logs plugin, when active, also keeps the history by deployment for the Deployment Logs screen.","O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo p2p separado. Cada admin guarda as linhas mais recentes em memória para o console do cluster no Dashboard, sem plugin; o plugin de Logs, quando ativo, também guarda o histórico por implantação para a tela de Logs de implantação."
 network.logsOff,paused,pausada
 network.logsOn,collecting,coletando
 network.logsState,Cluster collection,Coleta do cluster

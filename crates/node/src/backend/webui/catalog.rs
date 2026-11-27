@@ -395,6 +395,22 @@ pub(super) async fn cluster_logs(
     }
 }
 
+/// The cluster console: the last lines this admin received, kept in memory by
+/// the core. It needs no plugin; the Deployment Logs screen (`cluster_logs`)
+/// is the plugin's history.
+pub(super) async fn cluster_console(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Query(query): Query<ClusterLogsQuery>,
+) -> Response {
+    Json(
+        state
+            .cluster_logs
+            .recent(query.deploy_id.as_deref(), query.limit),
+    )
+    .into_response()
+}
+
 pub(super) async fn local_is_primary(state: &GatewayState) -> bool {
     let profile = state.auth.read().await.profile;
     state
@@ -1939,25 +1955,8 @@ pub(super) async fn save_cluster_logs(
         }
         return forward_cluster_logs_to_principal(&state, req.logs_enabled).await;
     }
-    // The admin only tells the network to collect; keeping the lines is the
-    // logs plugin's, so collection is not turned on where nobody keeps them.
-    if req.logs_enabled
-        && !state
-            .plugins
-            .status(crate::plugins::LOGS_PLUGIN_CODE)
-            .await
-            .is_some_and(|status| status.active)
-    {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "code": "logs_plugin_required",
-                "error": "activate the logs plugin on this node to turn on the cluster process logs.",
-            })),
-        )
-            .into_response();
-    }
-
+    // Collection needs no plugin: every admin keeps the live tail for the
+    // cluster console, and the logs plugin, when active, keeps the history.
     {
         let mut cfg = state.auth.write().await;
         cfg.cluster_logs_enabled = req.logs_enabled;
@@ -2380,6 +2379,26 @@ mod tests {
             .expect("refusal body");
         let body: serde_json::Value = serde_json::from_slice(&body).expect("refusal JSON");
         assert_eq!(body["code"], "logs_plugin_required");
+    }
+
+    #[tokio::test]
+    async fn the_cluster_console_answers_without_the_logs_plugin() {
+        let state = crate::gateway::testkit::secondary_admin_state("secondary").await;
+        let response = cluster_console(
+            ConnectionAuth,
+            State(state),
+            Query(ClusterLogsQuery {
+                deploy_id: None,
+                limit: Some(10),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("console body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("console JSON");
+        assert!(body["entries"].as_array().is_some());
     }
 }
 

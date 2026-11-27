@@ -29,6 +29,7 @@ pub(super) fn routes() -> Router<GatewayState> {
             get(auto_discovery_status).post(save_auto_discovery),
         )
         .route("/api/ui/cluster-logs", get(cluster_logs))
+        .route("/api/ui/cluster-console", get(cluster_console))
         .route(
             "/api/ui/deploy/capacity-preview",
             post(capacity_preview_endpoint),

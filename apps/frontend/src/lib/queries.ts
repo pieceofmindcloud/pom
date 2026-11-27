@@ -123,6 +123,7 @@ export const keys = {
   pluginUi: ["plugin-ui"] as const,
   chatAgents: ["chat-agents"] as const,
   clusterLogs: (deployId: string | undefined) => ["cluster-logs", deployId ?? "all"] as const,
+  clusterConsole: (deployId: string | undefined) => ["cluster-console", deployId ?? "all"] as const,
   remoteModels: (query: string, ggufOnly: boolean, page: number) =>
     ["remote-models", query, ggufOnly, page] as const,
   remoteModelDetails: (repoId: string, revision: string | undefined) =>
@@ -663,6 +664,24 @@ export function useClusterLogs(deployId?: string, enabled = true) {
     queryKey: keys.clusterLogs(deployId),
     queryFn: () =>
       api.get<ClusterLogResponse>(`/api/ui/cluster-logs${suffix ? `?${suffix}` : ""}`),
+    enabled,
+    refetchInterval: enabled ? 1000 : false,
+  });
+}
+
+/**
+ * The cluster console: the last lines the admin received, kept by the core
+ * with no plugin (`GET /api/ui/cluster-console`). The plugin's history is
+ * `useClusterLogs`.
+ */
+export function useClusterConsole(deployId?: string, enabled = true) {
+  const query = new URLSearchParams();
+  if (deployId) query.set("deploy_id", deployId);
+  const suffix = query.toString();
+  return useQuery<ClusterLogResponse>({
+    queryKey: keys.clusterConsole(deployId),
+    queryFn: () =>
+      api.get<ClusterLogResponse>(`/api/ui/cluster-console${suffix ? `?${suffix}` : ""}`),
     enabled,
     refetchInterval: enabled ? 1000 : false,
   });

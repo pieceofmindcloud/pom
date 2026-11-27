@@ -1546,6 +1546,10 @@ owns storage and queries in `enterprise.db`; POM handles admin discovery,
 fanout and transport. On the receiver, a bounded queue keeps the order and
 delivers the events to the active plugin host. If the host does not accept, POM
 uses the legacy adapter in `pom.db`. Received copies are never retransmitted.
+Apart from the plugin, every effective admin keeps the last 2000 process
+lines in memory for the cluster console (`ClusterLogs::recent`,
+`GET /api/ui/cluster-console`), so collection works with no plugin; an admin
+without the plugin just skips handing batches to it.
 So `/api/ui/cluster-logs`, `/api/ui/requests` and their statistics do not
 depend on the principal being reachable once the local replica was received. A
 completion that arrives before the start is held until the start event.

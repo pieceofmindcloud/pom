@@ -42,10 +42,12 @@ It is the read-only view of the deployment's active version: the same inspector 
 
 ### When a machine fails to load
 
-If a machine could not load its slice, its card opens with a red box that says
-which engine failed, after how many attempts, and the engine's own error (for
-example a CUDA out of memory). "Engine log lines" unfolds the last lines the
-engine wrote, and the copy button takes the whole error. Every machine's card
+If a machine could not load its slice, its card shows a red line with the
+engine's own error (for example a CUDA out of memory): at the foot of the card
+on the Flow (an alert icon on a compact card) and at the top of the card in
+Details. **Details** opens a window with the engine, the attempts, the whole
+message, the engine's last log lines and a button to copy it all. No plugin
+needed. Every machine's card
 shows its own reason, so the administrator reads all of them here. On Windows a
 slice that crashed POM is not retried after the restart; deploy it again with
 fewer layers or other settings.
@@ -64,7 +66,7 @@ Drag the dotted background to move the map anywhere, past any edge, and drop it 
 ### Undeploy
 **Undeploy** takes the model out of service on every machine of the list it shows first.
 ### Follow the console
-The **Cluster console** at the bottom opens upwards with the process logs of the machines, live.
+The **Cluster console** at the bottom opens upwards with the process and engine logs of the machines, live. It needs no plugin; turn on the collection in Administrative preferences. The Logs plugin keeps the history in Deployment Logs.
 :::
 
 :::warn Other profiles see less

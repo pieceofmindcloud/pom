@@ -154,10 +154,11 @@ boundary.
   node and the route retires the record once, and a saved re-enable waits for
   the restart its gossip subscription needs; the route and `save_relay` refuse
   the pair with `relay.everyone`, which the startup refuses too), cluster process
-  logs (`GET /api/ui/cluster-logs` answered by the logs plugin, 403
+  logs (`GET /api/ui/cluster-console`, the core's in-memory tail with no
+  plugin; `GET /api/ui/cluster-logs` answered by the logs plugin, 403
   `logs_plugin_required` without it; `POST /api/ui/network/logs`, any
-  admin - a secondary forwards it to the principal, signed - refuses turning collection on unless the logs plugin is active on that
-  node, while turning it off always works), slice retention
+  admin - a secondary forwards it to the principal, signed - turns collection
+  on or off with or without the plugin), slice retention
   and the authenticated CRUD of the conversation history (`/api/ui/chat/history`).
   `GET /api/ui/plugins` (all profiles) lists local state for independent
   plugins restored or seen by the runtime (`crate::plugins`), each with its

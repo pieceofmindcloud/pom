@@ -1733,7 +1733,15 @@ principal_unreachable` while the principal is away) and applied locally once
 the principal accepts. The effect needs no restart and is announced as a
 trigger for the other nodes' authenticated fetch.
 
-**`GET /api/ui/cluster-logs`** - `AnyAdmin`: requires `ConnectionAuth` on
+**`GET /api/ui/cluster-console`** - `AnyAdmin`, `ConnectionAuth`: the
+cluster console's read, with no plugin. Every admin keeps the last 2000 lines
+it received in memory (`ClusterLogs::recent`) and answers the same
+`{ entries, dropped }` shape as `cluster-logs`, newest `limit` (default 500)
+in arrival order, optionally one `deploy_id`. A restart empties it; the
+history is the plugin's.
+
+**`GET /api/ui/cluster-logs`** - `AnyAdmin`: the logs plugin's history (403
+`logs_plugin_required` without the plugin active); requires `ConnectionAuth` on
 any admin with effective authority, principal or secondary, and returns the lines persisted in the local replica, in
 arrival order, with `deploy_id`, origin timestamp, node name and a drop
 counter. It accepts `deploy_id` and `limit`; it does not reorder by

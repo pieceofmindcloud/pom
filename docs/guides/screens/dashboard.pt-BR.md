@@ -42,11 +42,12 @@ Por privacidade, outra máquina compartilha só um resumo de si: seus discos apa
 
 ### Quando uma máquina não carrega
 
-Se uma máquina não conseguiu carregar a sua fatia, o card dela abre com uma
-caixa vermelha dizendo qual motor falhou, depois de quantas tentativas, e o
-erro do próprio motor (por exemplo, falta de memória CUDA). "Linhas do log do
-motor" mostra as últimas linhas que o motor escreveu, e o botão de copiar leva
-o erro inteiro. Cada card mostra o motivo da sua máquina, então o administrador
+Se uma máquina não conseguiu carregar a sua fatia, o card dela mostra uma
+linha vermelha com o erro do próprio motor (por exemplo, falta de memória
+CUDA): no rodapé do card no Fluxo (no card compacto, um ícone de alerta) e no
+topo do card em Detalhes. O botão **Detalhes** abre uma janela com o motor, o
+número de tentativas, a mensagem inteira, as últimas linhas do log do motor e
+um botão para copiar tudo. Não precisa de plugin. Cada card mostra o motivo da sua máquina, então o administrador
 lê todos aqui. No Windows, uma fatia que derrubou o POM não é tentada de novo
 depois do reinício; implante de novo com menos camadas ou outros ajustes.
 
@@ -64,7 +65,7 @@ Arraste o fundo pontilhado para levar o mapa a qualquer lugar, além de qualquer
 ### Desimplantar
 **Desimplantar** tira o modelo de serviço em todas as máquinas da lista que ele mostra antes.
 ### Acompanhar o console
-O **Console do cluster**, embaixo, abre para cima com os logs de processo das máquinas, ao vivo.
+O **Console do cluster**, embaixo, abre para cima com os logs de processo e dos motores das máquinas, ao vivo. Não precisa de plugin; ligue a coleta nas Preferências administrativas. O plugin de Logs guarda o histórico em Logs de implantação.
 :::
 
 :::warn Os outros perfis veem menos

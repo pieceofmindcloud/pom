@@ -48,6 +48,11 @@ const copyUpdates: Record<string, string> = {
   // Every admin decides the cluster's process logs, not only the principal.
   "en:network.logsNotAuthority": "Only an admin decides this, and the decision applies to the whole cluster.",
   "pt-BR:network.logsNotAuthority": "Só um admin decide isso, e a decisão vale para o cluster inteiro.",
+  // The cluster console lives in the core; the plugin keeps the history.
+  "en:network.logsHowItWorks":
+    "The admin only tells the network to collect: every node sends a copy to each admin over a separate p2p protocol. Each admin keeps the latest lines in memory for the cluster console on the Dashboard, with no plugin; the Logs plugin, when active, also keeps the history by deployment for the Deployment Logs screen.",
+  "pt-BR:network.logsHowItWorks":
+    "O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo p2p separado. Cada admin guarda as linhas mais recentes em memória para o console do cluster no Dashboard, sem plugin; o plugin de Logs, quando ativo, também guarda o histórico por implantação para a tela de Logs de implantação.",
   "en:network.logsPropagates":
     "No restart needed. Any admin can change it: a secondary admin's change goes to the main node, and the other nodes confirm the policy with it before adopting.",
   "pt-BR:network.logsPropagates":
@@ -92,10 +97,6 @@ const copyUpdates: Record<string, string> = {
     "Approve the Windows prompt once to allow discovery, QUIC, p2p endpoint and relay traffic.",
   "pt-BR:network.firewallUacDetail":
     "Aprove o pedido do Windows uma vez para liberar descoberta, QUIC, endpoint p2p e relé.",
-  "en:network.logsHowItWorks":
-    "The admin only tells the network to collect: every node sends a copy to each admin over a separate p2p protocol, and the Logs plugin on each admin keeps arrival order and deployment id in its own database. Only the admins need the plugin.",
-  "pt-BR:network.logsHowItWorks":
-    "O admin só avisa a rede para coletar: cada nó envia uma cópia para cada admin por um protocolo p2p separado, e o plugin de Logs de cada admin grava a ordem de chegada e o deploy_id no próprio banco. Só os admins precisam do plugin.",
   "en:network.networkChatHowItWorks":
     "Messages and files travel through the p2p network and are validated by the main node.",
   "pt-BR:network.networkChatHowItWorks":

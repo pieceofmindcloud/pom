@@ -31,6 +31,9 @@ const MAX_LOG_PAYLOAD_BYTES: usize = 256 * 1024;
 /// Batches waiting for the logs plugin on an admin. Past it, a batch is
 /// dropped and counted instead of holding the transport up.
 const LOG_PLUGIN_QUEUE_CAPACITY: usize = 256;
+/// Lines the admin keeps in memory for the cluster console, with or without
+/// the logs plugin. The plugin keeps the history; this is the live tail.
+pub const CONSOLE_LINES: usize = 2000;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -391,8 +394,10 @@ impl Codec for ClusterLogsCodec {
 /// collection on, sends them to every admin. What an admin does with them is
 /// the logs plugin's: it hands each batch to the plugin (`cluster_logs`
 /// event), which stores, orders and prunes them, and answers the console's
-/// reads (`cluster_logs.list`). An admin without the plugin drops the
-/// batches, so only the admins need the plugin installed.
+/// reads (`cluster_logs.list`, the Deployment Logs screen). Apart from the
+/// plugin, every admin keeps the last [`CONSOLE_LINES`] in memory for the
+/// cluster console (`recent`), so a network without the plugin still reads
+/// its process and engine lines live.
 pub struct ClusterLogs {
     capture: Arc<LogCapture>,
     to_plugin: mpsc::Sender<LogBatch>,
@@ -403,6 +408,8 @@ pub struct ClusterLogs {
     started: AtomicBool,
     local_receiver: Mutex<Option<mpsc::Receiver<LogEntry>>>,
     live: broadcast::Sender<StoredLogEntry>,
+    console: Mutex<std::collections::VecDeque<StoredLogEntry>>,
+    console_seq: AtomicU64,
 }
 
 impl ClusterLogs {
@@ -419,6 +426,8 @@ impl ClusterLogs {
             started: AtomicBool::new(false),
             local_receiver: Mutex::new(Some(local_receiver)),
             live,
+            console: Mutex::new(std::collections::VecDeque::with_capacity(CONSOLE_LINES)),
+            console_seq: AtomicU64::new(0),
         })
     }
 
@@ -444,6 +453,16 @@ impl ClusterLogs {
             // through the capture ten times a second.
             let mut failing = false;
             while let Some(batch) = queue.recv().await {
+                // Without the plugin the batch already reached the console's
+                // memory; there is no one else to hand it to, and no warning.
+                if !plugins
+                    .status(crate::plugins::LOGS_PLUGIN_CODE)
+                    .await
+                    .is_some_and(|status| status.active)
+                {
+                    failing = false;
+                    continue;
+                }
                 let lost = batch.entries.len() as u64 + batch.dropped;
                 let event = serde_json::json!({
                     "type": "cluster_logs",
@@ -516,10 +535,12 @@ impl ClusterLogs {
     }
 
     fn try_ingest(&self, batch: LogBatch) -> bool {
+        let received_at = chrono::Utc::now().to_rfc3339();
+        let mut console = self.console.lock().unwrap_or_else(|e| e.into_inner());
         for entry in &batch.entries {
-            let _ = self.live.send(StoredLogEntry {
-                received_seq: 0,
-                received_at: String::new(),
+            let stored = StoredLogEntry {
+                received_seq: self.console_seq.fetch_add(1, Ordering::Relaxed) + 1,
+                received_at: received_at.clone(),
                 node_id: entry.node_id.clone(),
                 node_name: entry.node_name.clone(),
                 deploy_id: entry.deploy_id.clone(),
@@ -527,8 +548,14 @@ impl ClusterLogs {
                 level: entry.level.clone(),
                 target: entry.target.clone(),
                 message: entry.message.clone(),
-            });
+            };
+            if console.len() == CONSOLE_LINES {
+                console.pop_front();
+            }
+            console.push_back(stored.clone());
+            let _ = self.live.send(stored);
         }
+        drop(console);
         match self.to_plugin.try_send(batch.clone()) {
             Ok(()) => true,
             Err(_) => {
@@ -624,6 +651,22 @@ impl ClusterLogs {
             .saturating_add(self.dropped.load(Ordering::Relaxed))
             .saturating_add(self.capture.queue.dropped());
         Ok(Some(logs))
+    }
+
+    /// The cluster console's read: the last lines this admin received, from
+    /// memory, with no plugin. `deploy_id` keeps one deployment's lines.
+    pub fn recent(&self, deploy_id: Option<&str>, limit: Option<usize>) -> LogList {
+        let limit = limit.unwrap_or(500).clamp(1, CONSOLE_LINES);
+        let console = self.console.lock().unwrap_or_else(|e| e.into_inner());
+        let matching: Vec<&StoredLogEntry> = console
+            .iter()
+            .filter(|entry| deploy_id.is_none_or(|id| entry.deploy_id == id))
+            .collect();
+        let skip = matching.len().saturating_sub(limit);
+        LogList {
+            entries: matching[skip..].iter().map(|e| (*e).clone()).collect(),
+            dropped: self.capture.queue.dropped(),
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<StoredLogEntry> {
@@ -903,6 +946,26 @@ mod tests {
             }
         ));
         assert_eq!(service.dropped.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn the_console_keeps_the_last_lines_without_the_plugin() {
+        let (capture, receiver) = LogCapture::new(8);
+        let service = ClusterLogs::new(capture, receiver);
+        service.set_admin_receiver(true);
+        let mut other = entry("other deployment");
+        other.deploy_id = "deploy-2".into();
+        service.try_ingest(LogBatch {
+            source_node_id: "node-a".into(),
+            entries: vec![entry("first"), other, entry("engine: out of memory")],
+            dropped: 0,
+        });
+        let all = service.recent(None, None);
+        assert_eq!(all.entries.len(), 3);
+        assert_eq!(all.entries[0].received_seq, 1);
+        let one = service.recent(Some("deploy-1"), Some(1));
+        assert_eq!(one.entries.len(), 1);
+        assert_eq!(one.entries[0].message, "engine: out of memory");
     }
 
     #[tokio::test]

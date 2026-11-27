@@ -8,10 +8,11 @@ visualizations (`PipelineRail`, `ModelNetworkCanvas`, `DeployNetworkCanvas`), an
 for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
 `UndeployPipeline`), and `PeerDetailCard`, the one card for a machine shown in
-the Dashboard details tab and in the window the Flow canvas opens. On top of
-the card, `EngineFailure` shows `status.failure` when a load failed: the
-engine's message, the attempts, a copy button and the engine's last log lines
-folded (no plugin needed; the admin sees it on every machine's card). Test files
+the Dashboard details tab and in the window the Flow canvas opens. `EngineFailure`
+shows `status.failure` when a load failed as one rose line (top of this card,
+foot of the Flow card; an alert icon on a compact card) with Details opening
+`EngineFailureDialog`: engine, attempts, message, the engine's last log lines
+and a copy button (no plugin; the admin sees every machine's). Test files
 present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `DeploymentInspector.idle.test.tsx`,
 `EngineFailure.test.tsx`, `GpuTemperature.test.tsx`, `LeaveNode.test.tsx`, `UndeployPipeline.test.tsx`,
 `ModelNetworkCanvas.test.tsx`,
@@ -192,9 +193,12 @@ Per-file list:
   delete action and localized new-conversation button.
 - `ApiKeysTable.tsx` - the full-bleed API keys table. Every key belongs to the
   node that minted it and works there only, so there is no node picker.
-- `DeploymentLogDock.tsx` - the Dashboard's collapsed bar for the admin, which
-  expands upwards to half the area and follows the deployment log in
-  real time with auto-scroll.
+- `DeploymentLogDock.tsx` - the Dashboard's cluster console for any admin,
+  with no plugin: a collapsed bar that expands upwards to half the area and
+  reads the core's live tail (`useClusterConsole`, `/api/ui/cluster-console`).
+- `ClusterConsole.tsx` - the terminal both the dock and the plugin's
+  Deployment Logs screen draw: lines, level tones, follow-the-bottom and copy;
+  the caller brings the entries and the empty-state text.
 - `OpenNativeChatWindowButton.tsx` - a macOS button used only when the
   WebKit bridge `pomOpenWindow` is available; it sits in the `Topbar`'s toolbar, not in the
   Chat's body. It is an icon-only control: the full name stays in the accessible

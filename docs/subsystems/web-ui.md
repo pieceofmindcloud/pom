@@ -1157,28 +1157,36 @@ time; the lines come from the admin's local replica in arrival order and the
 screen polls for new batches every second. The deployment selector sends
 `deploy_id`, allowing the same logs to be opened from a deployment in History.
 
-The lines are kept by the logs plugin (`pom-plugin-logs`) on each admin; the
-POM only captures, carries them to the admins and holds the collection policy.
-Without the plugin active on this node the console says so instead of
-polling, and the Dashboard does not show the dock. While
+This screen reads the logs plugin's history (`pom-plugin-logs`); without the
+plugin active it says so instead of polling. The terminal is the shared
+`ClusterConsole` component, the same the Dashboard's cluster console draws.
+While
 `NodeInfo.cluster_logs_enabled` is false the console and the dock show
 "Collection off" instead of "Live", since no new line arrives.
 
-`Preferences.tsx` shows the "Process logs between nodes" panel only when the
-logs plugin is active on this machine. The switch is open to every admin
-(a secondary admin's change is passed on to the principal), and the backend rejects turning collection on unless the plugin is
-active there; turning it off always works. Only the admins need the plugin. State and authority come from `GET /api/ui/node`; the change
+`Preferences.tsx` shows the "Process logs between nodes" panel to every
+admin, with or without the logs plugin (a secondary admin's change is passed
+on to the principal): collection feeds the core's cluster console, and the
+plugin, when active, also keeps the history. State and authority come from `GET /api/ui/node`; the change
 uses `POST /api/ui/network/logs` and needs no restart. The counter of entries
 dropped by the bounded queue shows above the terminal, so the screen does not
 present an incomplete view as if it were the full stream.
 
-On the Dashboard, the admin can open `DeploymentLogDock` at the bottom. The
+On the Dashboard, any admin can open `DeploymentLogDock` (the cluster
+console) at the bottom, with no plugin. The
 collapsed bar takes a single line; open, it grows upward to half of the panel,
-queries `GET /api/ui/cluster-logs` in real time and follows the end while the
+queries `GET /api/ui/cluster-console` (the core's in-memory tail) in real time and follows the end while the
 reader stays at the bottom. The deployment's active version is available in an
 inspector on the right, read-only, using `DeploymentInspector` and the same
 fields as the original configuration. Node can also read the versions through
 `GET /api/ui/deployments`, but still without the administrative actions.
+
+A machine whose load failed shows it on its card, from `RuntimeStatus.failure`
+in its own status (no plugin, every machine for the admin): a rose line at
+the foot of the Flow card (an alert icon on a compact card) and at the top of
+the details card, with Details opening `EngineFailureDialog` - the engine,
+attempts, the whole message, the engine's last log lines and a copy button
+(`components/EngineFailure.tsx`). See `deployment.md`, "Why a load failed".
 
 ## Chat
 

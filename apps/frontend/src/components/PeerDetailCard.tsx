@@ -516,7 +516,7 @@ export function PeerDetailCard({
       ) : (
         <>
           {n?.status.failure && (
-            <EngineFailure failure={n.status.failure} machine={n.hostname || peer.short_id} />
+            <EngineFailure className="border-b border-line px-3" failure={n.status.failure} machine={n.hostname || peer.short_id} />
           )}
           {/*
             The machine's toolbar, at the top.

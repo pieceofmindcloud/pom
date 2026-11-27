@@ -1152,10 +1152,11 @@ lines come from `inference/engine_log.rs`: llama.cpp/ggml log and abort
 callbacks feed a ring in memory and `<project_root>/engine-last-load.log`,
 which the start after a native crash reads (the abort message is the last
 line). Warnings and errors also go to `tracing` (target `engine`), so the
-cluster console carries them when collected. A plugin engine runs out of
+cluster console (core, no plugin) carries them when collection is on. A plugin engine runs out of
 process and its failure carries only the error it returned. The failure
 travels in the node's status (`/api/ui/node`, relayed by `/api/ui/cluster`),
-so an admin sees every machine's reason on its card with no plugin.
+so an admin sees every machine's reason on its card with no plugin: one line
+with Details, which opens the message and the engine log.
 
 The `POST /api/ui/leave` path is a control operation independent of the model:
 any profile can take its own machine off the network, even with an empty,

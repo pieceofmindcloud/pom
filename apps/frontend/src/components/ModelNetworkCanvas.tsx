@@ -38,6 +38,7 @@ import {
 import { rateSpeed } from "../lib/peerSpeed";
 import { SpeedBadges, type PeerSpeed } from "./SpeedBadge";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
+import { EngineFailure } from "./EngineFailure";
 import { servedSystem, sumVram } from "../lib/gpu";
 import { layerPlacement, warnsLayersOnCpu, type LayerPlacement } from "../lib/layerPlacement";
 import type { ChatTelemetryPeerPerf, ChatTelemetryRtt, ClusterView, PluginService, RoutingEdge } from "../lib/types";
@@ -228,6 +229,8 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
   const cpuWarning = warnsLayersOnCpu(placement, system?.gpu_kind, range.engine)
     ? <span data-testid="machine-cpu-warning" className="inline-flex"><AlertTooltip compact label={hostname} message={t("canvas.layersOnCpuWarning", { cpu: placement!.cpu, served: placement!.served })} /></span>
     : null;
+  // Why the last load failed, carried by the node's own status (no plugin).
+  const failure = unread ? null : range.node?.status.failure ?? null;
   const statusTone = rediscovering ? "amber" : unreachable ? "rose" : serverStateTone(range.node?.status.state);
   const statusLabel = rediscovering ? t("pipeline.rediscovering") : unreachable ? "timeout" : serverStateLabel(range.node?.status.state);
   const cardEvents = {
@@ -264,6 +267,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
             {range.role && <span data-testid="machine-role" className="rounded border border-aqua/40 px-1 font-semibold uppercase tracking-[0.08em] text-aqua">{t(range.role === "prefill" ? "canvas.rolePrefill" : "canvas.roleShared")}</span>}
           </p>
         </div>
+        {failure && <EngineFailure variant="icon" failure={failure} machine={hostname} />}
         <span data-testid="machine-status" title={statusLabel} aria-label={statusLabel} className="flex shrink-0 items-center"><Dot tone={statusTone} pulse={rediscovering || (serving && !unread)} /></span>
         {onToggleCompact && <CompactToggle compact onToggle={onToggleCompact} />}
       </div>
@@ -327,6 +331,7 @@ function NetworkNode({ range, position, dragging, perf, speed = UNRATED, compact
         compact
       />
     )}
+    {failure && <EngineFailure className="-mx-3 -mb-3 mt-2 rounded-b-xl" failure={failure} machine={hostname} />}
     {services && <PluginServiceTether services={services} />}
   </article>;
 }

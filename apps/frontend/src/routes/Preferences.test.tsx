@@ -177,14 +177,11 @@ describe("Preferences", () => {
     });
   });
 
-  it("shows the process logs between nodes only with the Logs plugin active on this machine", () => {
-    mount(<Preferences administrative />);
-    expect(screen.getByText("Logs de processo entre nós")).toBeTruthy();
-
-    cleanup();
+  it("shows the process logs between nodes with or without the Logs plugin", () => {
+    // The cluster console lives in the core, so collection is not a plugin setting.
     mocks.logsPluginActive = false;
     mount(<Preferences administrative />);
-    expect(screen.queryByText("Logs de processo entre nós")).toBeNull();
+    expect(screen.getByText("Logs de processo entre nós")).toBeTruthy();
     mocks.logsPluginActive = true;
   });
 

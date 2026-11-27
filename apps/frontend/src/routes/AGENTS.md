@@ -505,10 +505,15 @@ while the node does not answer.
   the available apps as free icons the operator drags anywhere (positions in
   `localStorage`, `storageKey("services.desktop")`), and the open ones on a
   dock over the animation, resident ones pinned before a divider. The icons
-  carry no labels but the name. A click on a closed app opens it (it moves to
-  the dock); a click on the dock goes to the app's screen (its first menu
-  route, `pluginMenuItems`), or to its settings when it has none; a hover gear
-  opens the settings on both. The dock is compact: small icons, the name only
+  carry no labels but the name. A click on a closed app launches it like an operating
+  system (`launch`): it lands on the dock bouncing while it starts, then the
+  POM goes to its screen (its first menu route, `pluginMenuItems`). A running
+  app with no screen (an inference engine) is not on the dock: it is a system
+  notification at the top right, one under the other, with settings and
+  close. A click on the dock goes to the app's screen; a hover gear opens the
+  settings; a right click opens `ContextMenu` (open, go to screen, settings,
+  keep always on / run on demand, close). Check for updates shows on the
+  Plugins tab only. The dock is compact: small icons, the name only
   in the tooltip. A click on an icon opens `AppSettings`: version,
   state, RAM, Open/Close and how the plugin loads on this machine (on demand or
   always on, the plugin's default marked; `setPluginLifecycle`). An open on-demand app has a hover X with a

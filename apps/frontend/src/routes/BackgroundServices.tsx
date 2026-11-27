@@ -1,7 +1,7 @@
 import { Blocks, Cpu, Layers, MemoryStick, Power, Settings2, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import clsx from "clsx";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Confirm, Modal } from "../components/Confirm";
 import { Button, Empty } from "../components/ui";
 import { useI18n } from "../i18n/provider";
@@ -19,6 +19,8 @@ const TILE_W = 96;
 const TILE_H = 96;
 /** Room the dock takes at the bottom: a desktop icon is not dropped under it. */
 const DOCK_SPACE = 80;
+/** How long a launched app bounces on the dock before the POM goes to its screen. */
+const LAUNCH_MS = 900;
 const POSITIONS_KEY = storageKey("services.desktop");
 
 /** The desktop's first layout: columns from the top-left, like a desktop. */
@@ -127,13 +129,21 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
   const serving = node.data?.config?.inference_service ?? null;
   const servedModel = node.data?.config?.model_label ?? null;
   const plugins = [...(query.data?.plugins ?? [])].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+  // The app being launched: on the dock at once, bouncing, until it runs.
+  const [launching, setLaunching] = useState<string | null>(null);
+  // The right-click menu: which app, and where.
+  const [menu, setMenu] = useState<{ code: string; x: number; y: number } | null>(null);
   // A resident plugin runs while it is installed and active.
-  const isOpen = (plugin: ActivePluginUi) => plugin.running || !plugin.on_demand;
+  const isOpen = (plugin: ActivePluginUi) => plugin.running === true || !plugin.on_demand || launching === plugin.code;
   const open = plugins.filter(isOpen);
+  // Apps with a screen go on the dock; the ones without (an inference engine)
+  // are system notifications at the top right while they run.
+  const docked = open.filter((plugin) => routeOf(plugin.code) || launching === plugin.code);
+  const headless = open.filter((plugin) => !routeOf(plugin.code) && launching !== plugin.code);
   // Like the Dock: the apps that cannot be closed are pinned at the start, the
   // ones that can follow after a divider.
-  const pinned = open.filter((plugin) => !plugin.on_demand);
-  const closable = open.filter((plugin) => plugin.on_demand);
+  const pinned = docked.filter((plugin) => !plugin.on_demand);
+  const closable = docked.filter((plugin) => plugin.on_demand);
   const stopped = plugins.filter((plugin) => !isOpen(plugin));
 
   const act = (plugin: ActivePluginUi, start: boolean) => {
@@ -144,6 +154,43 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
         setBusy(null);
         void query.refetch();
       });
+  };
+
+  /**
+   * Opens a closed app like an operating system: it lands on the dock and
+   * bounces while it starts, then the POM goes to its screen (an app with no
+   * screen just keeps running, as a notification).
+   */
+  const launch = (plugin: ActivePluginUi) => {
+    const route = routeOf(plugin.code);
+    setLaunching(plugin.code);
+    openPlugin(plugin.code)
+      .then(() => query.refetch())
+      .then(() => {
+        window.setTimeout(() => {
+          setLaunching(null);
+          if (route) navigate(route);
+        }, LAUNCH_MS);
+      })
+      .catch((error: unknown) => {
+        setLaunching(null);
+        toast.fromError(t("plugins.openFailed"), error);
+      });
+  };
+
+  const changeLifecycle = (plugin: ActivePluginUi, lifecycle: "on_demand" | "resident" | null) => {
+    setBusy(plugin.code);
+    setPluginLifecycle(plugin.code, lifecycle)
+      .catch((error: unknown) => toast.fromError(t("backgroundServices.lifecycleFailed"), error))
+      .finally(() => {
+        setBusy(null);
+        void query.refetch();
+      });
+  };
+
+  const openMenu = (plugin: ActivePluginUi) => (event: React.MouseEvent) => {
+    event.preventDefault();
+    setMenu({ code: plugin.code, x: event.clientX, y: event.clientY });
   };
 
   // Where the operator put each available app on the desktop, in this browser.
@@ -172,7 +219,7 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
             justDragged.current = false;
             return;
           }
-          if (!running) act(plugin, true);
+          if (!running) launch(plugin);
           else if (route) navigate(route);
           else setSettingsCode(plugin.code);
         }}
@@ -183,6 +230,7 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
           running ? "rounded-[0.7rem]" : "rounded-[1.1rem]",
           dragging === plugin.code ? "scale-110" : running ? "hover:-translate-y-1 hover:scale-125" : "hover:-translate-y-1.5 hover:scale-110",
           busy === plugin.code && "animate-pulse",
+          launching === plugin.code && "animate-bounce",
         )}
       >
         <AppIcon plugin={plugin} engine={engines.has(plugin.code)} dim={!running} small={running} storeIcon={entryOf(plugin.code)?.icon_url} />
@@ -215,7 +263,7 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
   const dockTile = (plugin: ActivePluginUi) => {
     const name = nameOf(plugin);
     return (
-      <li key={plugin.code} data-testid={`background-service-${plugin.code}`} className="group relative flex flex-col items-center gap-0.5">
+      <li key={plugin.code} data-testid={`background-service-${plugin.code}`} onContextMenu={openMenu(plugin)} className="group relative flex flex-col items-center gap-0.5">
         {iconButton(plugin, true)}
         {/* An app with no screen opens its settings from the icon itself. */}
         {routeOf(plugin.code) && gear(plugin, "-right-1.5 -top-1.5")}
@@ -278,6 +326,7 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onContextMenu={openMenu(plugin)}
         style={{ left: pos.x, top: pos.y, width: TILE_W, touchAction: "none" }}
         className={clsx("absolute flex select-none flex-col items-center gap-1.5 text-center", dragging === plugin.code ? "z-20 cursor-grabbing" : "z-10 cursor-grab")}
       >
@@ -307,6 +356,51 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
           <section ref={desk} aria-label={t("backgroundServices.stoppedList")} className="absolute inset-0">
             {stopped.map(deskIcon)}
           </section>
+          {/* Running apps with no screen of their own (inference engines), as
+              system notifications at the top right, one under the other. */}
+          {headless.length > 0 && (
+            <ul data-testid="services-notifications" className="absolute right-3 top-3 z-30 flex w-72 max-w-[calc(100%-1.5rem)] flex-col gap-2">
+              {headless.map((plugin) => (
+                <li
+                  key={plugin.code}
+                  data-testid={`background-service-${plugin.code}`}
+                  onContextMenu={openMenu(plugin)}
+                  className="flex items-center gap-2.5 rounded-xl border border-white/15 bg-black/55 p-2.5 text-white shadow-[0_10px_30px_rgb(0_0_0/0.45)] backdrop-blur-xl"
+                >
+                  <AppIcon plugin={plugin} engine={engines.has(plugin.code)} dim={false} small storeIcon={entryOf(plugin.code)?.icon_url} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold">{nameOf(plugin)}</div>
+                    <div className="truncate text-xs text-white/60">
+                      {serving === plugin.code && servedModel
+                        ? t("backgroundServices.serving", { model: servedModel })
+                        : t("backgroundServices.runningNow")}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSettingsCode(plugin.code)}
+                    aria-label={t("backgroundServices.settingsNamed", { name: nameOf(plugin) })}
+                    title={t("backgroundServices.settings")}
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-white/70 hover:bg-white/10 hover:text-white"
+                  >
+                    <Settings2 size={14} />
+                  </button>
+                  {plugin.on_demand && (
+                    <button
+                      type="button"
+                      disabled={busy === plugin.code}
+                      onClick={() => setConfirming(plugin)}
+                      aria-label={t("backgroundServices.closeNamed", { name: nameOf(plugin) })}
+                      title={t("backgroundServices.close")}
+                      className="flex h-7 w-7 items-center justify-center rounded-md text-white/70 hover:bg-white/10 hover:text-rose"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
           {/* The open apps on a dock over the animation, as on macOS: the ones
               that cannot be closed pinned first, then a divider. */}
           <section
@@ -328,6 +422,22 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
         </>
       )}
       {(() => {
+        const plugin = menu ? plugins.find((entry) => entry.code === menu.code) : undefined;
+        if (!menu || !plugin) return null;
+        const running = isOpen(plugin);
+        const route = routeOf(plugin.code);
+        const items: { key: string; label: string; act: () => void; danger?: boolean }[] = [
+          ...(!running ? [{ key: "open", label: t("backgroundServices.open"), act: () => launch(plugin) }] : []),
+          ...(running && route ? [{ key: "go", label: t("backgroundServices.menuGoTo"), act: () => navigate(route) }] : []),
+          { key: "settings", label: t("backgroundServices.menuSettings"), act: () => setSettingsCode(plugin.code) },
+          plugin.on_demand
+            ? { key: "resident", label: t("backgroundServices.menuKeepOn"), act: () => changeLifecycle(plugin, plugin.lifecycle_default === "resident" ? null : "resident") }
+            : { key: "on_demand", label: t("backgroundServices.menuOnDemand"), act: () => changeLifecycle(plugin, plugin.lifecycle_default === "on_demand" ? null : "on_demand") },
+          ...(running && plugin.on_demand ? [{ key: "close", label: t("backgroundServices.close"), act: () => setConfirming(plugin), danger: true }] : []),
+        ];
+        return <ContextMenu x={menu.x} y={menu.y} title={nameOf(plugin)} items={items} onClose={() => setMenu(null)} />;
+      })()}
+      {(() => {
         const plugin = plugins.find((entry) => entry.code === settingsCode);
         if (!plugin) return null;
         return (
@@ -338,17 +448,9 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
             memory={isOpen(plugin) && plugin.memory_bytes != null ? formatMemory(plugin.memory_bytes) : null}
             busy={busy === plugin.code}
             onClose={() => setSettingsCode(null)}
-            onOpen={() => act(plugin, true)}
+            onOpen={() => { setSettingsCode(null); launch(plugin); }}
             onStop={() => setConfirming(plugin)}
-            onLifecycle={(lifecycle) => {
-              setBusy(plugin.code);
-              setPluginLifecycle(plugin.code, lifecycle)
-                .catch((error: unknown) => toast.fromError(t("backgroundServices.lifecycleFailed"), error))
-                .finally(() => {
-                  setBusy(null);
-                  void query.refetch();
-                });
-            }}
+            onLifecycle={(lifecycle) => changeLifecycle(plugin, lifecycle)}
           />
         );
       })()}
@@ -481,5 +583,72 @@ function AppSettings({
         </div>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * A right-click menu like an operating system's: the app's name, then what can
+ * be done with it. It closes on a pick, a click elsewhere or Escape, and stays
+ * inside the window.
+ */
+function ContextMenu({
+  x,
+  y,
+  title,
+  items,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  title: string;
+  items: { key: string; label: string; act: () => void; danger?: boolean }[];
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const away = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) onClose();
+    };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", key);
+    ref.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", key);
+    };
+  }, [onClose]);
+  const left = Math.min(x, window.innerWidth - 216);
+  const top = Math.min(y, window.innerHeight - (items.length * 34 + 44));
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      aria-label={title}
+      data-testid="app-context-menu"
+      style={{ left, top }}
+      className="fixed z-50 w-52 overflow-hidden rounded-lg border border-white/15 bg-[#14111f]/95 py-1 text-sm text-white shadow-[0_16px_40px_rgb(0_0_0/0.5)] backdrop-blur-xl"
+    >
+      <div className="truncate px-3 pb-1 pt-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-white/50">{title}</div>
+      {items.map((item) => (
+        <button
+          key={item.key}
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onClose();
+            item.act();
+          }}
+          className={clsx(
+            "block w-full px-3 py-1.5 text-left hover:bg-iris/80 focus-visible:bg-iris/80 focus-visible:outline-none",
+            item.danger && "text-rose-300 hover:text-white",
+          )}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
   );
 }

@@ -207,6 +207,10 @@ describe("Plugins", () => {
     expect(tabs[0]).toBe("Services");
     expect(screen.getByRole("tab", { name: "Services" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByTestId("background-service-goose")).toBeTruthy();
+    // Checking for updates belongs to the Plugins tab only.
+    expect(screen.queryByRole("button", { name: /check for updates/i })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Plugins" }));
+    expect(screen.getByRole("button", { name: /check for updates/i })).toBeTruthy();
     mocks.installedUi = undefined;
   });
 

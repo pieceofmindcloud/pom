@@ -56,6 +56,7 @@ afterEach(() => {
 describe("Services", () => {
   it("draws a desktop: available apps on it, open ones on the dock, resident ones pinned before a divider", () => {
     mocks.catalog = [{ code: "logs", display_name: "Business Pack", icon_url: "https://store.example/logs.png" }];
+    menu.items = [{ code: "logs", id: "logs", to: "/logs" }, { code: "goose", id: "goose", to: "/goose/main" }];
     mocks.plugins = [
       { code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true, memory_bytes: 314572800 },
       { code: "logs", version: "1.0.0", manifest: manifest("logs"), on_demand: false, running: true, memory_bytes: 34603008 },
@@ -75,6 +76,7 @@ describe("Services", () => {
     const desktop = screen.getByRole("region", { name: "Available" });
     expect(within(desktop).getByText("Hermes")).toBeTruthy();
     mocks.catalog = [];
+    menu.items = [];
   });
 
   it("keeps the memory and the served model in the app's settings window", () => {
@@ -110,6 +112,49 @@ describe("Services", () => {
     expect(within(screen.getByTestId("services-dock")).getByRole("button", { name: "Settings of Hermes" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open Hermes's screen" }));
     expect(await screen.findByText("hermes screen")).toBeTruthy();
+    menu.items = [];
+  });
+
+  it("launches a closed app like a system: on the dock, bouncing, then its screen", async () => {
+    menu.items = [{ code: "hermes", id: "hermes", to: "/hermes/main" }];
+    mocks.plugins = [{ code: "hermes", version: "0.2.0", manifest: manifest("hermes"), on_demand: true, running: false }];
+    mocks.openPlugin.mockResolvedValue({ code: "hermes", running: true });
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "Open Hermes" }));
+    // At once on the dock, bouncing while it starts.
+    const docked = within(screen.getByTestId("services-dock")).getByTestId("background-service-hermes");
+    expect(docked.querySelector(".animate-bounce")).toBeTruthy();
+    expect(await screen.findByText("hermes screen", {}, { timeout: 3000 })).toBeTruthy();
+    menu.items = [];
+  });
+
+  it("shows a running app with no screen as a system notification, with settings and close", () => {
+    mocks.plugins = [{ code: "vllm", version: "1.2.0", manifest: manifest("vllm"), on_demand: true, running: true }];
+    mocks.node = {
+      plugin_services: [{ plugin_code: "vllm", id: "vllm", kind: "inference", name: "vLLM", status: "ready" }],
+      config: { model_label: "Qwen3", inference_service: "vllm" },
+    };
+    mount();
+    const notes = screen.getByTestId("services-notifications");
+    expect(within(notes).getByText("serving Qwen3")).toBeTruthy();
+    expect(within(notes).getByRole("button", { name: "Settings of Vllm" })).toBeTruthy();
+    expect(within(notes).getByRole("button", { name: "Close Vllm" })).toBeTruthy();
+    expect(within(screen.getByTestId("services-dock")).queryByTestId("background-service-vllm")).toBeNull();
+    mocks.node = { plugin_services: [], config: null };
+  });
+
+  it("opens an operating-system-like menu on a right click", async () => {
+    menu.items = [{ code: "goose", id: "goose", to: "/goose/main" }];
+    mocks.plugins = [{ code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true, lifecycle_default: "on_demand" }];
+    mocks.setPluginLifecycle.mockResolvedValue({});
+    mount();
+    fireEvent.contextMenu(screen.getByTestId("background-service-goose"), { clientX: 100, clientY: 100 });
+    const contextMenu = screen.getByTestId("app-context-menu");
+    const labels = within(contextMenu).getAllByRole("menuitem").map((item) => item.textContent);
+    expect(labels).toEqual(["Go to screen", "Settings…", "Keep always on", "Close"]);
+    fireEvent.click(within(contextMenu).getByRole("menuitem", { name: "Keep always on" }));
+    await waitFor(() => expect(mocks.setPluginLifecycle).toHaveBeenCalledWith("goose", "resident"));
+    expect(screen.queryByTestId("app-context-menu")).toBeNull();
     menu.items = [];
   });
 

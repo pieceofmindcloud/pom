@@ -1344,7 +1344,7 @@ export function Plugins() {
       <FullBleedHeader
         title={t("plugins.title")}
         subtitle={readOnly ? t("demo.readOnly") : t("plugins.subtitle")}
-        actions={readOnly ? undefined : (
+        actions={readOnly || tab !== "catalog" ? undefined : (
           <Button
             variant="outline"
             loading={updatesChecking}

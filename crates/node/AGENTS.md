@@ -416,7 +416,9 @@ to plugins at `GET /api/plugin-host/plugins`. `PluginManager::send_plugin_messag
 (`POST /api/plugin-host/message`) delivers `plugin.message` to one running
 target only, natively and in the queue with that `target`; `plugin_notice`
 (`POST /api/plugin-host/notify`) queues a `plugin.notice` the interface shows
-in the bell. Each install state keeps the release's `sandbox` declaration
+in the bell. `plugin_host_api::routes` is every `host_api` route; on Unix
+`main` also serves it on `<project root>/.pom-host-api.sock` (0600,
+`spawn_unix_server`), named to plugins as `host_api.socket_path`. Each install state keeps the release's `sandbox` declaration
 (`PluginStatus.sandbox`, the running artifact's: a development build wins);
 `sandbox_enforced` stays `false` until `pom-plugin-host` applies it. `PluginManager::acp_agents` merges the live `acp_agent`
 services with the ones saved under `plugin_acp_agents:<code>` for stopped

@@ -516,7 +516,8 @@ operation:
  "gateway": {"openai_base_url": "http://127.0.0.1:8080/v1", "api_key": "sk-..."},
  "workspace_root": "/data/workspace",
  "model_dirs": ["/models/full", "/mnt/disk2/models"],
- "host_api": {"base_url": "http://127.0.0.1:8080/api/plugin-host", "token": "<hex>"},
+ "host_api": {"base_url": "http://127.0.0.1:8080/api/plugin-host", "token": "<hex>",
+              "socket_path": "/data/.pom-host-api.sock"},
  "preferences": {"features": {"capture_headers": false}, "storage_directory": null}}
 ```
 
@@ -703,6 +704,16 @@ secret in `host.configure`, new at every start of the node, and sends it in
 `x-pom-plugin-host-token` to the loopback routes under `/api/plugin-host/`
 (`RouteScope::HandlerAuth`, outside the session gate). The token names the
 plugin, so a plugin only ever speaks as itself.
+
+On Unix the node also serves the same routes (`plugin_host_api::routes`) on a
+Unix socket, `host_api.socket_path` in `host.configure`: `<project
+root>/.pom-host-api.sock`, or `pom-host-api-<hash of the root>.sock` in the
+temporary directory when that path is longer than 100 bytes (a socket path is
+limited to about 107). Mode 0600, the same token, `http://localhost` as the
+host; absent when the node could not bind it. It is the transport for a
+plugin whose sandbox gives it its own network namespace, which has no route to
+the node's loopback while a socket on a path crosses namespaces; a plugin that
+reaches loopback may keep using `base_url`.
 
 | Route | Answer |
 |---|---|

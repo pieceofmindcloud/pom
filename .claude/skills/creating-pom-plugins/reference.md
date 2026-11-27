@@ -160,7 +160,10 @@ Rules the existing plugins follow:
 ## 5. Calling back into the node (`host_api`)
 
 From `host.configure.host_api`; send `x-pom-plugin-host-token: <token>` to
-loopback only. The token names the plugin, new at every node start.
+loopback only. The token names the plugin, new at every node start. On Unix,
+`host_api.socket_path` (when present) serves the same routes over a Unix
+socket (`http://localhost/api/plugin-host/...`); prefer it when present, it is
+the only way to the node from a sandbox with its own network namespace.
 
 | Route | Answer |
 |---|---|

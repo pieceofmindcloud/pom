@@ -7,8 +7,14 @@
 //! of statement. `host.configure` hands each plugin host its own secret:
 //!
 //! ```json
-//! {"host_api": {"base_url": "http://127.0.0.1:8080/api/plugin-host", "token": "<hex>"}}
+//! {"host_api": {"base_url": "http://127.0.0.1:8080/api/plugin-host", "token": "<hex>",
+//!               "socket_path": "/data/.pom-host-api.sock"}}
 //! ```
+//!
+//! `socket_path` (Unix only, absent when the node could not bind it) serves
+//! the same routes over a Unix socket: a plugin whose sandbox gives it its own
+//! network namespace cannot reach the node's loopback, but a socket on a path
+//! crosses namespaces. Requests on it use `http://localhost` and the same token.
 //!
 //! Every route takes it in `x-pom-plugin-host-token`. The token names the
 //! plugin, so a plugin only ever speaks as itself: a peer call reaches the
@@ -70,6 +76,142 @@ const MAX_STATEMENT: usize = 1024;
 /// Ghostly's WISP 300 binding statement, with WISP 311's `did` provider.
 const IDENTITY_STATEMENTS: &[&str] =
     &["Ghostly identity proof v1: I control did:{did} and authorize the Ghostly key "];
+
+/// The longest socket path used: `sockaddr_un.sun_path` holds 108 bytes,
+/// NUL included, and some systems hold 104.
+const MAX_SOCKET_PATH: usize = 100;
+
+/// The socket this node serves `host_api` on, once bound.
+static UNIX_SOCKET: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Where the `host_api` socket lives: `<project root>/.pom-host-api.sock`, or,
+/// when that path is too long for a socket, a name in the temporary directory
+/// derived from the project root (two nodes of one machine have distinct
+/// roots, so distinct sockets).
+pub(crate) fn socket_path_for(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let beside = root.join(".pom-host-api.sock");
+    if beside.as_os_str().len() <= MAX_SOCKET_PATH {
+        return Some(beside);
+    }
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(root.as_os_str().as_encoded_bytes());
+    let short =
+        std::env::temp_dir().join(format!("pom-host-api-{}.sock", &hex::encode(digest)[..16]));
+    (short.as_os_str().len() <= MAX_SOCKET_PATH).then_some(short)
+}
+
+/// The bound socket, for `host.configure` (`host_api.socket_path`).
+pub(crate) fn unix_socket() -> Option<&'static std::path::Path> {
+    UNIX_SOCKET.get().map(std::path::PathBuf::as_path)
+}
+
+/// Serves [`routes`] on a Unix socket only the node's user may open (mode
+/// 0600). The token check is the same as on loopback TCP. A socket left by a
+/// previous run is replaced.
+#[cfg(unix)]
+pub(crate) fn spawn_unix_server(
+    state: GatewayState,
+    path: std::path::PathBuf,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::remove_file(&path);
+    let listener = tokio::net::UnixListener::bind(&path)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let _ = UNIX_SOCKET.set(path.clone());
+    let app = routes().with_state(state);
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    tracing::warn!(%error, "host_api socket accept failed");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+            let service = hyper_util::service::TowerToHyperService::new(app.clone());
+            tokio::spawn(async move {
+                let io = hyper_util::rt::TokioIo::new(stream);
+                let _ = hyper_util::server::conn::auto::Builder::new(
+                    hyper_util::rt::TokioExecutor::new(),
+                )
+                .serve_connection(io, service)
+                .await;
+            });
+        }
+    });
+    tracing::info!(socket = %path.display(), "host_api also served on a Unix socket");
+    Ok(())
+}
+
+/// Every `host_api` route, served by the gateway on loopback and, on Unix, by
+/// [`spawn_unix_server`] on the node's socket (the transport a plugin in its
+/// own network namespace reaches the node by).
+pub(crate) fn routes() -> axum::Router<GatewayState> {
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route("/api/plugin-host/node", get(crate::plugin_host_api::node))
+        .route("/api/plugin-host/peers", get(crate::plugin_host_api::peers))
+        .route(
+            "/api/plugin-host/plugins",
+            get(crate::plugin_host_api::plugins),
+        )
+        .route(
+            "/api/plugin-host/peer",
+            post(crate::plugin_host_api::peer_call),
+        )
+        .route("/api/plugin-host/sign", post(crate::plugin_host_api::sign))
+        .route(
+            "/api/plugin-host/message",
+            post(crate::plugin_host_api::message),
+        )
+        .route(
+            "/api/plugin-host/notify",
+            post(crate::plugin_host_api::notify),
+        )
+        .route(
+            "/api/plugin-host/catalog/images",
+            get(crate::plugin_host_api::catalog_images),
+        )
+        .route(
+            "/api/plugin-host/catalog/refresh",
+            post(crate::plugin_host_api::catalog_refresh),
+        )
+        .route(
+            "/api/plugin-host/components",
+            get(crate::plugin_host_api::components),
+        )
+        .route(
+            "/api/plugin-host/image-deployments",
+            get(crate::plugin_host_api::image_deployments),
+        )
+        .route(
+            "/api/plugin-host/image-files",
+            get(crate::plugin_host_api::image_files),
+        )
+        .route(
+            "/api/plugin-host/image-deploy",
+            post(crate::plugin_host_api::image_deploy),
+        )
+        .route(
+            "/api/plugin-host/image-undeploy",
+            post(crate::plugin_host_api::image_undeploy),
+        )
+        .route(
+            "/api/plugin-host/image-job/begin",
+            post(crate::plugin_host_api::image_job_begin),
+        )
+        .route(
+            "/api/plugin-host/image-job/complete",
+            post(crate::plugin_host_api::image_job_complete),
+        )
+        .route(
+            "/api/plugin-host/component/:deploy_id/:component/:op",
+            post(crate::plugin_host_api::component_call).layer(
+                axum::extract::DefaultBodyLimit::max(crate::components::MAX_COMPONENT_BODY),
+            ),
+        )
+}
 
 fn refuse(status: StatusCode, error: &str) -> Response {
     (status, Json(json!({ "error": error }))).into_response()
@@ -732,6 +874,62 @@ mod tests {
             let keys: Vec<&String> = entry.as_object().unwrap().keys().collect();
             assert_eq!(keys, ["code", "lifecycle", "running", "version"]);
         }
+    }
+
+    #[test]
+    fn the_socket_sits_beside_the_node_unless_the_path_is_too_long() {
+        let short = std::path::Path::new("/data");
+        assert_eq!(
+            socket_path_for(short).unwrap(),
+            std::path::Path::new("/data/.pom-host-api.sock")
+        );
+        let long_a = std::path::PathBuf::from(format!("/{}", "a".repeat(120)));
+        let long_b = std::path::PathBuf::from(format!("/{}", "b".repeat(120)));
+        let a = socket_path_for(&long_a).unwrap();
+        assert!(a.starts_with(std::env::temp_dir()), "{}", a.display());
+        assert!(a.as_os_str().len() <= MAX_SOCKET_PATH);
+        assert_eq!(
+            socket_path_for(&long_a),
+            Some(a.clone()),
+            "stable across restarts"
+        );
+        assert_ne!(socket_path_for(&long_b), Some(a), "two nodes, two sockets");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_unix_socket_serves_the_same_routes_with_the_same_token() {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (state, token) = state_with_plugin().await;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("h.sock");
+        std::fs::write(&path, b"stale").unwrap();
+        spawn_unix_server(state, path.clone()).expect("bind over a stale file");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "only the node's user opens it");
+
+        let call = |token: Option<String>| {
+            let path = path.clone();
+            async move {
+                let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+                let header = token
+                    .map(|token| format!("{HOST_API_TOKEN_HEADER}: {token}\r\n"))
+                    .unwrap_or_default();
+                let request = format!(
+                    "GET /api/plugin-host/plugins HTTP/1.1\r\nhost: localhost\r\n{header}connection: close\r\n\r\n"
+                );
+                stream.write_all(request.as_bytes()).await.unwrap();
+                let mut response = String::new();
+                stream.read_to_string(&mut response).await.unwrap();
+                response
+            }
+        };
+        let refused = call(None).await;
+        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+        let answered = call(Some(token)).await;
+        assert!(answered.starts_with("HTTP/1.1 200"), "{answered}");
+        assert!(answered.contains("\"plugins\""), "{answered}");
     }
 
     #[tokio::test]

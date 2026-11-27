@@ -61,67 +61,7 @@ pub(super) fn routes() -> Router<GatewayState> {
             "/api/internal/plugins/:code/peer/:op",
             post(crate::plugin_services::plugin_peer_call),
         )
-        .route("/api/plugin-host/node", get(crate::plugin_host_api::node))
-        .route("/api/plugin-host/peers", get(crate::plugin_host_api::peers))
-        .route(
-            "/api/plugin-host/plugins",
-            get(crate::plugin_host_api::plugins),
-        )
-        .route(
-            "/api/plugin-host/peer",
-            post(crate::plugin_host_api::peer_call),
-        )
-        .route("/api/plugin-host/sign", post(crate::plugin_host_api::sign))
-        .route(
-            "/api/plugin-host/message",
-            post(crate::plugin_host_api::message),
-        )
-        .route(
-            "/api/plugin-host/notify",
-            post(crate::plugin_host_api::notify),
-        )
-        .route(
-            "/api/plugin-host/catalog/images",
-            get(crate::plugin_host_api::catalog_images),
-        )
-        .route(
-            "/api/plugin-host/catalog/refresh",
-            post(crate::plugin_host_api::catalog_refresh),
-        )
-        .route(
-            "/api/plugin-host/components",
-            get(crate::plugin_host_api::components),
-        )
-        .route(
-            "/api/plugin-host/image-deployments",
-            get(crate::plugin_host_api::image_deployments),
-        )
-        .route(
-            "/api/plugin-host/image-files",
-            get(crate::plugin_host_api::image_files),
-        )
-        .route(
-            "/api/plugin-host/image-deploy",
-            post(crate::plugin_host_api::image_deploy),
-        )
-        .route(
-            "/api/plugin-host/image-undeploy",
-            post(crate::plugin_host_api::image_undeploy),
-        )
-        .route(
-            "/api/plugin-host/image-job/begin",
-            post(crate::plugin_host_api::image_job_begin),
-        )
-        .route(
-            "/api/plugin-host/image-job/complete",
-            post(crate::plugin_host_api::image_job_complete),
-        )
-        .route(
-            "/api/plugin-host/component/:deploy_id/:component/:op",
-            post(crate::plugin_host_api::component_call).layer(
-                axum::extract::DefaultBodyLimit::max(crate::components::MAX_COMPONENT_BODY),
-            ),
-        )
+        .merge(crate::plugin_host_api::routes())
         .route(
             "/api/internal/gpu/yield",
             post(crate::gpu_arbiter::yield_route),

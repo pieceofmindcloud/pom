@@ -1176,10 +1176,12 @@ impl PluginRuntime {
             object.insert("operation".into(), "host.configure".into());
             // The shared context names where the node's API is; the secret is this plugin's own.
             if let Some(base_url) = object.remove("host_api_base_url") {
-                object.insert(
-                    "host_api".into(),
-                    serde_json::json!({"base_url": base_url, "token": self.host_api_token}),
-                );
+                let mut host_api =
+                    serde_json::json!({"base_url": base_url, "token": self.host_api_token});
+                if let Some(socket) = object.remove("host_api_socket") {
+                    host_api["socket_path"] = socket;
+                }
+                object.insert("host_api".into(), host_api);
             }
             let licensed_schema = self
                 .persisted
@@ -4230,8 +4232,9 @@ fn host_context_payload(
     api_key: &str,
     workspace_root: &str,
     model_dirs: &[String],
+    host_api_socket: Option<&str>,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut context = serde_json::json!({
         // The whole-model folders (not the slice folder), so a plugin can
         // store and find model files where POM's catalog reads them.
         "model_dirs": model_dirs,
@@ -4244,7 +4247,11 @@ fn host_context_payload(
             "http://127.0.0.1:{gateway_port}{}",
             crate::plugin_host_api::HOST_API_PREFIX
         ),
-    })
+    });
+    if let Some(socket) = host_api_socket {
+        context["host_api_socket"] = serde_json::Value::String(socket.to_owned());
+    }
+    context
 }
 
 /// The model folders a plugin may store files in: the whole-model folders the
@@ -4271,6 +4278,9 @@ pub(crate) async fn refresh_host_context(
             &key.secret,
             &workspace_root,
             &model_dirs,
+            crate::plugin_host_api::unix_socket()
+                .map(|path| path.to_string_lossy())
+                .as_deref(),
         ))
         .await;
     Ok(())
@@ -7867,7 +7877,7 @@ mod tests {
 
     #[test]
     fn host_context_payload_includes_the_shared_workspace_root() {
-        let context = host_context_payload(8080, "sk-test", "/data/workspace", &[]);
+        let context = host_context_payload(8080, "sk-test", "/data/workspace", &[], None);
         assert_eq!(
             context.get("workspace_root").and_then(Value::as_str),
             Some("/data/workspace")
@@ -7879,9 +7889,17 @@ mod tests {
     }
 
     #[test]
+    fn host_context_names_the_host_api_socket_when_the_node_has_one() {
+        let context = host_context_payload(8080, "sk", "/w", &[], Some("/data/.pom-host-api.sock"));
+        assert_eq!(context["host_api_socket"], "/data/.pom-host-api.sock");
+        let context = host_context_payload(8080, "sk", "/w", &[], None);
+        assert!(context.get("host_api_socket").is_none(), "absent, as before");
+    }
+
+    #[test]
     fn host_context_carries_the_model_dirs() {
         let dirs = vec!["/models/a".to_owned(), "/models/b".to_owned()];
-        let context = host_context_payload(8080, "sk-test", "/data/workspace", &dirs);
+        let context = host_context_payload(8080, "sk-test", "/data/workspace", &dirs, None);
         assert_eq!(
             context["model_dirs"],
             serde_json::json!(["/models/a", "/models/b"])

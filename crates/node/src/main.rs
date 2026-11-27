@@ -1834,6 +1834,20 @@ fn spawn_gateway_companions(gw_state: &GatewayState, database: &Arc<db::PomDb>, 
     crate::windows_firewall::spawn_startup_check(database.clone(), bind_port);
     crate::webui::spawn_network_settings_ratchet(gw_state.clone());
     crate::metering::spawn_refresher(gw_state.clone());
+    #[cfg(unix)]
+    if let Some(socket) =
+        crate::plugin_host_api::socket_path_for(&crate::config::project_root())
+    {
+        if let Err(error) =
+            crate::plugin_host_api::spawn_unix_server(gw_state.clone(), socket.clone())
+        {
+            warn!(
+                %error,
+                socket = %socket.display(),
+                "host_api Unix socket unavailable; plugins use loopback TCP"
+            );
+        }
+    }
     crate::plugins::spawn_host_context(gw_state.clone());
     crate::plugins::spawn_serving_watcher(gw_state.clone());
     crate::plugins::spawn_installed_watcher(gw_state.clone());

@@ -58,6 +58,10 @@ separately). Layout:
 - `gpu-work-metering-live-run.md` - the metering checked on three real nodes
   (CPU, f16 and f8 wires): the two defects it found and the re-executions that
   passed.
+- `2026-11-27-plugin-sandbox-linux-spike.md` - phase 0 of the plugin sandbox
+  on Linux: Landlock + seccomp works unprivileged on the host and in Docker
+  (GPU included); process listing needs a PID namespace, which AppArmor and
+  Docker's seccomp refuse by default; Landlock filters TCP by port only.
 - `pipeline-telemetry.md` - distributed pipeline telemetry: the
   `outside-node` math, the missing second peer in decode and the
   `remote-stream` instrumentation.

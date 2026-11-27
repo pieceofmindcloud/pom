@@ -12,6 +12,8 @@ Spec: `docs/superpowers/specs/2026-11-27-plugin-sandbox-design.md`.
 - Windows: AppContainer start with ACL grants, loopback to the node, CUDA.
 - Output: `docs/reports/2026-12-xx-plugin-sandbox-spikes.md` and the answers
   to the spec's open questions.
+- [x] Linux probe on the host and in Docker, GPU included:
+  `docs/reports/2026-11-27-plugin-sandbox-linux-spike.md`.
 
 ## Phase 1 - contract
 

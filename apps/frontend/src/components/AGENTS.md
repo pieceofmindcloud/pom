@@ -199,8 +199,9 @@ Per-file list:
 - `PuzzleBackdrop.tsx` - the Services desktop's background: the site's hero
   animation (four glowing particle pieces drift in, spiral, lock, light runs
   along the seams, then they drift apart) on a canvas that fills its parent,
-  behind the content, with only the POM pieces. One still frame under reduced
-  motion; paused while the tab is hidden.
+  behind the content, with only the POM pieces, sized by the canvas's smaller
+  side. It plays twice from when it mounts, then rests locked and stops
+  drawing (redrawn on resize); one still frame under reduced motion.
 - `Terminal.tsx` - the panel's one log terminal: lines as strings or
   `{source, time, level, text}`, level tones, follow-the-bottom (`scrollTop`,
   no `scrollTo`), copy of the last lines, empty state from the caller.

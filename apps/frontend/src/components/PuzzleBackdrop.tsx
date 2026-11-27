@@ -1,8 +1,8 @@
 /**
  * The POM puzzle in the night sky: four puzzle pieces made of glowing
  * particles drift in from the corners, spiral toward each other and lock into
- * one piece; light runs along the seams, then they drift apart and the loop
- * starts again. Stars, drifting pixel squares and particle clouds sit around
+ * one piece; light runs along the seams, then they drift apart. It plays
+ * twice, then stays still with the pieces locked together. Stars, drifting pixel squares and particle clouds sit around
  * them. A dependency-free canvas, ported from the site's hero animation
  * (pieceofmind.cloud) without any other mark: only the pieces. It fills its
  * parent and stays behind the content (`pointer-events: none`). Under reduced
@@ -22,7 +22,8 @@ export function PuzzleBackdrop({ className = "" }: { className?: string }) {
     if (!cv || !ctx) return;
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
     const DPR = Math.min(window.devicePixelRatio || 1, 2);
-    const VW = 1600, VH = 1080, S = 230;
+    // A smaller piece than the site's hero, so the desktop keeps its room.
+    const VW = 1600, VH = 1080, S = 150;
     const CX = VW / 2, CY = VH / 2 - 30;
     const COLORS = [[255, 47, 227], [138, 92, 255], [79, 155, 255], [47, 220, 200]];
     // edges: top, right, bottom, left (1 = knob out, -1 = hole, 0 = flat)
@@ -79,22 +80,28 @@ export function PuzzleBackdrop({ className = "" }: { className?: string }) {
     }));
     const squares = Array.from({ length: 14 }, () => ({ x: Math.random() * VW, y: Math.random() * VH, s: 6 + Math.random() * 12, sp: 4 + Math.random() * 10, a: .15 + Math.random() * .3 }));
     const LOOP = 15;
+    // Two plays, then the pieces rest locked (the second play stops at LOCKED).
+    const LOCKED = 8;
+    const END = LOOP + LOCKED;
     const ease = (p: number) => (p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
     const clamp = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
     const seg = (t: number, a: number, b: number) => ease(clamp((t - a) / (b - a)));
     const rgba = (c: number[], a: number) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
 
+    let rested = false;
     const resize = () => {
       const r = cv.getBoundingClientRect();
       cv.width = Math.max(1, Math.round(r.width * DPR));
       cv.height = Math.max(1, Math.round(r.height * DPR));
+      // A resize clears the canvas: the still frame is drawn again.
+      if (rested) draw(END);
     };
     resize();
     const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(resize) : null;
     observer?.observe(cv);
 
     const draw = (time: number) => {
-      const t = reduced ? 8 : time % LOOP;
+      const t = time >= END ? LOCKED : time % LOOP;
       const k = Math.max(cv.width / VW, cv.height / VH);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, cv.width, cv.height);
@@ -112,8 +119,15 @@ export function PuzzleBackdrop({ className = "" }: { className?: string }) {
       const lock = seg(t, 5.1, 5.5) * (1 - seg(t, 5.6, 6.6));
       const apart = seg(t, 12.6, 14.6);
       const fadeIn = seg(t, 0, .9), fadeOut = 1 - seg(t, 13.6, 14.8);
-      const bob = Math.sin(time * 1.1) * 10;
+      const bob = time >= END ? 0 : Math.sin(time * 1.1) * 10;
       ctx.globalCompositeOperation = "lighter";
+      // The sky covers the canvas; the pieces fit its smaller side, so a tall
+      // desktop does not blow them up.
+      const fit = Math.min(cv.width / VW, cv.height / VH) / k;
+      ctx.save();
+      ctx.translate(CX, CY);
+      ctx.scale(fit, fit);
+      ctx.translate(-CX, -CY);
       const halo = gather * fadeOut * (1 - apart * .7);
       if (halo > 0) {
         const hg = ctx.createRadialGradient(CX, CY + bob, 0, CX, CY + bob, S * 2.3);
@@ -170,6 +184,7 @@ export function PuzzleBackdrop({ className = "" }: { className?: string }) {
           ctx.fillRect(px - 22, py - 22, 44, 44);
         }
       }
+      ctx.restore();
       for (const cl of clouds) {
         const x = cl.x + Math.sin(time * .1 + cl.hue * 6) * 30 + cl.sp * Math.sin(time * .05);
         const col = cl.hue > .5 ? [120, 60, 255] : [70, 40, 200];
@@ -188,12 +203,24 @@ export function PuzzleBackdrop({ className = "" }: { className?: string }) {
       ctx.globalCompositeOperation = "source-over";
     };
 
+    // Time counts from when the screen opened, not from the page load.
     let frame = 0;
+    let start: number | null = null;
     const loop = (ms: number) => {
-      if (!document.hidden) draw(ms / 1000);
-      frame = requestAnimationFrame(loop);
+      if (start === null) start = ms;
+      const time = (ms - start) / 1000;
+      if (!document.hidden) draw(time);
+      // Once at rest the frame no longer changes: stop asking for frames.
+      if (time < END) frame = requestAnimationFrame(loop);
+      else {
+        rested = true;
+        draw(END);
+      }
     };
-    if (reduced) draw(8);
+    if (reduced) {
+      rested = true;
+      draw(END);
+    }
     else frame = requestAnimationFrame(loop);
     return () => {
       cancelAnimationFrame(frame);

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { BackgroundServices } from "./BackgroundServices";
@@ -17,6 +17,11 @@ const mocks = vi.hoisted(() => ({
   catalog: [] as unknown[],
 }));
 
+const menu = vi.hoisted(() => ({ items: [] as Array<{ code: string; to: string; id: string }> }));
+vi.mock("../lib/pluginUi", async (original) => {
+  const actual = await original<typeof import("../lib/pluginUi")>();
+  return { ...actual, pluginMenuItems: () => menu.items };
+});
 vi.mock("../lib/api", () => ({
   openPlugin: mocks.openPlugin,
   closePlugin: mocks.closePlugin,
@@ -32,7 +37,10 @@ function mount() {
   return render(
     <LocaleProvider initialLocale="en">
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <BackgroundServices />
+        <Routes>
+          <Route path="/" element={<BackgroundServices />} />
+          <Route path="/hermes/main" element={<p>hermes screen</p>} />
+        </Routes>
       </MemoryRouter>
     </LocaleProvider>,
   );
@@ -84,6 +92,25 @@ describe("Services", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close Vllm" }));
     expect(screen.getByText(/releases that model first/)).toBeTruthy();
     mocks.node = { plugin_services: [], config: null };
+  });
+
+  it("opens a closed app with a click, which moves it to the dock", async () => {
+    mocks.plugins = [{ code: "hermes", version: "0.2.0", manifest: manifest("hermes"), on_demand: true, running: false }];
+    mocks.openPlugin.mockResolvedValue({ code: "hermes", running: true });
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "Open Hermes" }));
+    await waitFor(() => expect(mocks.openPlugin).toHaveBeenCalledWith("hermes"));
+    await waitFor(() => expect(mocks.refetch).toHaveBeenCalled());
+  });
+
+  it("goes to an open app's screen from the dock", async () => {
+    menu.items = [{ code: "hermes", id: "hermes", to: "/hermes/main" }];
+    mocks.plugins = [{ code: "hermes", version: "0.2.0", manifest: manifest("hermes"), on_demand: true, running: true }];
+    mount();
+    expect(within(screen.getByTestId("services-dock")).getByRole("button", { name: "Settings of Hermes" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open Hermes's screen" }));
+    expect(await screen.findByText("hermes screen")).toBeTruthy();
+    menu.items = [];
   });
 
   it("lets the operator drag an available app anywhere on the desktop and keeps it there", () => {

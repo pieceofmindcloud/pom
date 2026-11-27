@@ -1,11 +1,13 @@
-import { Blocks, Cpu, Layers, MemoryStick, Power, X } from "lucide-react";
+import { Blocks, Cpu, Layers, MemoryStick, Power, Settings2, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import clsx from "clsx";
 import { useRef, useState } from "react";
 import { Confirm, Modal } from "../components/Confirm";
 import { Button, Empty } from "../components/ui";
 import { useI18n } from "../i18n/provider";
 import { closePlugin, openPlugin, setPluginLifecycle } from "../lib/api";
-import { pluginAssetUrl, pluginDisplayName, type ActivePluginUi } from "../lib/pluginUi";
+import { pluginAssetUrl, pluginDisplayName, pluginMenuItems, type ActivePluginUi } from "../lib/pluginUi";
+import { useProfile } from "../lib/profile";
 import { useNode, usePluginUi, usePublicPluginCatalog } from "../lib/queries";
 import type { PublicPluginCatalogEntry } from "../lib/pluginCatalog";
 import { useToast } from "../lib/toast";
@@ -16,7 +18,7 @@ type DeskPosition = { x: number; y: number };
 const TILE_W = 96;
 const TILE_H = 96;
 /** Room the dock takes at the bottom: a desktop icon is not dropped under it. */
-const DOCK_SPACE = 120;
+const DOCK_SPACE = 80;
 const POSITIONS_KEY = storageKey("services.desktop");
 
 /** The desktop's first layout: columns from the top-left, like a desktop. */
@@ -62,24 +64,25 @@ function displayName(plugin: ActivePluginUi, locale: string, entry?: PublicPlugi
 }
 
 /** The app icon: the store's icon, else the manifest's `icon_image`, else a glyph on a tile. */
-function AppIcon({ plugin, engine, dim, storeIcon }: { plugin: ActivePluginUi; engine: boolean; dim: boolean; storeIcon?: string | null }) {
+function AppIcon({ plugin, engine, dim, storeIcon, small = false }: { plugin: ActivePluginUi; engine: boolean; dim: boolean; storeIcon?: string | null; small?: boolean }) {
   const [broken, setBroken] = useState(false);
   const own = plugin.manifest.app_icon ?? plugin.manifest.icon_image;
   const image = storeIcon ?? (own ? pluginAssetUrl(plugin.code, own) : null);
   return (
     <span
       className={clsx(
-        "relative flex h-16 w-16 items-center justify-center overflow-hidden rounded-[1.1rem] shadow-[0_6px_16px_rgb(0_0_0/0.25)] ring-1 ring-white/10",
+        "relative flex items-center justify-center overflow-hidden shadow-[0_6px_16px_rgb(0_0_0/0.25)] ring-1 ring-white/10",
+        small ? "h-10 w-10 rounded-[0.7rem]" : "h-16 w-16 rounded-[1.1rem]",
         image && !broken ? "bg-surface" : "bg-gradient-to-br from-iris/80 to-aqua/70 text-white",
         dim && "opacity-80 saturate-50",
       )}
     >
       {image && !broken ? (
-        <img src={image} alt="" className="h-full w-full object-cover" onError={() => setBroken(true)} />
+        <img src={image} alt="" draggable={false} className="pointer-events-none h-full w-full object-cover" onError={() => setBroken(true)} />
       ) : engine ? (
-        <Cpu size={28} />
+        <Cpu size={small ? 18 : 28} />
       ) : (
-        <Blocks size={28} />
+        <Blocks size={small ? 18 : 28} />
       )}
     </span>
   );
@@ -100,6 +103,14 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
   const toast = useToast();
   const query = usePluginUi();
   const node = useNode();
+  const navigate = useNavigate();
+  const { profile } = useProfile();
+  // The app's screen in the POM: the first menu entry its manifest gives.
+  const routeOf = (code: string) => {
+    const items = pluginMenuItems(profile).filter((item) => item.code === code);
+    const first = items[0];
+    return first ? (first.children?.[0]?.to ?? first.to) : null;
+  };
   // The store names and draws the plugins it sells (as the Plugins screen does).
   const catalog = usePublicPluginCatalog();
   const entryOf = (code: string) => catalog.data?.plugins.find((entry) => entry.code === code);
@@ -142,31 +153,59 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
   const justDragged = useRef(false);
   const [dragging, setDragging] = useState<string | null>(null);
 
+  /**
+   * The app's icon. On the dock (open) a click goes to its screen in the POM,
+   * or to its settings when it has none; on the desktop (closed) a click
+   * opens it, and it moves to the dock.
+   */
   const iconButton = (plugin: ActivePluginUi, running: boolean) => {
     const name = nameOf(plugin);
+    const route = routeOf(plugin.code);
     return (
       <button
         type="button"
         disabled={busy === plugin.code}
+        draggable={false}
+        onDragStart={(event) => event.preventDefault()}
         onClick={() => {
           if (justDragged.current) {
             justDragged.current = false;
             return;
           }
-          setSettingsCode(plugin.code);
+          if (!running) act(plugin, true);
+          else if (route) navigate(route);
+          else setSettingsCode(plugin.code);
         }}
-        aria-label={t("backgroundServices.settingsNamed", { name })}
+        aria-label={running ? (route ? t("backgroundServices.goTo", { name }) : t("backgroundServices.settingsNamed", { name })) : t("backgroundServices.openNamed", { name })}
         title={name}
         className={clsx(
-          "relative rounded-[1.1rem] transition-transform duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aqua/70",
-          dragging === plugin.code ? "scale-110" : "hover:-translate-y-1.5 hover:scale-110",
+          "relative transition-transform duration-200 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aqua/70",
+          running ? "rounded-[0.7rem]" : "rounded-[1.1rem]",
+          dragging === plugin.code ? "scale-110" : running ? "hover:-translate-y-1 hover:scale-125" : "hover:-translate-y-1.5 hover:scale-110",
           busy === plugin.code && "animate-pulse",
         )}
       >
-        <AppIcon plugin={plugin} engine={engines.has(plugin.code)} dim={!running} storeIcon={entryOf(plugin.code)?.icon_url} />
+        <AppIcon plugin={plugin} engine={engines.has(plugin.code)} dim={!running} small={running} storeIcon={entryOf(plugin.code)?.icon_url} />
       </button>
     );
   };
+
+  /** The settings gear, shown on hover. */
+  const gear = (plugin: ActivePluginUi, corner: string) => (
+    <button
+      type="button"
+      data-no-drag
+      onClick={() => setSettingsCode(plugin.code)}
+      aria-label={t("backgroundServices.settingsNamed", { name: nameOf(plugin) })}
+      title={t("backgroundServices.settings")}
+      className={clsx(
+        "absolute flex h-5 w-5 items-center justify-center rounded-full border border-white/20 bg-black/70 text-white/80 opacity-0 shadow transition-opacity hover:text-white focus-visible:opacity-100 group-hover:opacity-100",
+        corner,
+      )}
+    >
+      <Settings2 size={11} />
+    </button>
+  );
 
   const label = (name: string) => (
     <span className="w-full truncate text-[0.72rem] font-medium text-white [text-shadow:0_1px_3px_rgb(0_0_0/0.9)]">{name}</span>
@@ -176,8 +215,10 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
   const dockTile = (plugin: ActivePluginUi) => {
     const name = nameOf(plugin);
     return (
-      <li key={plugin.code} data-testid={`background-service-${plugin.code}`} className="group relative flex w-20 flex-col items-center gap-1 text-center">
+      <li key={plugin.code} data-testid={`background-service-${plugin.code}`} className="group relative flex flex-col items-center gap-0.5">
         {iconButton(plugin, true)}
+        {/* An app with no screen opens its settings from the icon itself. */}
+        {routeOf(plugin.code) && gear(plugin, "-right-1.5 -top-1.5")}
         {plugin.on_demand && (
           <button
             type="button"
@@ -185,12 +226,12 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
             onClick={() => setConfirming(plugin)}
             aria-label={t("backgroundServices.closeNamed", { name })}
             title={t("backgroundServices.close")}
-            className="absolute -left-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border border-white/20 bg-black/70 text-white/80 opacity-0 shadow transition-opacity hover:text-rose focus-visible:opacity-100 group-hover:opacity-100"
+            className="absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-white/20 bg-black/70 text-white/80 opacity-0 shadow transition-opacity hover:text-rose focus-visible:opacity-100 group-hover:opacity-100"
           >
             <X size={12} />
           </button>
         )}
-        {label(name)}
+        <span className="sr-only">{name}</span>
         <span className="h-1 w-1 rounded-full bg-white/80" aria-hidden="true" />
       </li>
     );
@@ -240,7 +281,10 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
         style={{ left: pos.x, top: pos.y, width: TILE_W, touchAction: "none" }}
         className={clsx("absolute flex select-none flex-col items-center gap-1.5 text-center", dragging === plugin.code ? "z-20 cursor-grabbing" : "z-10 cursor-grab")}
       >
-        {iconButton(plugin, false)}
+        <span className="group relative">
+          {iconButton(plugin, false)}
+          {gear(plugin, "-right-1.5 -top-1.5")}
+        </span>
         {label(nameOf(plugin))}
       </div>
     );
@@ -267,16 +311,16 @@ export function BackgroundServices({ embedded = false }: { embedded?: boolean } 
               that cannot be closed pinned first, then a divider. */}
           <section
             aria-label={t("backgroundServices.running", { count: open.length })}
-            className="pointer-events-none absolute inset-x-0 bottom-4 z-30 flex justify-center px-4"
+            className="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center px-4"
           >
             <ul
               data-testid="services-dock"
-              className="pointer-events-auto flex max-w-full flex-wrap items-start justify-center gap-x-2.5 gap-y-3 rounded-[1.75rem] border border-white/15 bg-white/[0.07] px-4 pb-2 pt-3 shadow-[0_18px_50px_rgb(0_0_0/0.5)] backdrop-blur-2xl"
+              className="pointer-events-auto flex max-w-full flex-wrap items-end justify-center gap-x-2 gap-y-2 rounded-2xl border border-white/15 bg-white/[0.07] px-2.5 pb-1 pt-2 shadow-[0_18px_50px_rgb(0_0_0/0.5)] backdrop-blur-2xl"
             >
-              {open.length === 0 && <li className="px-6 py-4 text-sm text-white/60">{t("backgroundServices.noneOpen")}</li>}
+              {open.length === 0 && <li className="px-4 py-2 text-xs text-white/60">{t("backgroundServices.noneOpen")}</li>}
               {pinned.map(dockTile)}
               {pinned.length > 0 && closable.length > 0 && (
-                <li aria-hidden="true" data-testid="dock-divider" className="mx-1 w-px self-stretch bg-white/20" />
+                <li aria-hidden="true" data-testid="dock-divider" className="mx-0.5 mb-1.5 h-9 w-px self-end bg-white/20" />
               )}
               {closable.map(dockTile)}
             </ul>

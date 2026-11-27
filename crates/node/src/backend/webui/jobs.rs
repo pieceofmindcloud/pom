@@ -170,6 +170,10 @@ pub struct RuntimeParams {
     pub reasoning_budget: i32,
     #[serde(default = "d_true")]
     pub no_thinking: bool,
+    /// The deployment's own Jinja chat template, in place of the GGUF's
+    /// `tokenizer.chat_template` (llama.cpp engine). `None` keeps the GGUF's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_template: Option<String>,
     /// Disable embedding extraction in llama.cpp context on this peer.
     /// Auto-set for the last peer of a multi-peer pipeline when true.
     #[serde(default)]
@@ -363,6 +367,7 @@ impl Default for RuntimeParams {
             dry_allowed_length: 2,
             dry_penalty_last_n: 1024,
             reasoning_budget: -1,
+            chat_template: None,
             no_thinking: d_true(),
             no_embeddings: false,
             speculative_decoding_enabled: false,
@@ -429,6 +434,7 @@ impl From<&NodeConfig> for RuntimeParams {
             dry_allowed_length: c.dry_allowed_length,
             dry_penalty_last_n: c.dry_penalty_last_n,
             reasoning_budget: c.reasoning_budget,
+            chat_template: c.chat_template.clone(),
             no_thinking: c.no_thinking,
             no_embeddings: c.no_embeddings,
             speculative_decoding_enabled: c.speculative_decoding_enabled,

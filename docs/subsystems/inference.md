@@ -1867,6 +1867,19 @@ reads the template from the GGUF and applies `enable_thinking` and
 markers of another format. The tail ends on EOS or on the end-of-turn token from
 the same GGUF's vocabulary, without sending that marker to the client.
 
+Which renderer runs, in order (`LlmEngine::apply_chat_template` in
+`pom-plugin-llama.cpp`): the deployment's own template
+(`NodeConfig.chat_template`, set in the deployment inspector's chat template
+editor) when there is one; then the explicit renderers (Gemma4, and Inkling,
+whose thinking effort `enable_thinking` does not reach); then llama.cpp's
+built-in list (`llama_chat_apply_template`, which matches a fixed set of
+template shapes and runs no Jinja); and, when that list does not know the
+template, llama.cpp's Jinja engine (`common_chat_templates_apply`, the one
+`llama-server` uses) over the GGUF's own template. The deployment's template
+runs on that Jinja engine too, and the head checks it on a short conversation
+right after the model loads: a template the engine cannot run fails the load
+with the Jinja error and returns the memory, instead of failing the first chat.
+
 `/v1/completions` stays a raw completion and sends `chat_template: false`. That
 explicit flag takes precedence over the server's legacy default, which existed
 for internal calls without metadata. `no_thinking` only controls opening the

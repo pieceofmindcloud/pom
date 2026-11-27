@@ -180,6 +180,10 @@ function RedeployPanel({
       <DeploymentInspector
         value={params}
         onChange={setParams}
+        chatTemplateSource={(() => {
+          const node = row.deployment.nodes.find((n) => n.primary) ?? row.deployment.nodes[0];
+          return node?.source_model_path ? { path: node.source_model_path, nodeId: node.node_id } : null;
+        })()}
         pomDevMode={pomDevMode}
         showHiddenStateDtype={params.hidden_state_dtype != null}
         inferenceService={engine ?? undefined}

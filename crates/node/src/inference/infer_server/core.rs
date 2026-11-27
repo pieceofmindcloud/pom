@@ -1517,6 +1517,7 @@ mod tests {
             dry_allowed_length: 2,
             dry_penalty_last_n: 1024,
             reasoning_budget: -1,
+            chat_template: None,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,

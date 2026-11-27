@@ -672,6 +672,79 @@ pub(super) async fn model_metadata(
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ModelChatTemplateRequest {
+    pub path: String,
+    /// The machine whose catalog holds `path`; absent or this node reads it here.
+    #[serde(default)]
+    pub node_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ModelChatTemplateResponse {
+    /// The GGUF's `tokenizer.chat_template`; `None` when the file has none.
+    pub chat_template: Option<String>,
+}
+
+/// The Jinja chat template of a catalog GGUF, for the deployment inspector's
+/// template editor. Only a file of the catalog is read (`model_metadata_local`
+/// checks it), on the machine that holds it.
+pub(super) async fn model_chat_template(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<ModelChatTemplateRequest>,
+) -> Response {
+    if let Some(target) = req
+        .node_id
+        .as_deref()
+        .filter(|id| *id != state.network.node_id)
+    {
+        let Some(peer) = state
+            .all_peers()
+            .await
+            .into_iter()
+            .find(|p| p.node_id == target)
+        else {
+            return bad_request(format!("peer {target} is not reachable to read the GGUF"));
+        };
+        let forwarded = ModelChatTemplateRequest {
+            path: req.path,
+            node_id: None,
+        };
+        return match state
+            .control_post_json(
+                &peer,
+                "/api/ui/model-chat-template",
+                &forwarded,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+        {
+            Ok(r) => {
+                let status = r.status();
+                match r.json::<serde_json::Value>().await {
+                    Ok(v) => (status, Json(v)).into_response(),
+                    Err(e) => bad_request(format!("invalid peer response: {e}")),
+                }
+            }
+            Err(e) => bad_request(format!("peer did not answer: {e:#}")),
+        };
+    }
+    let model = match model_metadata_local(&state, &req.path).await {
+        Ok(model) => model,
+        Err(error) => return bad_request(error),
+    };
+    let path = std::path::PathBuf::from(&model.path);
+    match tokio::task::spawn_blocking(move || crate::gguf::read_info(&path)).await {
+        Ok(Ok(info)) => Json(ModelChatTemplateResponse {
+            chat_template: info.chat_template,
+        })
+        .into_response(),
+        Ok(Err(e)) => bad_request(format!("could not read the GGUF: {e}")),
+        Err(e) => bad_request(format!("GGUF read failed: {e}")),
+    }
+}
+
 fn catalog_path_error(requested: &std::path::Path, metadata_complete: bool) -> String {
     if !metadata_complete {
         return format!(

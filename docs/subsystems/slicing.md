@@ -655,6 +655,7 @@ from the file name when the slice carries no metadata (see defects below).
 |---|---|
 | `GET /api/ui/models` | local catalog (models + shard_sets + scanned directories) |
 | `POST /api/ui/model-metadata` | reads only the header of the selected whole model and publishes it in the catalog |
+| `POST /api/ui/model-chat-template` | the `tokenizer.chat_template` of a catalog GGUF, for the deployment's chat template editor (forwards to `node_id` when another machine holds the file) |
 | `POST /api/ui/slice/plan` | slicing preview (`plan_by_size`/`plan_equal`) |
 | `POST /api/ui/slice` | runs local slicing (`slice_locally` -> `extract_shard`) |
 | `POST /api/ui/model-layer-options` | prefix cuts accepted by the selected whole GGUF |

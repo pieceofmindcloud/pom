@@ -44,6 +44,7 @@ import { GuideDialog, GuideHelpButton } from "./GuideDialog";
 import { DEPLOY_SETTINGS_GUIDES } from "../guides/deploySettings";
 import { speculationModeOf, speculationPatch, type SpeculationMode } from "../lib/speculation";
 import { SidecarPicker, type SidecarPick } from "./SidecarPicker";
+import { ChatTemplateDialog, type ChatTemplateSource } from "./ChatTemplateDialog";
 import {
   DEFAULT_SAMPLER_SEED,
   reasoningBudgetText,
@@ -382,6 +383,7 @@ export function DeploymentInspector({
   pomDevMode = false,
   inferenceService,
   contextLimit,
+  chatTemplateSource,
 }: {
   /** The model's declared `context_length`: the field refuses an `n_ctx` above it. */
   contextLimit?: number | null;
@@ -410,8 +412,12 @@ export function DeploymentInspector({
     /** Its engine takes a drafter file for this model (`draft_architectures`). */
     takesDraft?: boolean;
   };
+  /** Where the model's GGUF can be read, for the chat template editor's
+   *  "load the GGUF's template". Absent: the editor still edits. */
+  chatTemplateSource?: ChatTemplateSource | null;
 }) {
   const { t } = useI18n();
+  const [chatTemplateOpen, setChatTemplateOpen] = useState(false);
   /*
    * The half-typed text. Without it, erasing "8192" to write "16384"
    * made the field jump to zero on the first erased character, because the
@@ -923,6 +929,30 @@ export function DeploymentInspector({
                 onChange={(event) => set({ reasoning_budget: reasoningBudgetValue(event.target.value) })}
               />
             )}
+          </InspectorRow>
+        )}
+        {!inferenceService && (
+          <InspectorRow label={t("inspector.chatTemplate")} tip={t("deploy.chatTemplateHint")}>
+            <span className="flex min-w-0 items-center justify-end gap-2">
+              <ReadValue>{value.chat_template ? t("chatTemplate.stateCustom") : "GGUF"}</ReadValue>
+              {(!readOnly || value.chat_template) && (
+                <button
+                  type="button"
+                  className="shrink-0 text-[0.65rem] text-iris underline-offset-2 hover:underline"
+                  onClick={() => setChatTemplateOpen(true)}
+                >
+                  {readOnly ? t("chatTemplate.view") : t("chatTemplate.edit")}
+                </button>
+              )}
+            </span>
+            <ChatTemplateDialog
+              open={chatTemplateOpen}
+              value={value.chat_template}
+              source={chatTemplateSource}
+              readOnly={readOnly}
+              onClose={() => setChatTemplateOpen(false)}
+              onApply={(next) => set({ chat_template: next })}
+            />
           </InspectorRow>
         )}
         <InspectorRow

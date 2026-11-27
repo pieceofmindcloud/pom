@@ -36,6 +36,8 @@ export interface WholeModelEntry {
   mmproj_reason: string | null;
   /** Node ids that have this file. */
   holders: string[];
+  /** One holder's copy of the file: where its GGUF metadata can be read. */
+  origin: { node_id: string; path: string } | null;
   /**
    * The repository it was downloaded from, by any holder, with the other parts
    * of a split file: what Download here asks a machine that lacks it to fetch.
@@ -105,12 +107,14 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
           mmproj_candidates: candidates,
           mmproj_reason: model.mmproj_reason ?? null,
           holders: [peer.node_id],
+          origin: model.path ? { node_id: peer.node_id, path: model.path } : null,
           source: sourceOf(peer, model),
         });
         continue;
       }
       if (!found.holders.includes(peer.node_id)) found.holders.push(peer.node_id);
       found.source ??= sourceOf(peer, model);
+      if (!found.origin && model.path) found.origin = { node_id: peer.node_id, path: model.path };
       // One machine reading the header and another failing to is a fact about
       // one file, not about the model: the answer that exists wins over the
       // absent one, and the deploy is planned against the machine that has it.

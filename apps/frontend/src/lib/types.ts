@@ -167,6 +167,8 @@ export interface NodeConfig {
   n_ubatch?: number;
   /** Token limit of a thinking block; -1 (or absent) is no limit. */
   reasoning_budget?: number;
+  /** The deployment's own Jinja chat template; absent or null keeps the GGUF's. */
+  chat_template?: string | null;
   no_thinking: boolean;
   single_peer: boolean;
   no_embeddings: boolean;
@@ -1229,6 +1231,8 @@ export interface DeploymentNode {
   peer_count: number;
   primary: boolean;
   part_sha256?: string | null;
+  /** The file this node loaded, on its own disk (absent on old records). */
+  source_model_path?: string | null;
   tp_rank?: number | null;
   config: RuntimeParams;
 }
@@ -2460,6 +2464,8 @@ export interface RuntimeParams {
   n_ubatch?: number;
   /** Token limit of a thinking block; -1 (or absent) is no limit. */
   reasoning_budget?: number;
+  /** The deployment's own Jinja chat template; absent or null keeps the GGUF's. */
+  chat_template?: string | null;
   no_thinking: boolean;
   no_embeddings: boolean;
   /** Operator's kill-switch: even with every peer capable,

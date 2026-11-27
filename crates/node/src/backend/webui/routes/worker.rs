@@ -34,6 +34,7 @@ pub(super) fn routes() -> Router<GatewayState> {
         .route("/api/ui/plan", post(plan_split_endpoint))
         .route("/api/ui/model-identity", post(model_identity))
         .route("/api/ui/model-metadata", post(model_metadata))
+        .route("/api/ui/model-chat-template", post(model_chat_template))
         .route("/api/ui/model-layer-options", post(model_layer_options))
         .route("/api/ui/slice-ranges", post(slice_ranges))
         .route("/api/ui/slice", post(slice_locally))

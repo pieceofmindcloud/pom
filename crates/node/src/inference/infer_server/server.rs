@@ -808,6 +808,13 @@ pub async fn run(
         return Ok(());
     }
 
+    // The deployment's own chat template, checked here so that one llama.cpp's
+    // Jinja engine cannot run fails the load instead of the first chat.
+    if let Err(error) = engine.set_chat_template_override(cfg.chat_template.clone()) {
+        run_native_cleanup(move || engine.unload()).await?;
+        return Err(error.context("the deployment's chat template does not render"));
+    }
+
     // Only now do we know whether the `nextn` head exists: it depends on the
     // GGUF, not on the configuration. See `Network::mtp_ready`.
     mtp_ready.store(engine.mtp_ready(), std::sync::atomic::Ordering::Relaxed);

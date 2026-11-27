@@ -76,6 +76,7 @@ Only the last peer of the pipeline samples. The order is llama.cpp's: first the 
 | Seed | Where the random generator starts when the deployment loads. The same seed, model and requests in the same order give the same answers. | PoM's default. |
 | Reasoning budget | How many tokens a thinking block may take; at the limit, the end of thinking is forced. | Empty is no limit; 0 closes the block at once. |
 | Disable thinking | The model answers directly, without the preamble between tags. | Turn on when only the answer matters. |
+| Chat template | The Jinja template that turns the conversation into the prompt. **Edit** opens it: **Load the GGUF's template** brings the model's own to start from, and an empty text goes back to it. The engine checks a custom template when the model loads, and a template it cannot run fails the deploy with the reason. llama.cpp engine only. | The model's own (GGUF). Edit it only when the model's template is missing or wrong. |
 
 ## Speculation
 

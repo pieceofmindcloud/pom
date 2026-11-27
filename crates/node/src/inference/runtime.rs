@@ -325,6 +325,10 @@ pub struct NodeConfig {
     /// llama.cpp): upon reaching it, the end tag is forced. -1 means no limit.
     #[serde(default = "default_reasoning_budget")]
     pub reasoning_budget: i32,
+    /// The deployment's own Jinja chat template, in place of the GGUF's
+    /// `tokenizer.chat_template` (llama.cpp engine). `None` keeps the GGUF's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_template: Option<String>,
     pub no_thinking: bool,
     pub single_peer: bool,
     /// Disable embedding extraction in llama.cpp. Set on the last (sampling)
@@ -470,6 +474,7 @@ impl NodeConfig {
             dry_allowed_length: p.dry_allowed_length,
             dry_penalty_last_n: p.dry_penalty_last_n,
             reasoning_budget: p.reasoning_budget,
+            chat_template: p.chat_template.clone(),
             no_thinking: p.no_thinking,
             speculative_decoding_enabled: p.speculative_decoding_enabled,
             speculative_k: p.speculative_k,
@@ -2612,6 +2617,7 @@ mod tests {
             dry_allowed_length: 2,
             dry_penalty_last_n: 1024,
             reasoning_budget: -1,
+            chat_template: None,
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,

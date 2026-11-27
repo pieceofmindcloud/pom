@@ -76,6 +76,7 @@ Só o último peer do pipeline amostra. A ordem é a do llama.cpp: primeiro os c
 | Semente | De onde o gerador aleatório parte quando a implantação carrega. Mesma semente, mesmo modelo e mesmas requisições na mesma ordem dão as mesmas respostas. | O padrão do PoM. |
 | Limite de raciocínio | Quantos tokens um bloco de raciocínio pode ocupar; no limite, o fim do raciocínio é forçado. | Vazio é sem limite; 0 fecha o bloco de imediato. |
 | Desativar thinking | O modelo responde direto, sem o preâmbulo entre tags. | Ligue quando só a resposta importa. |
+| Template de chat | O template Jinja que transforma a conversa no prompt. **Editar** o abre: **Carregar o template do GGUF** traz o do próprio modelo como ponto de partida, e um texto vazio volta a ele. O motor verifica um template personalizado ao carregar o modelo, e um template que ele não consegue rodar faz a implantação falhar com o motivo. Só no motor llama.cpp. | O do próprio modelo (GGUF). Edite só quando o template do modelo faltar ou estiver errado. |
 
 ## Especulação
 

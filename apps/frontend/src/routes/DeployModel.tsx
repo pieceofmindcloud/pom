@@ -1708,6 +1708,10 @@ export function DeployModel() {
               value={eff}
               onChange={setParams}
               contextLimit={wholes.find((w) => w.name === chosen)?.context_length ?? null}
+              chatTemplateSource={(() => {
+                const origin = wholes.find((w) => w.name === chosen)?.origin;
+                return origin ? { path: origin.path, nodeId: origin.node_id } : null;
+              })()}
               inferenceService={service ? { name: service.name, settings: service.settings, pomSettings: service.pomSettings, takesDraft } : undefined}
               capabilities={p?.capabilities}
               cacheTypes={{

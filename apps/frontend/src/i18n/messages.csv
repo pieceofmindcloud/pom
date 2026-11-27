@@ -3688,3 +3688,18 @@ wizard.welcomeEyebrow,A calmer way to start,Um começo mais tranquilo
 wizard.welcomeSubtitle,Your AI. Your infrastructure. Your network. Set up a capable local network in a few clear steps.,Sua IA. Sua infraestrutura. Sua rede. Configure uma rede local capaz em poucos passos claros.
 wizard.welcomeTitle,Piece of Mind,Piece of Mind
 wizard.whenIdle,Only when this computer is idle,Somente quando o computador estiver ocioso
+chatTemplate.title,Chat template (Jinja),Template de chat (Jinja)
+chatTemplate.hint,"Empty keeps the model's own template, read from the GGUF (tokenizer.chat_template). A text here replaces it for this deployment and runs on llama.cpp's Jinja engine, the one llama-server uses. The engine checks it when the model loads: a template it cannot run fails the deploy with the reason.","Vazio mantém o template do próprio modelo, lido do GGUF (tokenizer.chat_template). Um texto aqui o substitui nesta implantação e roda no motor Jinja do llama.cpp, o mesmo do llama-server. O motor o verifica ao carregar o modelo: um template que ele não consegue rodar faz a implantação falhar com o motivo."
+chatTemplate.loadGguf,Load the GGUF's template,Carregar o template do GGUF
+chatTemplate.useGguf,Use the GGUF's template,Usar o template do GGUF
+chatTemplate.apply,Apply,Aplicar
+chatTemplate.placeholder,Empty: the GGUF's template,Vazio: o template do GGUF
+chatTemplate.stateGguf,The model's own template (GGUF),O template do próprio modelo (GGUF)
+chatTemplate.stateCustom,This deployment's template,O template desta implantação
+chatTemplate.ggufNone,This GGUF has no chat template,Este GGUF não tem template de chat
+chatTemplate.ggufFailed,Could not read the GGUF's template,Não foi possível ler o template do GGUF
+chatTemplate.ggufUnavailable,No machine with this model's file was found to read its template,Nenhuma máquina com o arquivo deste modelo foi encontrada para ler o template
+chatTemplate.edit,Edit,Editar
+chatTemplate.view,View,Ver
+inspector.chatTemplate,Chat template,Template de chat
+deploy.chatTemplateHint,"The Jinja template that turns the conversation into the prompt. By default the model's own (GGUF); edit it only when the model's template is missing or wrong.","O template Jinja que transforma a conversa no prompt. Por padrão é o do próprio modelo (GGUF); edite só quando o template do modelo faltar ou estiver errado."

@@ -926,6 +926,14 @@ Key logic carriers:
   persisted on every move (`writePositions`).
 ## Deploy-time views and inspectors
 
+- `ChatTemplateDialog.tsx` - the deployment's Jinja chat template editor
+  (`RuntimeParams.chat_template`), opened from the inspector's "Chat
+  template" row (llama.cpp engine only). Empty keeps the GGUF's template;
+  "Load the GGUF's template" reads it through `POST /api/ui/model-chat-template`
+  from the machine named by the inspector's `chatTemplateSource` (the deploy
+  screen passes the chosen model's `WholeModelEntry.origin`, the redeploy the
+  primary node's `source_model_path`). Read-only in the version views.
+
 - `DeployNetworkCanvas.tsx` - in a prefill/decode split (a whole model on
   several machines, each row with its `inference_role`), the prefill
   machines are a stage of their own before the decode ones (`stagesOf`,

@@ -54,6 +54,8 @@ metadata="${output}/__REPO__-${platform}.metadata.json"
 public_manifest="${output}/pom-plugin-${platform}.json"
 preferences="$(jq -c '.preferences' "$root/release/manifest.json")" || die 'release manifest preferences are invalid'
 feature_set="$(jq -c '.feature_set' "$root/release/manifest.json")" || die 'release manifest feature set is invalid'
+# null for a legacy plugin, which runs without a sandbox.
+sandbox="$(jq -c '.sandbox' "$root/release/manifest.json")" || die 'release manifest sandbox is invalid'
 cat > "$metadata" <<JSON
 {
   "plugin_code": "${plugin_code}",
@@ -65,7 +67,8 @@ cat > "$metadata" <<JSON
   "size": ${size},
   "artifact": "$(basename "$artifact")",
   "feature_set": ${feature_set},
-  "preferences": ${preferences}
+  "preferences": ${preferences},
+  "sandbox": ${sandbox}
 }
 JSON
 jq -n \

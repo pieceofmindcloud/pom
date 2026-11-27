@@ -14,7 +14,7 @@ import clsx from "clsx";
 import { useRef, useState } from "react";
 import { Empty } from "../components/ui";
 import { PuzzleBackdrop } from "../components/PuzzleBackdrop";
-import { AppIcon } from "../components/pieces/shared";
+import { AppIcon, formatMemory } from "../components/pieces/shared";
 import { usePieces } from "../components/pieces/PiecesProvider";
 import { useI18n } from "../i18n/provider";
 import { storageKey } from "../lib/brand";
@@ -178,11 +178,21 @@ export function Pieces() {
                   <AppIcon plugin={plugin} engine={engines.has(plugin.code)} dim={false} small storeIcon={entryOf(plugin.code)?.icon_url} />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold">{nameOf(plugin)}</div>
-                    <div className="truncate text-xs text-white/60">
-                      {serving === plugin.code && servedModel
-                        ? t("backgroundServices.serving", { model: servedModel })
-                        : t("backgroundServices.runningNow")}
-                    </div>
+                    {serving === plugin.code && servedModel && (
+                      <div className="truncate text-xs text-white/60">{t("backgroundServices.serving", { model: servedModel })}</div>
+                    )}
+                    {plugin.memory_bytes != null ? (
+                      <span
+                        data-testid={`service-memory-${plugin.code}`}
+                        className="mt-0.5 inline-flex rounded-full border border-white/15 bg-white/10 px-1.5 py-px text-[0.68rem] font-medium tabular-nums text-white/80"
+                      >
+                        {t("backgroundServices.ramUsed", { memory: formatMemory(plugin.memory_bytes) })}
+                      </span>
+                    ) : (
+                      !(serving === plugin.code && servedModel) && (
+                        <div className="truncate text-xs text-white/60">{t("backgroundServices.runningNow")}</div>
+                      )
+                    )}
                   </div>
                   <button
                     type="button"

@@ -38,6 +38,7 @@ key,en,pt-BR
 "backgroundServices.openNamed","Open {name}","Abrir {name}"
 "backgroundServices.running","{count, plural, =0 {Open} one {Open (#)} other {Open (#)}}","{count, plural, =0 {Abertos} one {Abertos (#)} other {Abertos (#)}}"
 "backgroundServices.runningNow","Running","Rodando"
+"backgroundServices.ramUsed","{memory} RAM","{memory} de RAM"
 "backgroundServices.serving","serving {model}","servindo {model}"
 "backgroundServices.settings","Settings","Configurações"
 "backgroundServices.settingsNamed","Settings of {name}","Configurações de {name}"

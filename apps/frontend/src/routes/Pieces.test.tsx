@@ -134,7 +134,7 @@ describe("Services", () => {
   });
 
   it("shows a running app with no screen as a system notification, with settings and close", () => {
-    mocks.plugins = [{ code: "vllm", version: "1.2.0", manifest: manifest("vllm"), on_demand: true, running: true }];
+    mocks.plugins = [{ code: "vllm", version: "1.2.0", manifest: manifest("vllm"), on_demand: true, running: true, memory_bytes: 3 * 1024 ** 3 }];
     mocks.node = {
       plugin_services: [{ plugin_code: "vllm", id: "vllm", kind: "inference", name: "vLLM", status: "ready" }],
       config: { model_label: "Qwen3", inference_service: "vllm" },
@@ -142,6 +142,7 @@ describe("Services", () => {
     mount();
     const notes = screen.getByTestId("services-notifications");
     expect(within(notes).getByText("serving Qwen3")).toBeTruthy();
+    expect(within(notes).getByTestId("service-memory-vllm").textContent).toBe("3.0 GB RAM");
     expect(within(notes).getByRole("button", { name: "Settings of Vllm" })).toBeTruthy();
     expect(within(notes).getByRole("button", { name: "Close Vllm" })).toBeTruthy();
     expect(within(screen.getByTestId("services-dock")).queryByTestId("background-service-vllm")).toBeNull();

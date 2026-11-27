@@ -94,7 +94,7 @@ Two environments:
   plugin a loopback port range for its servers and grants it plus the
   gateway port; `internet` is an explicit, louder permission because it also
   reaches the other loopback services.
-- Next Linux step: the vLLM plugin end to end under the sandbox.
+- Next Linux step: the vLLM engine under the sandbox (section below).
 
 ## PID namespace as the extra layer
 
@@ -134,3 +134,60 @@ What this means:
   default) get the layer with no extra step on the host.
 - The panel shows the level each plugin got: `baseline` or `baseline +
   pid namespace`.
+
+## The vLLM engine under the sandbox
+
+The engine the vLLM plugin starts (`bin/server` of its runtime, the command
+of `pom-plugin-vllm/src/launch.rs`: `--host 127.0.0.1 --port <port>`, the
+plugin's environment) was run under the spike with `Qwen/Qwen3-0.6B`, the
+plugin home read-write, the runtime and the model read-only, and the GPU
+grant. The plugin host itself was not wrapped: that needs the node to start
+it through the sandbox, which is phase 2 code.
+
+| Run | Sandbox | Result |
+|---|---|---|
+| 1 GPU, container | baseline, connect only to the API port | refused: `torch.distributed` binds an ephemeral loopback port (`Cannot resolve 127.0.0.1 to a (local) address`) |
+| 1 GPU, container | baseline + bind rule for port 0 | **works**: healthy in 175 s, completion answered |
+| TP=2, container | baseline + bind port 0 | refused: gloo's ranks connect to each other on ephemeral ports (`connect: Permission denied`) |
+| TP=2, container | baseline + `VLLM_PORT=4300` + ports 4300-4339 granted | refused the same way: `VLLM_PORT` does not cover gloo's pair sockets, which have no port range setting |
+| TP=2, container | baseline with connect unrestricted (`internet`) | **works**, healthy in 185 s |
+| TP=2, host | user + PID + **network** namespace + baseline | **works**, healthy in 180 s; when the test ended the kernel ended every process of the namespace and both GPUs went back to idle memory |
+
+Findings:
+
+6. **A port policy cannot run multi-process engines.** Ranks that talk over
+   ephemeral loopback ports need connect to any port, which under Landlock is
+   the same permission as the internet and the other plugins' loopback
+   servers. A single-GPU engine works with the port-0 bind rule.
+7. **A network namespace is the right shape for `network: loopback`.** The
+   plugin gets a loopback of its own: its ranks and servers talk freely on
+   it, the internet is unreachable (`Network is unreachable`), and the
+   host's loopback servers - the node's and the other plugins' - are not
+   there at all. The node is then reached through a Unix socket on a path
+   (path sockets cross network namespaces; abstract ones do not), and the
+   node's proxy reaches the plugin's servers through a Unix socket the host
+   forwards into the namespace. It needs the user namespace, so it belongs
+   to the extra layer.
+8. **The plugin's temporary directory must have a short path.** vLLM puts
+   ZeroMQ `ipc://` sockets in `TMPDIR`, and a Unix socket path is limited to
+   107 bytes; a deep plugin home broke the engine.
+9. **`/dev/shm` is shared in the baseline.** vLLM's tensor-parallel
+   broadcast needs it, and Landlock cannot split it per plugin, so on the
+   baseline any plugin can read another's shared memory files. The mount
+   namespace of the extra layer gives each plugin its own tmpfs there.
+
+Updated recommendation:
+
+- Baseline (Landlock + seccomp, no namespaces): `network: loopback` is the
+  gateway port plus a bind rule for port 0; a plugin whose engine runs
+  several processes over TCP (vLLM with more than one GPU, likely Strata and
+  others) must declare `internet`, which the panel shows as the wider
+  permission it is. `/dev/shm` stays shared and the panel says so.
+- Extra layer (namespaces allowed): each plugin in its own network
+  namespace; `loopback` means its private loopback plus the node over a Unix
+  socket, `internet` means no network namespace. A private `/dev/shm` and
+  `/tmp` in the mount namespace.
+- `host_api` and the plugin upstream proxy gain a Unix socket transport
+  (phase 1), so the same plugin code runs on both levels.
+- The plugin's tmp is a short path (`<data dir>/t/<code>` or a short
+  directory under `/dev/shm` of the plugin's own mount namespace).

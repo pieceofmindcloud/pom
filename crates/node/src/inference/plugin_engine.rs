@@ -470,6 +470,53 @@ async fn query(code: &str, operation: &str, payload: Value) -> Option<Value> {
     PLUGINS.get()?.query_audit(code, operation, payload).await
 }
 
+/// The plugin engine's own last log lines, for a failed load's
+/// `EngineFailure`: the engine runs in the plugin's process, so the node
+/// asks it - `rpc.logs` (`{service, lines}` -> `{lines}`), else the `log` its
+/// `rpc.status` returns (engine plugins released before `rpc.logs`). Asked
+/// as an admin: the node itself reads it, for the operator's screens.
+pub(crate) async fn engine_log_tail(code: &str, lines: usize) -> Vec<String> {
+    let strings = |value: Option<&Value>| -> Option<Vec<String>> {
+        let list: Vec<String> = value?
+            .as_array()?
+            .iter()
+            .filter_map(|line| line.as_str().map(str::to_owned))
+            .collect();
+        let skip = list.len().saturating_sub(lines);
+        Some(list[skip..].to_vec())
+    };
+    let ask = |op: &'static str| {
+        query(
+            code,
+            op,
+            json!({ "params": { "service": code, "lines": lines }, "profile": "admin" }),
+        )
+    };
+    if let Some(found) = ask("rpc.logs").await.and_then(|reply| strings(reply.get("lines"))) {
+        return found;
+    }
+    ask("rpc.status")
+        .await
+        .and_then(|status| strings(status.get("log")))
+        .unwrap_or_default()
+}
+
+/// The line of an engine log that says what went wrong: the last one that
+/// reads as an error (a Python exception, an `error:` line, a CUDA failure).
+pub(crate) fn telling_line(lines: &[String]) -> Option<&str> {
+    const MARKS: [&str; 7] = ["error", "exception", "traceback", "fatal", "panic", "out of memory", "failed"];
+    lines
+        .iter()
+        .rev()
+        .map(|line| line.trim())
+        .find(|line| {
+            let lower = line.to_ascii_lowercase();
+            !line.is_empty()
+                && !lower.starts_with("traceback (most recent call last)")
+                && MARKS.iter().any(|mark| lower.contains(mark))
+        })
+}
+
 /// Runs one generation of a plugin-engine deployment on this node, until the
 /// runtime moves to another generation (`stop_rx`).
 #[allow(clippy::too_many_arguments)]
@@ -2167,6 +2214,25 @@ mod tests {
 
     /// A deployment on one GPU of a two-GPU machine hands the engine that GPU
     /// alone, in both lists; no choice keeps every GPU.
+    #[test]
+    fn the_telling_line_is_the_last_error_of_the_log() {
+        let lines: Vec<String> = [
+            "INFO loading weights",
+            "Traceback (most recent call last):",
+            "  File \"vllm/worker.py\", line 10, in load",
+            "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB",
+            "INFO shutting down",
+        ]
+        .iter()
+        .map(|line| line.to_string())
+        .collect();
+        assert_eq!(
+            telling_line(&lines),
+            Some("torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB")
+        );
+        assert_eq!(telling_line(&["INFO ok".to_string()]), None);
+    }
+
     #[test]
     fn the_engine_receives_only_the_deployments_gpus() {
         let all = (

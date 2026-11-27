@@ -1861,17 +1861,31 @@ impl NodeRuntime {
                         capacity_net.set_runtime_capacity_for_generation(generation, None);
                         let _ = capacity_net.announce(None).await;
                         append_log(port, &format!("stopped with an error: {e}"));
-                        let log_tail = crate::engine_log::tail(crate::engine_log::TAIL_LINES);
+                        // An in-process engine logged into this process; a
+                        // plugin engine is asked for its own log.
+                        let log_tail = match &cfg.inference_service {
+                            Some(code) => {
+                                crate::plugin_engine::engine_log_tail(
+                                    code,
+                                    crate::engine_log::TAIL_LINES,
+                                )
+                                .await
+                            }
+                            None => crate::engine_log::tail(crate::engine_log::TAIL_LINES),
+                        };
                         for line in &log_tail {
                             append_log(port, &format!("engine: {line}"));
                         }
+                        // "the engine stopped (exit status: 1)" says nothing:
+                        // the line of the log that reads as the error does.
+                        let mut message = format!("{e:#}");
+                        if let Some(line) = crate::plugin_engine::telling_line(&log_tail) {
+                            if !message.contains(line) {
+                                message = format!("{message}: {line}");
+                            }
+                        }
                         status
-                            .set_failure(EngineFailure::new(
-                                &cfg,
-                                format!("{e:#}"),
-                                log_tail,
-                                restarts + 1,
-                            ))
+                            .set_failure(EngineFailure::new(&cfg, message, log_tail, restarts + 1))
                             .await;
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {

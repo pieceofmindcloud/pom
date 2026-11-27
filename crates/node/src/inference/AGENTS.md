@@ -1176,7 +1176,10 @@ reason that only shows up in the error of a tunnel that also failed.
   server died in a loop.
 - `EngineFailure` / `StatusWriter::set_failure` - the generic reason of a failed load
   (engine, message, attempts, `log_tail`), set on each failed attempt, cleared by `set_ready`
-  and by a new `RuntimeStatus`. The engine lines are also appended to the port's log.
+  and by a new `RuntimeStatus`. The engine lines are also appended to the port's log. For a
+  plugin engine the lines come from the plugin (`plugin_engine::engine_log_tail`: `rpc.logs`,
+  else `rpc.status`'s `log`) and `plugin_engine::telling_line` appends the log's last error
+  line to the message.
 - `log_file_path` / `append_log` - `<project_root>/infer_server_<port>.log`,
   one per port, pointed to by `RuntimeStatus.log_path` (`set_log`, called at the supervisor's
   startup). It carries the server's lifecycle (start, attempt, reason of the fall, model

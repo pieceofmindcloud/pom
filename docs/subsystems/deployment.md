@@ -1153,7 +1153,11 @@ callbacks feed a ring in memory and `<project_root>/engine-last-load.log`,
 which the start after a native crash reads (the abort message is the last
 line). Warnings and errors also go to `tracing` (target `engine`), so the
 cluster console (core, no plugin) carries them when collection is on. A plugin engine runs out of
-process and its failure carries only the error it returned. The failure
+process: the supervisor asks it for its own last lines
+(`plugin_engine::engine_log_tail`: `rpc.logs`, else the `log` of
+`rpc.status`), and `plugin_engine::telling_line` appends the last line that
+reads as an error (a Python exception, a CUDA failure) to the message, so
+"the engine stopped (exit status: 1)" carries its cause. The failure
 travels in the node's status (`/api/ui/node`, relayed by `/api/ui/cluster`),
 so an admin sees every machine's reason on its card with no plugin: one line
 with Details, which opens the message and the engine log.

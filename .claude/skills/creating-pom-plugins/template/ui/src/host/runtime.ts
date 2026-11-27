@@ -108,9 +108,24 @@ type HostLoader = {
   hide: () => Promise<NotificationResponse>;
 };
 
+/**
+ * The POM's log terminal (`components.Terminal`, host version 9): the one the
+ * cluster console and the Logs screen draw. Lines are strings or records; it
+ * follows the end and copies on its own. Draw any engine or service output
+ * with it instead of a terminal of your own.
+ */
+export type HostTerminal = ComponentType<{
+  lines: Array<string | { source?: string; time?: string; level?: string; text: string }>;
+  loading?: boolean;
+  empty?: { title: string; hint?: string };
+  compact?: boolean;
+  className?: string;
+}>;
+
 type PomHost = {
   version?: number;
   ui: HostUi;
+  components?: { Terminal?: HostTerminal };
   format: { bytes: (value: number | null | undefined) => string };
   hooks: { useI18n: I18nHook };
   api?: { get: <T>(path: string) => Promise<T> };
@@ -134,6 +149,11 @@ export function hostVersion(): number {
 }
 
 /** The POM's own components, so the screen looks like the rest of the panel. */
+/** The POM's log terminal, or `null` on a host older than version 9 (draw a plain block then). */
+export function hostTerminal(): HostTerminal | null {
+  return maybeHost()?.components?.Terminal ?? null;
+}
+
 export function ui(): HostUi {
   return host().ui;
 }

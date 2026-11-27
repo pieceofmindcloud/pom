@@ -81,6 +81,12 @@ def main():
     for answer in (query("engine.status"), query("host.services"),
                    query("rpc.status", params=None, profile="admin", node_id="n")):
         check(token not in json.dumps(answer), "no secret in a status or service")
+    services = query("host.services").get("services", [])
+    check(bool(services) and services[0].get("logs") is True, "host.services declares logs: true")
+    log = query("rpc.logs", params={"service": services[0]["id"] if services else "", "lines": 50},
+                profile="admin", node_id="n")
+    check(isinstance(log.get("lines"), list) and log["lines"], "rpc.logs returns the engine's lines")
+    check(token not in json.dumps(log), "no secret in rpc.logs")
 
     connection = http.client.HTTPConnection("127.0.0.1", upstream["port"], timeout=args.timeout)
     started = time.time()

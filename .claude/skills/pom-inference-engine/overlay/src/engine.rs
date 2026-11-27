@@ -250,6 +250,8 @@ impl Snapshot {
             "detail": detail.map(|text| text.chars().take(190).collect::<String>()),
             "architectures": launch::ARCHITECTURES,
             "settings": crate::settings::schema(),
+            // The POM's Logs screen gives this engine a tab, read through `rpc.logs`.
+            "logs": true,
         });
         if launch::STAGES {
             service["stages"] = json!(true);

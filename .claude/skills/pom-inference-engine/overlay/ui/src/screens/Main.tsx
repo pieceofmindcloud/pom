@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { rpc, ui, usePluginI18n } from "../host/runtime";
+import { hostTerminal, rpc, ui, usePluginI18n } from "../host/runtime";
 import { useScreenReady } from "../host/ready";
 
 type EngineStatus = {
@@ -71,14 +71,28 @@ export function Main() {
             </dl>
             {status.detail ? <p className="pb-detail">{status.detail}</p> : null}
           </Panel>
-          {status.log ? (
-            <Panel>
-              <PanelHeader title={t("main.log")} />
-              <pre className="pb-log">{status.log.join("\n") || t("main.none")}</pre>
-            </Panel>
-          ) : null}
+          {status.log ? <EngineLog lines={status.log} /> : null}
         </>
       )}
     </div>
+  );
+}
+
+/** The engine's output on the POM's terminal (host 9), or a plain block on an older POM. */
+function EngineLog({ lines }: { lines: string[] }) {
+  const { t } = usePluginI18n();
+  const { Panel, PanelHeader } = ui();
+  const Terminal = hostTerminal();
+  return (
+    <Panel className="pb-log-panel">
+      <PanelHeader title={t("main.log")} />
+      {Terminal ? (
+        <div className="pb-term">
+          <Terminal lines={lines} empty={{ title: t("main.none") }} />
+        </div>
+      ) : (
+        <pre className="pb-log">{lines.join("\n") || t("main.none")}</pre>
+      )}
+    </Panel>
   );
 }

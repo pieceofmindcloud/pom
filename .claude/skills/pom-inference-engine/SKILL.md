@@ -58,8 +58,9 @@ If it is not a fork, ask for the official repository.
 
 ## References
 
-- `engine-contract.md` - the POM side: service, `engine.*`, `/pom/generate`,
-  probe, sessions, prefill/decode, stages, health.
+- `engine-contract.md` - the POM side: service, the engine's log (`logs`,
+  `rpc.logs`, the POM terminal), `engine.*`, `/pom/generate`, probe,
+  sessions, prefill/decode, stages, health.
 - `feature-levels.md` - what to build, where, and how to check it.
 - `fork-analysis.md` - every change the llama.cpp and Strata forks and
   pom-plugin-strata carry, as features, characteristics and fixes.
@@ -76,6 +77,7 @@ If it is not a fork, ask for the official repository.
 | Reasoning flattened into `<think>` text | `r` lines from `reasoning_content` |
 | `ready` before the model loaded | Health route that waits for the load |
 | Unsupported request silently answered | `{"error": "this engine does not ..."}` |
+| A terminal of the plugin's own, or the log only in `rpc.status` | `logs: true` + `rpc.logs` for the Logs screen; `hostTerminal()` (POM `components.Terminal`) on the screen |
 | Rewriting `pom` after an upstream move | Merge upstream into `pom`; tag pinned commits |
 | Building the runtime from the fork checkout you are editing | `git worktree add --detach ../<engine>-build pom`, then `build-runtime.sh --source` it: a branch switch mid-build mixes sources |
 | A llama.cpp derivative re-deriving the POM's engine changes | Cherry-pick from the POM's llama.cpp fork `pom` (external tensor data, hidden-state input width, qwen4exp wide residual) into neutral branches |

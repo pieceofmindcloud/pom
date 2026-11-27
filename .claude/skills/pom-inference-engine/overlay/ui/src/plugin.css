@@ -33,6 +33,14 @@
   border-top: 1px solid var(--line);
 }
 
+/* The POM's terminal fills a fixed-height box: it scrolls inside. */
+.pb-page .pb-term {
+  display: flex;
+  height: 28rem;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+}
+
 .pb-muted {
   color: var(--muted);
 }

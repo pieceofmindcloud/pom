@@ -49,7 +49,7 @@ screen and `rpc.*` operations with the plugin's own, keeping the structure.
 | `host.configure` parsing (gateway, workspace root, loopback `host_api`, preferences), secrets hidden | `src/context.rs` |
 | `pom-plugin-ui/v1` manifest: icon, description, screenshot, menu, route, screen, i18n, documentation, `development.rebuild` | `ui/manifest.json` |
 | Release contract: ABI, `feature_set`, preferences schema | `release/manifest.json` |
-| Host SDK helpers (design kit, i18n, RPC, upstream, events, notify/confirm), `ready()` signal | `ui/src/host/` |
+| Host SDK helpers (design kit, i18n, RPC, upstream, events, notify/confirm, the POM terminal `hostTerminal()`), `ready()` signal | `ui/src/host/` |
 | Bundle against the host's React, `pb-` CSS and i18n namespacing | `ui/build.mjs` |
 | Build, package, per-platform GitHub manifest, license server upload, CI plan, dev rebuild | `scripts/` |
 | CI and manual release (GitHub; stable also to the license server) | `.github/workflows/` |
@@ -72,6 +72,9 @@ screen and `rpc.*` operations with the plugin's own, keeping the structure.
 - Only `ui/src/host/*` reads `__POM_HOST__`; CSS is scoped; i18n keys are
   bare in source and identical across catalogs.
 - Never vendor third-party sources or releases; pin and verify downloads.
+- A log is shown with the POM's terminal (`hostTerminal()`, host 9), never a
+  terminal of the plugin's own; a service with a log declares `logs: true`
+  and answers `rpc.logs` so the POM's Logs screen has its tab (recipe N).
 
 ## References
 
@@ -79,7 +82,8 @@ screen and `rpc.*` operations with the plugin's own, keeping the structure.
   SDK surface, `host_api`, events, distribution, which repository shows what.
 - `recipes.md` - optional modules: loopback upstream, supervisor and children,
   verified runtime download, `host.services`, `peer.*`, `host_api`, gateway,
-  inference engine, slots, on-demand, dev rebuild steps, licensing, storage.
+  inference engine, slots, on-demand, dev rebuild steps, licensing, storage,
+  a log on the Logs screen with the POM terminal.
 - POM repository: `docs/subsystems/plugins-ui.md`,
   `docs/subsystems/enterprise-licensing.md`.
 

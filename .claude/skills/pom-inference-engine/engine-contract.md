@@ -15,7 +15,7 @@ by the plugin code.
  "hf_architectures"?: ["<Hugging Face config.json model_type>", "..."],
  "settings": [{"key", "type": "number|integer|boolean|select", "label": {"en","pt-BR"},
                "description": {"en","pt-BR"}, "min"?, "max"?, "options"?, "placement"?: "pom"}],
- "stages"?: true, "vision"?: true,
+ "stages"?: true, "vision"?: true, "logs": true,
  "pom_settings"?: ["prefill_max_inflight_chunks", "hidden_state_dtype", "inference_role", "prefill_min_tokens",
                   "cache_types", "batch", "sampling"]}
 ```
@@ -28,6 +28,31 @@ cataloged with `format: "safetensors"` and `architecture` = the folder's
 gets a folder. `settings` are the engine's, drawn
 in the inspector and sent back in `engine.load.settings`; `pom_settings` names
 POM settings that apply to this engine's deployments.
+
+## The engine's log (`logs`, `rpc.logs`, the POM terminal)
+
+The POM's Logs screen (every admin and worker, no logs plugin needed) has a
+tab per engine, and an admin reads the engine of any machine of the network
+through `GET /api/ui/logs/read` (the node forwards it, signed). Publish
+`"logs": true` in the service and answer `rpc.logs`:
+
+| Request | Answer |
+|---|---|
+| `params`: `service` (the service id), `lines` (at most what the screen shows, 500); `profile` (`admin` when another machine's admin reads it, else the local profile) | `{"lines": [string]}`, oldest first: the engine's own output (`run/engine.log`, `log_tail`). Refuse anything but `admin` and `worker` with an `Ok` `{"error": ...}`. |
+
+Never a prompt or a secret in those lines: start the engine with its request
+logging off, keep the API key off its command line. A service without `logs`
+still gets the tab from the `log` array of `rpc.status`, so released plugins
+keep working, but a new engine answers `rpc.logs`.
+
+The plugin screen draws that output with the POM's own terminal,
+`components.Terminal` (host version 9, `hostTerminal()` in
+`ui/src/host/runtime.ts`), the same component the cluster console and the
+Logs screen use: lines as strings, or `{source, time, level, text}` records (a
+tag at the start of a line, like Strata's `[strata]`, reads well as `source`).
+Fall back to a plain `<pre>` when `hostTerminal()` is `null` (an older POM).
+Never write a terminal of your own. `new-engine-plugin.sh` generates all of
+this (`overlay/ui/src/screens/Main.tsx`, `EngineLog`).
 
 ## Operations (local node only, through the plugin host)
 

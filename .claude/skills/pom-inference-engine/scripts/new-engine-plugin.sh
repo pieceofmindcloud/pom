@@ -121,6 +121,19 @@ patch("src/lib.rs", [
      "                    status[\"log\"] = json!(engine.log_tail(300));\n"
      "                }\n"
      "                Ok(status)\n"
+     "            }\n"
+     "            // The engine's own output for the POM's Logs screen (`rpc.logs`,\n"
+     "            // `{service, lines}` -> `{lines}`): an admin or the machine's worker.\n"
+     "            // `host.services` declares `logs: true` (src/engine.rs).\n"
+     "            \"rpc.logs\" => {\n"
+     "                if request[\"profile\"] != \"admin\" && request[\"profile\"] != \"worker\" {\n"
+     "                    return Ok(json!({\"error\": \"only an admin or this machine's worker reads the engine log\"}));\n"
+     "                }\n"
+     "                let lines = request[\"params\"][\"lines\"].as_u64().unwrap_or(300).clamp(1, 2000) as usize;\n"
+     "                match &self.engine {\n"
+     "                    Ok(engine) => Ok(json!({\"lines\": engine.log_tail(lines)})),\n"
+     "                    Err(error) => Ok(json!({\"lines\": [format!(\"engine unavailable: {error}\")]})),\n"
+     "                }\n"
      "            }\n"),
     ("    fn context(&self) -> Context {\n",
      "    fn engine(&self) -> Result<&engine::Engine, String> {\n"
@@ -138,6 +151,11 @@ patch("src/lib.rs", [
      "            .contains(\"model_path\"));\n"
      "        let status = plugin.query(&json!({\"operation\": \"rpc.status\", \"profile\": \"admin\"})).unwrap();\n"
      "        assert_eq!(status[\"state\"], \"error\");\n"
+     "        // The Logs screen's read: an admin or the worker, never a visitor.\n"
+     "        let log = plugin.query(&json!({\"operation\": \"rpc.logs\", \"profile\": \"worker\", \"params\": {}})).unwrap();\n"
+     "        assert!(log[\"lines\"].is_array());\n"
+     "        let refused = plugin.query(&json!({\"operation\": \"rpc.logs\", \"profile\": \"visitor\", \"params\": {}})).unwrap();\n"
+     "        assert!(refused[\"error\"].is_string());\n"
      "    }\n\n"
      "    #[test]\n    fn unknown_operations_fail() {\n"),
 ])

@@ -86,7 +86,8 @@ toward the step's end for the rest), `loader.error` with `onLoaderRetry` ->
 Slugs are lowercase; at most 8 entries; no secret in `detail`. Kind `rag` is
 picked up by the gateway's transparent retrieval when the plugin answers
 `peer.search` and `peer.collections` (contract in `plugins-ui.md`,
-"Transparent retrieval"). Kind `inference` requires recipe H.
+"Transparent retrieval"). Kind `inference` requires recipe H. A service with
+a log of its own adds `"logs": true` and recipe N.
 
 ## E. Peer operations (`peer.<op>`)
 
@@ -192,3 +193,41 @@ Use `POM_PLUGIN_DB` for a SQLite file (`pom-plugin-logs`, `rusqlite` with
 `bundled`); build long indexes on a background thread after `create`, since
 the host waits only 30 s for `ready` and 3 s per call. User-visible data that
 belongs to projects goes under `workspace_root/.<plugin_code>`.
+
+## N. A log on the POM's Logs screen, drawn with the POM's terminal
+
+Any service that writes a log (an engine, a database, an app it supervises)
+gets a tab on the POM's Logs screen, for every admin and worker and with no
+logs plugin; an admin reads it on any machine of the network (the node
+forwards the read, signed). Declare it in the service and answer `rpc.logs`:
+
+```rust
+// host.services: add "logs": true to the service entry.
+"rpc.logs" => {
+    if request["profile"] != "admin" && request["profile"] != "worker" {
+        return Ok(json!({"error": "only an admin or this machine's worker reads the log"}));
+    }
+    let lines = request["params"]["lines"].as_u64().unwrap_or(500).clamp(1, 2000) as usize;
+    Ok(json!({"lines": log_tail(&base.join("service.log"), lines)}))  // oldest first
+}
+```
+
+`params.service` names which service when the plugin has several. `log_tail`
+reads only the file's last few hundred KiB (references: `pom-plugin-qdrant`
+and `pom-plugin-imagestudio`, `src/lib.rs`). No prompt, document text or
+secret in those lines. A plugin screen that shows the log uses the POM's
+terminal instead of its own markup:
+
+```tsx
+import { hostTerminal } from "../host/runtime";
+const Terminal = hostTerminal(); // components.Terminal, host version 9
+return Terminal
+  ? <div className="pb-term"><Terminal lines={lines} empty={{ title: t("none") }} /></div>
+  : <pre className="pb-log">{lines.join("\n")}</pre>;   // an older POM
+```
+
+Lines are strings or `{source, time, level, text}` records (`error`/`warn`
+levels are toned); it follows the end and copies on its own. Give its box a
+height (`display: flex; height: 28rem; min-height: 0`): it scrolls inside.
+Contract: `docs/subsystems/plugins-ui.md`, "A plugin's log on the Logs
+screen".

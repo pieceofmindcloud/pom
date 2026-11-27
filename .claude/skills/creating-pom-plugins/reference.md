@@ -102,7 +102,7 @@ Valid menu icons (`apps/frontend/src/components/nav.ts`, `PLUGIN_ICONS`):
 `folder-tree`, `send`, `messages-square`, `cpu`, `activity`, `search`. Anything else
 falls back to `blocks`.
 
-## 4. Browser SDK (`globalThis.__POM_HOST__`, `PLUGIN_HOST_VERSION = 8`)
+## 4. Browser SDK (`globalThis.__POM_HOST__`, `PLUGIN_HOST_VERSION = 9`)
 
 `React`, `ReactDOM`, `jsxRuntime`, `reactQuery`, `ui` (the design kit:
 `Panel`, `PanelHeader`, `PageHeader`, `FullBleedHeader`, `FullBleedToolbar`,
@@ -220,7 +220,8 @@ and the `loader.*` commands (section 4) through the SDK or `pom:plugin-request`.
 | `pom-plugin-base` | minimal ABI, every UI feature, events and notifications, workspace listing, loopback upstream |
 | `pom-plugin-jev` | gateway use through a loopback upstream that hides the key, `on_demand` |
 | `pom-plugin-hugging-face` | screen-only plugin over node routes: `api.get`/`api.post` (v8) to `/api/ui/model-provider/*`, tabs, the first run guide's `data-guide` marks |
-| `pom-plugin-qdrant` | supervised third-party binary (verified download), `host.services` kind `rag`, `peer.search`/`peer.connection`/`peer.collections`, admin-gated `rpc.*`, upstream that rewrites a dashboard |
+| `pom-plugin-qdrant` | supervised third-party binary (verified download), `host.services` kind `rag` with `logs: true` and `rpc.logs`, `peer.search`/`peer.connection`/`peer.collections`, admin-gated `rpc.*`, upstream that rewrites a dashboard |
+| `pom-plugin-vllm` / `pom-plugin-strata` | an engine's log: `rpc.logs` for the Logs screen, drawn on the screen with `hostTerminal()` (POM `components.Terminal`, host 9) and a plain fallback |
 | `pom-plugin-logs` | licensed plugin, `ingest`, SQLite in `POM_PLUGIN_DB`, profile/node scoped `rpc.*`, `peer.quota.*`, `chat.telemetry` slot |
 | `pom-plugin-ghostly` | `host_api` client (`node`, `peers`, `peer`, `sign`), `peer.group_link`, `peer.whoami` |
 | `pom-plugin-code-server`, `pom-plugin-harness`, `pom-plugin-deepseek-harness` | `on_demand` web apps behind `ui.upstream` with WebSockets, pinned runtime archives, `development.rebuild` with runtime steps, `rpc.runtime.*` |

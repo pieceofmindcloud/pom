@@ -1739,7 +1739,10 @@ machine, for the Logs screen: `{ source, name?, running, previous_run, lines }`.
 attempt, or the previous process's file after a crash, `previous_run: true`);
 any other source is a plugin service with `logs` (read through `rpc.logs`) or
 of kind `inference` (read from `rpc.status`'s `log`), 404 `no_log_source`
-otherwise. `ServingMember` on the machine itself; `node_id` naming another
+otherwise. `engine` carries an inference engine's facts while it serves -
+`{state, model, n_ctx, in_flight, runtime}`, from the plugin's `engine.status`
+or, for llama.cpp, from the node's runtime - and `stopped` marks an on-demand
+engine at rest. `ServingMember` on the machine itself; `node_id` naming another
 machine is forwarded there signed (`forward_to_node`), only from an admin
 node (403 otherwise), and that node takes the route as `AnyAdmin`
 (`node_to_node_scope`).

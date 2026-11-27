@@ -463,11 +463,25 @@ pub(super) async fn logs_read(
         if previous_run {
             lines = crate::engine_log::disk_tail(crate::engine_log::RING_LINES);
         }
+        // The engine's facts, from this node's own runtime.
+        let engine = if running {
+            let status = state.runtime.status().await;
+            json!({
+                "state": serde_json::to_value(status.state).unwrap_or(serde_json::Value::Null),
+                "model": config.as_ref().map(|cfg| cfg.model_label.clone()),
+                "n_ctx": config.as_ref().map(|cfg| cfg.n_ctx),
+                "in_flight": super::local_inference_load(&state).await,
+                "runtime": "llama.cpp (in process)",
+            })
+        } else {
+            serde_json::Value::Null
+        };
         return Json(json!({
             "source": source,
             "running": running,
             "previous_run": previous_run && !lines.is_empty(),
             "lines": lines,
+            "engine": engine,
         }))
         .into_response();
     }
@@ -522,12 +536,30 @@ pub(super) async fn logs_read(
             lines = strings(status.get("log"));
         }
     }
+    // An inference engine's facts, from its own `engine.status` (the engine
+    // contract: state, model, n_ctx, in_flight, runtime.version).
+    let engine = if service.kind == "inference" && service.status != "stopped" {
+        match state.plugins.query_audit(&source, "engine.status", json!({})).await {
+            Some(status) => json!({
+                "state": status["state"],
+                "model": status.get("model").filter(|m| !m.is_null()).cloned().unwrap_or(serde_json::Value::Null),
+                "n_ctx": status["n_ctx"],
+                "in_flight": status["in_flight"],
+                "runtime": status["runtime"]["version"].as_str().map(str::to_owned).or_else(|| service.version.clone()),
+            }),
+            None => serde_json::Value::Null,
+        }
+    } else {
+        serde_json::Value::Null
+    };
     Json(json!({
         "source": source,
         "name": service.name,
-        "running": running,
+        "running": running && service.status != "stopped",
+        "stopped": service.status == "stopped",
         "previous_run": false,
         "lines": lines.unwrap_or_default(),
+        "engine": engine,
     }))
     .into_response()
 }

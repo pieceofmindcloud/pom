@@ -618,11 +618,25 @@ async fn plugin_lifecycle(
         )
             .into_response();
     }
+    // Stopping the engine this machine serves its model with releases that
+    // model first, as an unload: otherwise the supervisor sees the engine go
+    // and starts it again (`plugin_engine::run` opens an on-demand engine).
+    if !open
+        && state
+            .runtime
+            .config()
+            .await
+            .is_some_and(|cfg| cfg.inference_service.as_deref() == Some(code))
+    {
+        state.runtime.stop().await;
+        tracing::info!(plugin_code = %code, "model released: its inference engine was stopped from the interface");
+    }
     let result = if open {
         state.plugins.open_on_demand(code).await
     } else {
         state.plugins.close_on_demand(code).await
     };
+    crate::plugin_services::invalidate_services();
     match result {
         Ok(()) => axum::Json(json!({ "code": code, "running": open })).into_response(),
         Err(error) => (

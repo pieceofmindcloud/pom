@@ -6,12 +6,13 @@
  */
 import { ScrollText } from "lucide-react";
 import { useLocation, useSearchParams } from "react-router-dom";
-import { Badge, PageHeader, Panel, PanelHeader, Select } from "../components/ui";
+import { Badge, KeyValue, PageHeader, Panel, PanelHeader, Select } from "../components/ui";
 import { Terminal } from "../components/Terminal";
 import { useLogSources } from "../components/LogsTabs";
 import { LLAMA_CPP_SOURCE, sourceOfPath } from "../lib/logsHub";
 import { useLogSource } from "../lib/queries";
 import { useI18n } from "../i18n/provider";
+import { num } from "../lib/format";
 
 export function LogSource() {
   const { t } = useI18n();
@@ -68,11 +69,19 @@ export function LogSource() {
           actions={
             log.data ? (
               <Badge tone={log.data.running ? "aqua" : "neutral"}>
-                {log.data.running ? t("logs.running") : t("logs.notRunning")}
+                {log.data.running ? t("logs.running") : log.data.stopped ? t("logs.stopped") : t("logs.notRunning")}
               </Badge>
             ) : null
           }
         />
+        {log.data?.engine && (
+          <dl data-testid="engine-facts" className="grid grid-cols-2 gap-x-4 gap-y-1 border-b border-line px-4 py-2 text-xs sm:grid-cols-4">
+            <KeyValue label={t("logs.factModel")}>{log.data.engine.model || "—"}</KeyValue>
+            <KeyValue label={t("logs.factContext")}>{log.data.engine.n_ctx != null ? num(log.data.engine.n_ctx) : "—"}</KeyValue>
+            <KeyValue label={t("logs.factInFlight")}>{log.data.engine.in_flight ?? "—"}</KeyValue>
+            <KeyValue label={t("logs.factRuntime")}>{log.data.engine.runtime || "—"}</KeyValue>
+          </dl>
+        )}
         <Terminal
           testId="log-source-terminal"
           lines={log.data?.lines ?? []}

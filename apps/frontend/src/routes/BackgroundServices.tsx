@@ -1,11 +1,11 @@
-import { Layers, Power, X } from "lucide-react";
+import { Cpu, Layers, Power, X } from "lucide-react";
 import { useState } from "react";
 import { Confirm } from "../components/Confirm";
 import { Badge, Button, Empty, PageHeader, Panel, PanelHeader } from "../components/ui";
 import { useI18n } from "../i18n/provider";
 import { closePlugin, openPlugin } from "../lib/api";
 import { pluginDisplayName, type ActivePluginUi } from "../lib/pluginUi";
-import { usePluginUi } from "../lib/queries";
+import { useNode, usePluginUi } from "../lib/queries";
 import { useToast } from "../lib/toast";
 
 /** `314572800` -> `300 MB`; one decimal above 1 GB. */
@@ -25,12 +25,23 @@ function displayName(plugin: ActivePluginUi, locale: string): string {
  * Settings > Background services: the on-demand plugins of this machine,
  * running first, with the memory each uses and a Close that frees it. A
  * plugin with no menu entry (the Goose agent) has no X badge, so this screen
- * is where it is closed.
+ * is where it is closed. Inference engines (vLLM, Avalon) are on demand too
+ * and have no menu: this is where they are started and stopped. Stopping the
+ * engine this machine serves its model with releases that model (the node
+ * does it); a deployment starts a stopped engine by itself.
  */
 export function BackgroundServices() {
   const { t, locale } = useI18n();
   const toast = useToast();
   const query = usePluginUi();
+  const node = useNode();
+  // The plugins that publish an inference service on this machine (a stopped
+  // on-demand engine keeps its service, as `stopped`).
+  const engines = new Set(
+    (node.data?.plugin_services ?? []).filter((s) => s.kind === "inference").map((s) => s.plugin_code),
+  );
+  const serving = node.data?.config?.inference_service ?? null;
+  const servedModel = node.data?.config?.model_label ?? null;
   const [confirming, setConfirming] = useState<ActivePluginUi | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const plugins = (query.data?.plugins ?? []).filter((plugin) => plugin.on_demand);
@@ -61,6 +72,19 @@ export function BackgroundServices() {
             <Badge mono>{formatMemory(plugin.memory_bytes)}</Badge>
           )}
           {!plugin.running && <Badge>{t("backgroundServices.stopped")}</Badge>}
+          {engines.has(plugin.code) && (
+            <Badge tone="iris">
+              <span className="inline-flex items-center gap-1">
+                <Cpu size={11} />
+                {t("backgroundServices.engine")}
+              </span>
+            </Badge>
+          )}
+          {serving === plugin.code && servedModel && (
+            <span data-testid={`background-service-model-${plugin.code}`}>
+              {t("backgroundServices.serving", { model: servedModel })}
+            </span>
+          )}
         </div>
       </div>
       {plugin.running ? (
@@ -97,7 +121,11 @@ export function BackgroundServices() {
       <Confirm
         open={confirming !== null}
         title={t("backgroundServices.confirmTitle", { name: confirming ? displayName(confirming, locale) : "" })}
-        description={t("backgroundServices.confirmBody")}
+        description={
+          confirming && serving === confirming.code
+            ? t("backgroundServices.confirmEngineBody", { model: servedModel ?? "" })
+            : t("backgroundServices.confirmBody")
+        }
         confirmLabel={t("backgroundServices.close")}
         onCancel={() => setConfirming(null)}
         onConfirm={() => {

@@ -69,6 +69,9 @@ const UI_MANIFEST_SETTING_PREFIX: &str = "plugin_ui_manifest:";
 /// The last ACP agents a plugin announced, kept so the Chat can offer them
 /// (and wake the plugin) while its on-demand process is stopped.
 const ACP_AGENTS_SETTING_PREFIX: &str = "plugin_acp_agents:";
+/// The inference services an on-demand plugin last published, kept so a
+/// stopped engine is still offered to the deploy screen (status `stopped`).
+const INFERENCE_SERVICES_SETTING_PREFIX: &str = "plugin_inference_services:";
 /// `plugin_ui_asset:<code>:<path>`: the last copy of an asset the shell needs
 /// while the plugin's process is down (its i18n catalogs and menu icon), as the
 /// host answered `ui.asset`. See `PluginRuntime::shell_asset`.
@@ -4177,11 +4180,61 @@ impl PluginManager {
         agents
     }
 
-    /// Forgets the saved ACP agents of an uninstalled plugin.
+    /// Forgets the saved ACP agents (and inference services) of an uninstalled plugin.
     fn forget_acp_agents(&self, code: &str) {
         if let Some(database) = &self.database {
             let _ = database.delete_local_setting(&format!("{ACP_AGENTS_SETTING_PREFIX}{code}"));
+            let _ = database.delete_local_setting(&format!("{INFERENCE_SERVICES_SETTING_PREFIX}{code}"));
         }
+    }
+
+    /// The live services plus the inference services of stopped on-demand
+    /// plugins, read back from what each published while it ran, with status
+    /// `stopped`: a stopped engine is still this machine's to offer, and a
+    /// deployment starts it (`plugin_engine::run` opens the plugin). Saves a
+    /// running plugin's inference services when they change; an empty answer
+    /// (a plugin still starting) never erases the saved ones.
+    pub(crate) async fn with_saved_inference_services(
+        &self,
+        mut live: Vec<crate::plugin_services::PluginService>,
+    ) -> Vec<crate::plugin_services::PluginService> {
+        let Some(database) = &self.database else {
+            return live;
+        };
+        for plugin in self.installed_summaries().await {
+            if !plugin.lifecycle.is_on_demand() {
+                continue;
+            }
+            let key = format!("{INFERENCE_SERVICES_SETTING_PREFIX}{}", plugin.code);
+            let stored = database
+                .local_setting_json(&key)
+                .ok()
+                .flatten()
+                .and_then(|text| serde_json::from_str::<Vec<serde_json::Value>>(&text).ok());
+            if plugin.running {
+                let current: Vec<serde_json::Value> = live
+                    .iter()
+                    .filter(|s| s.plugin_code == plugin.code && s.kind == "inference")
+                    .filter_map(|s| serde_json::to_value(s).ok())
+                    .collect();
+                if !current.is_empty() && stored.as_ref() != Some(&current) {
+                    if let Err(error) = database.save_local_setting(&key, &current) {
+                        tracing::warn!(plugin_code = %plugin.code, %error, "inference services could not be saved");
+                    }
+                }
+            } else if let Some(saved) = stored {
+                let mut services = crate::plugin_services::parse_services(
+                    &plugin.code,
+                    &serde_json::json!({ "services": saved }),
+                );
+                for service in &mut services {
+                    service.status = "stopped".into();
+                    service.detail = Some("stopped: a deployment starts it".into());
+                }
+                live.extend(services.into_iter().filter(|s| s.kind == "inference"));
+            }
+        }
+        live
     }
 }
 

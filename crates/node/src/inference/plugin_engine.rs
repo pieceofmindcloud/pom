@@ -552,6 +552,17 @@ pub(crate) async fn run(
     } else {
         (None, None)
     };
+    // An on-demand engine (stopped from Background services) starts here: a
+    // deployment is what it is for. A resident plugin is already running.
+    if let Some(plugins) = PLUGINS.get() {
+        if let Err(error) = plugins.open_on_demand(&code).await {
+            if !error.contains("not on demand") {
+                anyhow::bail!("could not start the plugin '{code}': {error}");
+            }
+        } else {
+            crate::plugin_services::invalidate_services();
+        }
+    }
     info!(
         plugin = %code,
         model = %cfg.model_label,

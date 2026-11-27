@@ -695,7 +695,17 @@ export interface LogSourceRead {
   running?: boolean;
   /** The lines are what the previous process left before it went down. */
   previous_run?: boolean;
+  /** An on-demand engine whose process is stopped. */
+  stopped?: boolean;
   lines: string[];
+  /** An inference engine's facts, from its own status; `null` when it serves nothing. */
+  engine?: {
+    state?: string | null;
+    model?: string | null;
+    n_ctx?: number | null;
+    in_flight?: number | null;
+    runtime?: string | null;
+  } | null;
 }
 
 /**

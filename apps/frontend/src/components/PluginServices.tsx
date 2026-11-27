@@ -28,6 +28,7 @@ const TONE: Record<PluginService["status"], string> = {
   installing: "border-sky/50 bg-sky/15 text-sky",
   waiting: "border-amber/50 bg-amber/15 text-amber",
   error: "border-rose/50 bg-rose/15 text-rose",
+  stopped: "border-line bg-line/20 text-faint",
 };
 
 const LINE: Record<PluginService["status"], string> = {
@@ -36,6 +37,7 @@ const LINE: Record<PluginService["status"], string> = {
   installing: "bg-sky",
   waiting: "bg-amber",
   error: "bg-rose",
+  stopped: "bg-line",
 };
 
 /** Distance between the bottom edge of the card and the badges, in the Flow. */
@@ -80,6 +82,7 @@ export function PluginServiceBadge({ service, compact = false }: { service: Plug
     installing: t("dashboard.serviceStatusInstalling"),
     waiting: t("dashboard.serviceStatusWaiting"),
     error: t("dashboard.serviceStatusError"),
+    stopped: t("dashboard.serviceStatusStopped"),
   }[service.status];
   // A type that this version of the screen does not know shows up as the plugin called it.
   const kind = service.kind === "rag"

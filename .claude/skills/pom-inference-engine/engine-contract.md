@@ -54,6 +54,15 @@ Fall back to a plain `<pre>` when `hostTerminal()` is `null` (an older POM).
 Never write a terminal of your own. `new-engine-plugin.sh` generates all of
 this (`overlay/ui/src/screens/Main.tsx`, `EngineLog`).
 
+## Lifecycle and menu
+
+An engine plugin is `"lifecycle": "on_demand"` with an empty `menu`: the
+operator starts and stops it in the POM's Settings > Background services, a
+deployment starts it (the node opens it before `engine.load`), and its log
+and facts (`engine.status`: `model`, `n_ctx`, `in_flight`, `runtime.version`)
+are a tab of the Logs screen. Keep `engine.status` filling those fields. A
+screen route may stay for direct links. vLLM and Avalon are the references.
+
 ## Operations (local node only, through the plugin host)
 
 | Operation | Request | Answer |

@@ -37,7 +37,8 @@ export interface InferenceServiceEntry {
   vision: boolean;
 }
 
-const USABLE: PluginService["status"][] = ["ready", "starting", "installing"];
+// `stopped` is an on-demand engine at rest: the deployment starts it.
+const USABLE: PluginService["status"][] = ["ready", "starting", "installing", "stopped"];
 
 /** The services a deployment on them can run now; see `inferenceServiceCatalog`. */
 export function inferenceServicesOf(peers: PeerView[] | undefined): InferenceServiceEntry[] {

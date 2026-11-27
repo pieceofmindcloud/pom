@@ -162,11 +162,15 @@ patch("src/lib.rs", [
 
 manifest_path = root / "ui/manifest.json"
 manifest = json.loads(manifest_path.read_text())
-manifest["menu"][0]["icon"] = "cpu"
+engine_name = manifest["menu"][0]["label"]["en"]
 manifest["description"] = {
-    "en": f"Runs models on the {manifest['menu'][0]['label']['en']} inference engine.",
-    "pt-BR": f"Executa modelos no motor de inferência {manifest['menu'][0]['label']['en']}.",
+    "en": f"Runs models on the {engine_name} inference engine.",
+    "pt-BR": f"Executa modelos no motor de inferência {engine_name}.",
 }
+# An engine is on demand with no menu entry: Background services starts and
+# stops it, a deployment starts it, its log and facts are a Logs screen tab.
+manifest["lifecycle"] = "on_demand"
+manifest["menu"] = []
 manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
 
 release_path = root / "release/manifest.json"

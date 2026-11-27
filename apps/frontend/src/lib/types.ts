@@ -116,6 +116,8 @@ export interface EngineFailure {
 
 export interface NodeConfig {
   model_path: string;
+  /** The plugin inference service that runs this slice; absent or null is llama.cpp. */
+  inference_service?: string | null;
   /** Multimodal projector loaded on this node, when vision is on. */
   mmproj_path?: string | null;
   model_label: string;
@@ -817,7 +819,8 @@ export interface PluginService {
   /** What it is for: `rag`. Open vocabulary; an unknown kind shows up as it came. */
   kind: string;
   name: string;
-  status: "ready" | "starting" | "installing" | "waiting" | "error";
+  /** `stopped`: an on-demand engine whose process is stopped; a deployment starts it. */
+  status: "ready" | "starting" | "installing" | "waiting" | "error" | "stopped";
   version?: string;
   detail?: string;
   /** Any kind: the plugin answers `rpc.logs` with this service's log (Logs screen tab). */

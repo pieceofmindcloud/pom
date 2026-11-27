@@ -1192,7 +1192,8 @@ Request logs (`/logs`, only when a plugin serves that route), Cluster console
 log, `plugins-ui.md`), and Deployment logs (`/deployments/logs`, admins, when
 the plugin keeps that history). A worker sees its own machine's sources; an
 admin sees every machine's and picks the machine in the tab (`?node=`), read
-through `GET /api/ui/logs/read`. Without a plugin serving `/logs`, the entry
+through `GET /api/ui/logs/read`. An inference engine's tab shows its facts
+above the log (model, context, requests in flight, runtime). Without a plugin serving `/logs`, the entry
 lands on the console (admin) or the llama.cpp tab (worker); Statistics is then
 the Business Pack advertising entry. A plugin's `/logs` claim never takes the
 hub's own routes: plugin routes match by prefix, so `App.tsx` and

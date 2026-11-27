@@ -285,6 +285,20 @@ it; the node reads the flag from the last `ui.manifest` it saved in `pom.db`
 (`plugin_ui_manifest:<code>`), so the decision holds before any process exists.
 A resident plugin behaves as before.
 
+An inference engine may be on demand (vLLM and Avalon are, with no menu
+entry): Settings > Background services starts and stops it, marked as an
+inference engine, with the model it serves. `plugin_engine::run` opens an
+on-demand engine before `engine.load`, so a deployment or a restart that
+resumes a slice starts it. The node saves the inference services an
+on-demand plugin publishes while it runs (`plugin_inference_services:<code>`
+in `pom.db`) and keeps publishing them while it is stopped with status
+`stopped` (`PluginManager::with_saved_inference_services`), which the deploy
+screen counts as usable. `POST /api/ui/plugins/<code>/close` on the engine
+this machine serves its model with releases that model first (as
+`/api/ui/unload`), or the supervisor would open the engine again. A POM
+older than this never starts an on-demand plugin by itself, so an on-demand
+engine needs a node that has it.
+
 - The menu keeps listing the plugin with its saved manifest while the process
   is stopped (`GET /api/ui/plugins/ui` returns `on_demand` and `running`).
   Its labels, icon and documentation load too: `GET

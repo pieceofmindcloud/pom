@@ -12,11 +12,13 @@ const mocks = vi.hoisted(() => ({
   closePlugin: vi.fn(),
   refetch: vi.fn(),
   plugins: [] as unknown[],
+  node: { plugin_services: [], config: null } as unknown,
 }));
 
 vi.mock("../lib/api", () => ({ openPlugin: mocks.openPlugin, closePlugin: mocks.closePlugin }));
 vi.mock("../lib/queries", () => ({
   usePluginUi: () => ({ data: { plugins: mocks.plugins }, isLoading: false, refetch: mocks.refetch }),
+  useNode: () => ({ data: mocks.node }),
 }));
 
 function mount() {
@@ -37,6 +39,23 @@ afterEach(() => {
 });
 
 describe("BackgroundServices", () => {
+  it("marks an inference engine, names the model it serves and warns before stopping it", async () => {
+    mocks.plugins = [
+      { code: "vllm", version: "1.2.0", manifest: manifest("vllm"), on_demand: true, running: true, memory_bytes: 1048576 },
+    ];
+    mocks.node = {
+      plugin_services: [{ plugin_code: "vllm", id: "vllm", kind: "inference", name: "vLLM", status: "ready" }],
+      config: { model_label: "Qwen3", inference_service: "vllm" },
+    };
+    mount();
+    const row = screen.getByTestId("background-service-vllm");
+    expect(within(row).getByText("Inference engine")).toBeTruthy();
+    expect(within(row).getByTestId("background-service-model-vllm").textContent).toBe("serving Qwen3");
+    fireEvent.click(within(row).getByRole("button", { name: /close/i }));
+    expect(screen.getByText(/releases that model first/)).toBeTruthy();
+    mocks.node = { plugin_services: [], config: null };
+  });
+
   it("lists running on-demand plugins with memory and leaves resident ones out", () => {
     mocks.plugins = [
       { code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true, memory_bytes: 314572800 },

@@ -748,11 +748,20 @@ pub(crate) async fn node_services(plugins: &crate::plugins::PluginManager) -> Ve
             .map(|(code, _)| code.as_str())
             .chain(running.iter().map(String::as_str)),
     );
+    // A stopped on-demand engine keeps its inference service, as `stopped`.
+    let services = plugins.with_saved_inference_services(services).await;
     *cache()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) =
         Some((Instant::now(), services.clone()));
     services
+}
+
+/// Drops the cached services, so a plugin just opened or closed shows at once.
+pub(crate) fn invalidate_services() {
+    *cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 /// An operation name of the peer API: lowercase words separated by dots,

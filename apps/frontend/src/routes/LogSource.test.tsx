@@ -15,7 +15,16 @@ vi.mock("../components/LogsTabs", () => ({
 vi.mock("../lib/queries", () => ({
   useLogSource: (source: string, nodeId: string | undefined) => {
     calls.push([source, nodeId]);
-    return { data: { source, running: true, lines: [nodeId ? `remote ${nodeId}` : "local line"] }, isLoading: false, isError: false };
+    return {
+      data: {
+        source,
+        running: true,
+        lines: [nodeId ? `remote ${nodeId}` : "local line"],
+        engine: { state: "ready", model: "Qwen3", n_ctx: 32768, in_flight: 2, runtime: "0.11.0" },
+      },
+      isLoading: false,
+      isError: false,
+    };
   },
 }));
 
@@ -38,6 +47,10 @@ describe("LogSource", () => {
   it("reads this machine first and another machine through the picker", () => {
     renderAt("/logs/source/vllm");
     expect(screen.getByText("local line")).toBeTruthy();
+    const facts = screen.getByTestId("engine-facts").textContent ?? "";
+    expect(facts).toContain("Qwen3");
+    expect(facts).toContain("Requests in flight");
+    expect(facts).toContain("0.11.0");
     expect(calls.at(-1)).toEqual(["vllm", undefined]);
     fireEvent.change(screen.getByLabelText("Machine"), { target: { value: "b" } });
     expect(screen.getByText("remote b")).toBeTruthy();

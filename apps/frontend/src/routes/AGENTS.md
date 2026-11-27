@@ -499,7 +499,9 @@ while the node does not answer.
 - `BackgroundServices.tsx` - Settings > Background services at
   `/config/background-services`: the on-demand plugins from `usePluginUi`,
   running first with `memory_bytes` (`formatMemory`) and a confirmed Close
-  (`closePlugin`), stopped ones with Open (`openPlugin`). The only place to
+  (`closePlugin`), stopped ones with Open (`openPlugin`). Inference engines
+  (a `kind: inference` service in `NodeInfo.plugin_services`) get a badge and
+  the model they serve, and their Close warns that the node releases it. The only place to
   close a plugin without a menu entry. Tests: `BackgroundServices.test.tsx`.
 - `About.tsx` - an information screen at `/config/about`, the last leaf of
   Settings. It shows the repository's MIT `LICENSE` and the Open Source

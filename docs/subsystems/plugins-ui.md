@@ -156,7 +156,7 @@ the previous route's component. The plugin does not bundle another React:
 `lib/pluginHost.ts` exposes on `globalThis.__POM_HOST__` React, ReactDOM, the
 JSX runtime, React Query, the design kit (`components/ui`), `format`,
 `useI18n`, `useTheme`, `useCluster`, `api.get`, `api.post`, `Modal`, `TelemetryLine`,
-`ExecutionTelemetry`, `Markdown` and `storageKey`. The plugin swaps those
+`ExecutionTelemetry`, `Markdown`, `Terminal` and `storageKey`. The plugin swaps those
 imports for reads of that object when bundling; hooks and contexts are the
 application's. The surface is versioned (`PLUGIN_HOST_VERSION`) and only grows
 compatibly. Version 2 added `context()` (current language and theme), `events`,
@@ -175,8 +175,31 @@ added `plugin(code).loader`, POM's loader and installer over the screen (below,
 to the node's API with the panel's own credentials (the connection key and the
 admin access token the tab holds), so a screen can act on the node routes it
 draws; the Hugging Face plugin starts downloads and saves the token with it.
-The node still authorizes every call. The plugin's CSS
-uses the same color tokens (CSS variables) as POM.
+The node still authorizes every call. Version 9 added `components.Terminal`,
+the panel's log terminal (`components/Terminal.tsx`, the one the cluster
+console and the Logs screen draw): `lines` are strings or
+`{ key?, source?, time?, level?, text }`, with `loading`, `error`, `notice`,
+`empty{title, hint}`, `compact`, `copyLimit`, `className` and `testId`; it
+follows the bottom while the reader stays there and copies the last lines. A
+plugin that shows its engine's or service's output draws it with this instead
+of a terminal of its own, falling back to its own markup on an older host.
+The plugin's CSS uses the same color tokens (CSS variables) as POM.
+
+## A plugin's log on the Logs screen
+
+The Logs screen (`lib/logsHub.ts`, every admin and worker, no plugin needed)
+has one tab per log source: llama.cpp, and each plugin service that publishes
+a log. A service publishes one by answering `host.services` with
+`"logs": true` (any kind: an image studio, a vector database) and handling
+`rpc.logs`: params `{ service, lines }` (the service id and the most lines the
+screen shows, 500), reply `{ lines: string[] }`, oldest first. The query
+carries `profile`, which is `admin` when another machine's admin reads the log
+through this node (the node already proved the caller is an admin) and the
+local profile otherwise. A service of kind `inference` gets its tab even
+without `logs`: the node reads the `log` array its `rpc.status` returns, which
+is what the engine plugins released before this contract answer. The node
+reads every source through `GET /api/ui/logs/read` (`http-api.md`), and an
+admin reads another machine's by `node_id`.
 
 ## Opening a plugin screen
 

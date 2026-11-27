@@ -170,18 +170,13 @@ function withPluginMenu(sections: NavSection[], profile: Profile): NavSection[] 
     if (section.children) copy.children = section.children.map((child) => ({ ...child }));
     return copy;
   });
-  // Without a plugin serving them, Request Logs and Statistics are the same
-  // advertising page of one purchase (the Business Pack plugin, `logs`, also
-  // brings Quota): one menu entry, so it does not look like three things to buy.
+  // Logs is the POM's for admins and workers (cluster console, engine and
+  // service logs, `lib/logsHub.ts`); the logs plugin only adds Request logs
+  // to it. Without a plugin serving Statistics, that entry is the advertising
+  // page of the plugin (the Business Pack: request logs, statistics, quota).
   if (!resolvePluginRoute("/logs") && !resolvePluginRoute("/statistics")) {
-    // The deployment logs are kept by the same plugin, so without it the whole
-    // Logs section is that one entry: the Business Pack plugin's page.
-    const logs = result.findIndex((section) => section.labelKey === "nav.logs");
-    if (logs >= 0) {
-      result[logs] = { labelKey: "nav.businessPack", icon: result[logs].icon, to: "/logs" };
-    }
     const statistics = result.findIndex((section) => section.to === "/statistics");
-    if (statistics >= 0) result.splice(statistics, 1);
+    if (statistics >= 0) result[statistics] = { labelKey: "nav.businessPack", icon: result[statistics].icon, to: "/statistics" };
   }
   const replace = (
     target: { labelKey: string; icon?: LucideIcon; iconImage?: string; pluginCode?: string },

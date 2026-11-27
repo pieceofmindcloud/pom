@@ -95,7 +95,7 @@ describe("DeploymentLogs", () => {
       </MemoryRouter>,
     );
 
-    const lines = screen.getAllByTestId("deployment-log-line");
+    const lines = screen.getAllByTestId("terminal-line");
     expect(lines).toHaveLength(2);
     expect(lines[0].textContent).toContain("salem");
     expect(lines[0].textContent).toContain("chegou primeiro");
@@ -148,7 +148,6 @@ describe("DeploymentLogs", () => {
       scrollHeight: { configurable: true, value: 1000 },
     });
     terminal.scrollTop = 900;
-    terminal.scrollTo = vi.fn();
 
     queryMocks.logs.data = {
       ...queryMocks.logs.data,
@@ -166,10 +165,7 @@ describe("DeploymentLogs", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(terminal.scrollTo).toHaveBeenCalledWith({
-      top: 1000,
-      behavior: "auto",
-    }));
+    await waitFor(() => expect(terminal.scrollTop).toBe(1000));
   });
 
   it("stops chasing the end when the reader scrolls up and exposes the state", async () => {
@@ -191,7 +187,6 @@ describe("DeploymentLogs", () => {
     const button = screen.getByRole("button", { name: "Ligar rolagem automática" });
     expect(button.getAttribute("aria-pressed")).toBe("false");
 
-    terminal.scrollTo = vi.fn();
     queryMocks.logs.data = {
       ...queryMocks.logs.data,
       entries: [...queryMocks.logs.data.entries, {
@@ -208,7 +203,7 @@ describe("DeploymentLogs", () => {
       </MemoryRouter>,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(terminal.scrollTo).not.toHaveBeenCalled();
+    expect(terminal.scrollTop).toBe(100);
   });
 
   it("copies the last 500 lines and confirms the action", async () => {

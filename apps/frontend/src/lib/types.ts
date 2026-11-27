@@ -820,6 +820,8 @@ export interface PluginService {
   status: "ready" | "starting" | "installing" | "waiting" | "error";
   version?: string;
   detail?: string;
+  /** Any kind: the plugin answers `rpc.logs` with this service's log (Logs screen tab). */
+  logs?: boolean;
   /** Kind `inference`: the GGUF architectures its engine runs. */
   architectures?: string[];
   /** Kind `inference`: the settings its engine takes, drawn by the deploy inspector. */

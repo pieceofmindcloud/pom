@@ -744,8 +744,12 @@ The mechanism lives in `docs/subsystems/plugins-ui.md`; these are the files that
   router read (`setPluginUi`, `resolvePluginRoute`, `pluginRouteProfiles`, `pluginMenuItems`,
   `pluginLabel`, `pluginAssetUrl`, `pluginSlot`). It knows no specific plugin.
 - `pluginHost.ts` - the SDK on `globalThis.__POM_HOST__` (React, React Query, the design kit, i18n,
-  theme, `api.get`, `api.post` from version 8...) that plugin screens use instead of packaging their
-  own copies. Its version history is in `plugins-ui.md`.
+  theme, `api.get`, `api.post` from version 8, `components.Terminal` from version 9...) that plugin
+  screens use instead of packaging their own copies. Its version history is in `plugins-ui.md`.
+- `logsHub.ts` - the Logs screen's tabs and routes: `logSources` (llama.cpp on every machine that
+  may hold a model, plus each plugin service with `logs` or of kind `inference`), `logNodes` (this
+  machine, or every peer for an admin), `logsTabs`, `logsHome` (where `/logs` lands without the
+  plugin) and `isLogsHubPath` (the hub's routes are not the advertising fallback).
 - `pluginReady.ts` - the "finished rendering" signal of a plugin screen: `usePluginReady` arms the
   gate on the host mount and opens it on `__POM_HOST__.ready()` or after `PLUGIN_READY_GRACE_MS`,
   whichever comes first, or when the plugin opens its screen through its loader. The signal is never

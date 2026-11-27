@@ -395,6 +395,143 @@ pub(super) async fn cluster_logs(
     }
 }
 
+#[derive(Deserialize)]
+pub(super) struct LogsReadQuery {
+    /// `llama.cpp`, or the `plugin_code` of a service on that machine.
+    pub(super) source: String,
+    /// The machine whose log to read; absent or this node's own id is this one.
+    pub(super) node_id: Option<String>,
+}
+
+/// Lines a plugin's log carries to the screen.
+const PLUGIN_LOG_LINES: usize = 500;
+
+/// `GET /api/ui/logs/read`: one log source of one machine, for the Logs
+/// screen's tabs. `llama.cpp` is the in-process engine (`engine_log`: the
+/// current load attempt, or what the previous process left on disk after a
+/// crash); any other source is a plugin's, read through its `rpc.logs`
+/// (`{ service }` -> `{ lines }`), else the `log` its `status` returns (the
+/// engine plugins released before `logs`).
+///
+/// Another machine's log (`node_id`) is forwarded to that node, signed; there
+/// the route takes `AnyAdmin` (`node_to_node_scope`), so only an admin reads
+/// a neighbour's logs. A plugin is asked as an admin then, since the route
+/// already proved one; on its own machine it is asked with the local profile.
+pub(super) async fn logs_read(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Query(query): Query<LogsReadQuery>,
+) -> Response {
+    let source = query.source.trim().to_string();
+    let target = query
+        .node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && *id != state.network.node_id)
+        .map(str::to_owned);
+    if let Some(node_id) = target {
+        let profile = state.auth.read().await.profile;
+        if profile != crate::profile::NodeProfile::Admin {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "only an admin reads another machine's logs." })),
+            )
+                .into_response();
+        }
+        let path = format!(
+            "/api/ui/logs/read?{}",
+            url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("source", &source)
+                .finish()
+        );
+        return crate::model_provider_backend::forward_to_node(
+            &state,
+            &node_id,
+            reqwest::Method::GET,
+            &path,
+            None,
+        )
+        .await;
+    }
+    if source == "llama.cpp" {
+        let config = state.runtime.config().await;
+        let running = config
+            .as_ref()
+            .is_some_and(|cfg| cfg.inference_service.is_none());
+        let mut lines = crate::engine_log::tail(crate::engine_log::RING_LINES);
+        let previous_run = lines.is_empty();
+        if previous_run {
+            lines = crate::engine_log::disk_tail(crate::engine_log::RING_LINES);
+        }
+        return Json(json!({
+            "source": source,
+            "running": running,
+            "previous_run": previous_run && !lines.is_empty(),
+            "lines": lines,
+        }))
+        .into_response();
+    }
+    let services = crate::plugin_services::node_services(&state.plugins).await;
+    let Some(service) = services
+        .iter()
+        .find(|service| service.plugin_code == source && (service.logs || service.kind == "inference"))
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "code": "no_log_source", "error": "no running service of that plugin publishes a log on this machine." })),
+        )
+            .into_response();
+    };
+    let remote = headers.contains_key(crate::auth::CONTROL_SIGNATURE_HEADER);
+    let profile = if remote {
+        "admin".to_string()
+    } else {
+        state.auth.read().await.profile.to_string()
+    };
+    let ask = |op: &'static str| {
+        let query = json!({
+            "params": { "service": service.id, "lines": PLUGIN_LOG_LINES },
+            "profile": profile,
+            "node_id": state.network.node_id,
+        });
+        let plugins = state.plugins.clone();
+        let code = source.clone();
+        async move { plugins.query_audit(&code, op, query).await }
+    };
+    let strings = |value: Option<&serde_json::Value>| -> Option<Vec<String>> {
+        value?.as_array().map(|list| {
+            let mut lines: Vec<String> = list
+                .iter()
+                .filter_map(|line| line.as_str().map(str::to_owned))
+                .collect();
+            let skip = lines.len().saturating_sub(PLUGIN_LOG_LINES);
+            lines.drain(..skip);
+            lines
+        })
+    };
+    let mut lines = None;
+    if service.logs {
+        lines = ask("rpc.logs").await.and_then(|reply| strings(reply.get("lines")));
+    }
+    let mut running = service.status == "ready";
+    if lines.is_none() {
+        if let Some(status) = ask("rpc.status").await {
+            if let Some(state) = status.get("state").and_then(|s| s.as_str()) {
+                running = state == "ready";
+            }
+            lines = strings(status.get("log"));
+        }
+    }
+    Json(json!({
+        "source": source,
+        "name": service.name,
+        "running": running,
+        "previous_run": false,
+        "lines": lines.unwrap_or_default(),
+    }))
+    .into_response()
+}
+
 /// The cluster console: the last lines this admin received, kept in memory by
 /// the core. It needs no plugin; the Deployment Logs screen (`cluster_logs`)
 /// is the plugin's history.
@@ -2379,6 +2516,50 @@ mod tests {
             .expect("refusal body");
         let body: serde_json::Value = serde_json::from_slice(&body).expect("refusal JSON");
         assert_eq!(body["code"], "logs_plugin_required");
+    }
+
+    #[tokio::test]
+    async fn the_llama_cpp_log_is_not_running_without_a_slice() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let response = logs_read(
+            State(state),
+            HeaderMap::new(),
+            Query(LogsReadQuery { source: "llama.cpp".into(), node_id: None }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("engine log body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("engine log JSON");
+        assert_eq!(body["source"], "llama.cpp");
+        assert_eq!(body["running"], false);
+        assert!(body["lines"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_plugin_without_a_log_source_is_not_found() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        let response = logs_read(
+            State(state),
+            HeaderMap::new(),
+            Query(LogsReadQuery { source: "qdrant".into(), node_id: None }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn only_an_admin_reads_another_machines_log() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.auth.write().await.profile = crate::profile::NodeProfile::Worker;
+        let response = logs_read(
+            State(state),
+            HeaderMap::new(),
+            Query(LogsReadQuery { source: "llama.cpp".into(), node_id: Some("other".into()) }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

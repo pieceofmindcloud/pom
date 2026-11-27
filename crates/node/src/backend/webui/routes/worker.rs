@@ -6,6 +6,7 @@ use super::super::*;
 pub(super) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/models", get(models))
+        .route("/api/ui/logs/read", get(logs_read))
         .route("/api/ui/models/delete", post(delete_model))
         .route("/api/ui/models/rescan", post(rescan_models))
         .route("/api/ui/paths", get(get_paths).post(save_paths))

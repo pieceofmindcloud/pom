@@ -30,6 +30,10 @@ import { DEMO_USER_ROUTES, isDemoUser, isUserSession, sessionInfo, USER_ROUTES }
  */
 const RESTRICTED: Readonly<Record<string, readonly Profile[]>> = {
   "/deploy": ["admin"],
+  // The network's process log is the admins'; engine and service logs are
+  // every machine's that holds models (`lib/logsHub.ts`).
+  "/logs/console": ["admin"],
+  "/logs/source": ["admin", "worker"],
   "/deployments": ["admin"],
   "/config/administration": ["admin", "worker"],
   "/config/network/participants": ["admin", "worker"],
@@ -93,6 +97,9 @@ function isUnder(path: string, prefix: string): boolean {
 }
 
 export function isEnterprisePath(path: string): boolean {
+  // The Logs screen's own tabs (cluster console, engine and service logs)
+  // are the POM's, not a plugin surface (`lib/logsHub.ts`).
+  if (isUnder(path, "/logs/console") || isUnder(path, "/logs/source")) return false;
   return isUnder(path, "/logs") || isUnder(path, "/statistics");
 }
 

@@ -101,6 +101,12 @@ pub(crate) struct PluginService {
     /// the Agent Client Protocol, for the Chat.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acp: Option<AcpAgent>,
+    /// Any kind: the plugin answers `rpc.logs` (`{ service }` -> `{ lines }`)
+    /// with this service's own log, which the Logs screen shows in a tab of
+    /// its own. An inference service without it still gets the tab, read from
+    /// the `log` its `status` returns.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub logs: bool,
 }
 
 /// An ACP agent a plugin serves: `path` on its own upstream (`ui.upstream`),
@@ -211,6 +217,7 @@ impl PluginService {
             components: Vec::new(),
             workflows: Vec::new(),
             acp: None,
+            logs: false,
         }
     }
 }
@@ -692,6 +699,7 @@ pub(crate) fn parse_services(plugin_code: &str, answer: &Value) -> Vec<PluginSer
             components,
             workflows,
             acp,
+            logs: entry["logs"] == true,
         });
     }
     services
@@ -902,6 +910,19 @@ mod tests {
     fn acp_entry(acp: serde_json::Value) -> serde_json::Value {
         serde_json::json!({"services": [{"id": "goose", "kind": "acp_agent", "name": "Goose",
             "status": "ready", "version": "1.60.2", "acp": acp}]})
+    }
+
+    #[test]
+    fn a_service_of_any_kind_may_declare_its_log() {
+        let services = parse_services(
+            "qdrant",
+            &json!({"services": [{"id": "rag", "kind": "rag", "name": "Qdrant", "status": "ready", "logs": true},
+                                 {"id": "other", "kind": "rag", "name": "Other", "status": "ready"}]}),
+        );
+        assert!(services[0].logs);
+        assert_eq!(serde_json::to_value(&services[0]).unwrap()["logs"], true);
+        assert!(!services[1].logs);
+        assert!(serde_json::to_value(&services[1]).unwrap().get("logs").is_none());
     }
 
     #[test]

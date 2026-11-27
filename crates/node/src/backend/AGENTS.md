@@ -154,7 +154,9 @@ boundary.
   node and the route retires the record once, and a saved re-enable waits for
   the restart its gossip subscription needs; the route and `save_relay` refuse
   the pair with `relay.everyone`, which the startup refuses too), cluster process
-  logs (`GET /api/ui/cluster-console`, the core's in-memory tail with no
+  logs (`GET /api/ui/logs/read`, one machine's llama.cpp or plugin service
+  log - another machine's forwarded signed, admins only;
+  `GET /api/ui/cluster-console`, the core's in-memory tail with no
   plugin; `GET /api/ui/cluster-logs` answered by the logs plugin, 403
   `logs_plugin_required` without it; `POST /api/ui/network/logs`, any
   admin - a secondary forwards it to the principal, signed - turns collection

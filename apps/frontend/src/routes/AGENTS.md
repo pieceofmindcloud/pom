@@ -709,6 +709,12 @@ while the node does not answer.
   panel shows `job.outputs` (`"<host>: <motivo>"`) below the message.
   Test: `Deployments.test.tsx` (expansion, the active badge, `{version}` in the API).
 ## Logs, keys and the audit
+- `LogsConsole.tsx` - the Logs screen's Cluster console tab (`/logs/console`,
+  admin): the core's live tail (`useClusterConsole`) on `ClusterConsole`, no
+  plugin. `LogSource.tsx` - one log source tab (`/logs/source/:code`):
+  llama.cpp or a plugin service, read through `useLogSource`
+  (`/api/ui/logs/read`); an admin picks the machine (`?node=`), this machine
+  first. Test: `LogSource.test.tsx`.
 - `DeploymentLogs.tsx` - the full-bleed console of the cluster's process log on
   `/deployments/logs`. It queries the admin's local replica, refreshes every
   second, keeps the arrival order the API returns and can filter by
@@ -732,10 +738,11 @@ while the node does not answer.
   appears when `authority_level` is present. A token belongs to the node that
   minted it: it works there only, never leaves it, and survives a change of
   network, so the screen has no node picker.
-- Request Logs and Statistics **do not exist here**: they are screens of the
-  `enterprise` plugin, delivered by `pom-plugin-logs` through the plugin UI
-  mechanism (`docs/subsystems/plugins-ui.md`). `App.tsx` shows the fallback
-  `../components/EnterpriseFeatureShowcase.tsx` when the plugin is not active.
+- Request Logs and Statistics **do not exist here**: they are screens of
+  `pom-plugin-logs`, delivered through the plugin UI mechanism
+  (`docs/subsystems/plugins-ui.md`). Without the plugin `/logs` goes to the
+  POM's Logs tabs and `/statistics` shows
+  `../components/EnterpriseFeatureShowcase.tsx`.
 ## Settings leaves
 - `ModelPaths.tsx` - edits `model_dirs` and the workspace via
   `POST /api/ui/paths`. The Storage screen (`Armazenamento`) has no slice

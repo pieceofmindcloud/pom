@@ -687,6 +687,33 @@ export function useClusterConsole(deployId?: string, enabled = true) {
   });
 }
 
+/** One log source of one machine (`GET /api/ui/logs/read`). */
+export interface LogSourceRead {
+  source: string;
+  name?: string;
+  /** The engine or service runs now. */
+  running?: boolean;
+  /** The lines are what the previous process left before it went down. */
+  previous_run?: boolean;
+  lines: string[];
+}
+
+/**
+ * A log source of a machine: `llama.cpp`, or a plugin's service. Another
+ * machine's (`nodeId`) is read through this node, which forwards it signed;
+ * only an admin may.
+ */
+export function useLogSource(source: string, nodeId: string | undefined, enabled = true) {
+  const query = new URLSearchParams({ source });
+  if (nodeId) query.set("node_id", nodeId);
+  return useQuery<LogSourceRead>({
+    queryKey: ["log-source", source, nodeId ?? "self"],
+    queryFn: () => api.get<LogSourceRead>(`/api/ui/logs/read?${query.toString()}`),
+    enabled,
+    refetchInterval: enabled ? 2000 : false,
+  });
+}
+
 /**
  * File transfers of this machine. `enabled` is false on a `visitor`: it holds
  * no model, and its node refuses every `/api/transfer` route.

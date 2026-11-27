@@ -43,7 +43,8 @@ release, host process). If this file and the code disagree, the code wins.
 |---|---|---|---|
 | `host.configure` | `gateway{openai_base_url, api_key}`, `workspace_root`, `host_api{base_url, token}`, `preferences{features, storage_directory}` | `{"status":"ok"}` | On every host start and whenever any part changes. Errors are ignored. |
 | `host.event` | `event` (envelope, section 6) | `{"status":"ok"}` | `preferences.changed` to the plugin itself; `deployment.started`, `model.serving`, `model.stopped`, `plugin.installed`, `plugin.updated`, `plugin.removed` to every running plugin. |
-| `host.services` | - | `{"services":[{id, kind, name, status, version?, detail?, architectures?, settings?, stages?, pom_settings?}]}` | Polled at most every 5 s; at most 8 entries; published in `GET /api/ui/node.plugin_services` and drawn next to the machine. `status`: `ready`, `starting`, `installing`, `waiting`, `error`. Kind `acp_agent` adds `acp{path, protocol_version}` for the Chat (`plugins-ui.md`). |
+| `host.services` | - | `{"services":[{id, kind, name, status, version?, detail?, architectures?, settings?, stages?, pom_settings?, logs?}]}` | Polled at most every 5 s; at most 8 entries; published in `GET /api/ui/node.plugin_services` and drawn next to the machine. `status`: `ready`, `starting`, `installing`, `waiting`, `error`. Kind `acp_agent` adds `acp{path, protocol_version}` for the Chat (`plugins-ui.md`). `logs: true` (any kind) gives the service a tab on the Logs screen, read through `rpc.logs`. |
+| `rpc.logs` | `{params:{service, lines}, profile, node_id}` | `{"lines": [string]}` | The service's own log, oldest first, at most `lines`. Asked by the node for the Logs screen (`GET /api/ui/logs/read`), with `profile: "admin"` when another machine's admin reads it. An `inference` service without it is read from `rpc.status`'s `log`. |
 | `ui.manifest` | - | the `pom-plugin-ui/v1` manifest | Saved in `pom.db`, so an `on_demand` menu survives a stopped process. |
 | `ui.asset` | `path` | `{"content_type", "base64"}` | Only paths listed in `assets`. Closed content-type list. |
 | `ui.upstream` | - | `{"status":"ready","port","token"}` or `{"status":"starting"}` / `{"status":"error","error"}` | Mounts the plugin's loopback HTTP server at `/api/ui/plugins/<code>/proxy/*`. Token is 16-512 ASCII bytes. |
@@ -108,7 +109,9 @@ falls back to `blocks`.
 `Button`, `Input`, `Select`, `Field`, `Badge`, `Tabs` (v5), `Dot`, `Progress`,
 `Meter`, `Empty`, `Skeleton`, `ErrorState`, `Mono`, `ScrollX`, `Footnote`,
 `KeyValue`, `InfoTip`, `IconTip`, `AlertTooltip`), `format`,
-`components{Modal, TelemetryLine, ExecutionTelemetry, Markdown}`,
+`components{Modal, TelemetryLine, ExecutionTelemetry, Markdown, Terminal}` (`Terminal` v9: the
+panel's log terminal, `lines` as strings or `{source?, time?, level?, text}`; use it for any
+engine or service output instead of drawing a terminal),
 `hooks{useI18n, useTheme, useCluster}`, `api.get`, `api.post` (v8), `storageKey`,
 `context()` (v2), `events{subscribe, last}` (v2), `protocol` (v2),
 `plugin(code)` -> `{events, notifications{notify, confirm}, rpc, loader}` (v2,

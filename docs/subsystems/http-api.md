@@ -1733,6 +1733,17 @@ principal_unreachable` while the principal is away) and applied locally once
 the principal accepts. The effect needs no restart and is announced as a
 trigger for the other nodes' authenticated fetch.
 
+**`GET /api/ui/logs/read?source=<code>&node_id=<id>`** - one log source of one
+machine, for the Logs screen: `{ source, name?, running, previous_run, lines }`.
+`source=llama.cpp` is the in-process engine (`engine_log`: the current load
+attempt, or the previous process's file after a crash, `previous_run: true`);
+any other source is a plugin service with `logs` (read through `rpc.logs`) or
+of kind `inference` (read from `rpc.status`'s `log`), 404 `no_log_source`
+otherwise. `ServingMember` on the machine itself; `node_id` naming another
+machine is forwarded there signed (`forward_to_node`), only from an admin
+node (403 otherwise), and that node takes the route as `AnyAdmin`
+(`node_to_node_scope`).
+
 **`GET /api/ui/cluster-console`** - `AnyAdmin`, `ConnectionAuth`: the
 cluster console's read, with no plugin. Every admin keeps the last 2000 lines
 it received in memory (`ClusterLogs::recent`) and answers the same

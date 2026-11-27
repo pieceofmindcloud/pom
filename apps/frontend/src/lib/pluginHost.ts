@@ -22,6 +22,10 @@
  * Version 8 adds `api.post`, a same-origin POST to the node's API with the
  * panel's own credentials, so a plugin screen can act on the node routes it
  * draws (the Hugging Face plugin starts downloads and saves the token).
+ * Version 9 adds `components.Terminal`, the panel's log terminal (the one the
+ * cluster console and the Logs screen draw): `lines` are strings or
+ * `{ source, time, level, text }`, with follow and copy built in, so a plugin
+ * showing its engine's output never draws a terminal of its own.
  */
 import * as React from "react";
 import * as ReactDOM from "react-dom";
@@ -32,6 +36,7 @@ import * as format from "./format";
 import { Modal } from "../components/Confirm";
 import { TelemetryLine, type TelemetryLineProps } from "../components/TelemetryLine";
 import { Markdown } from "../components/Markdown";
+import { Terminal } from "../components/Terminal";
 import { api } from "./api";
 import { storageKey } from "./brand";
 import { useCluster } from "./queries";
@@ -48,7 +53,7 @@ import {
 } from "./pluginEvents";
 import { signalPluginReady } from "./pluginReady";
 
-export const PLUGIN_HOST_VERSION = 8;
+export const PLUGIN_HOST_VERSION = 9;
 
 /**
  * Compatibility for plugins built against host version 2, which rendered the
@@ -68,7 +73,7 @@ export function buildPluginHost() {
     reactQuery,
     ui,
     format,
-    components: { Modal, ExecutionTelemetry: ExecutionTelemetryCompat, TelemetryLine, Markdown },
+    components: { Modal, ExecutionTelemetry: ExecutionTelemetryCompat, TelemetryLine, Markdown, Terminal },
     hooks: { useI18n, useTheme, useCluster },
     api: { get: api.get, post: api.post },
     storageKey,

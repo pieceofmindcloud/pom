@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, Once};
 
 /// Lines kept in memory and offered by [`tail`].
-const RING_LINES: usize = 200;
+pub const RING_LINES: usize = 200;
 /// Lines a failure carries to the screen.
 pub const TAIL_LINES: usize = 60;
 /// Beyond this the file stops growing: what explains a load is at its start

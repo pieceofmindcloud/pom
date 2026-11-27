@@ -60,6 +60,8 @@ vi.mock("./components/Logo", () => ({
 // marker is written by hand instead of coming from a shared helper.
 vi.mock("./routes/DeployModel", () => ({ DeployModel: () => <div>tela-implantar</div> }));
 vi.mock("./routes/Deployments", () => ({ Deployments: () => <div>tela-implantacoes</div> }));
+vi.mock("./routes/LogsConsole", () => ({ LogsConsole: () => <div>tela-console</div> }));
+vi.mock("./routes/LogSource", () => ({ LogSource: () => <div>tela-log</div> }));
 vi.mock("./components/PluginScreen", () => ({
   PluginScreen: ({ resolved }: { resolved: { code: string; route: { path: string; screen: string } } }) => {
     // Simulates the real screen keeping the component loaded while the parent swaps
@@ -232,10 +234,17 @@ describe("profile guard per route", () => {
     },
   };
 
-  it("shows the advertising fallback when no plugin provides /logs or /statistics", async () => {
+  it("shows the advertising fallback when no plugin provides /statistics, and the POM's logs at /logs", async () => {
     open("/logs", "admin");
-    expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
-    expect(screen.queryByText(/^tela-plugin:/)).toBeNull();
+    expect(await screen.findByText("tela-console")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Comprar agora" })).toBeNull();
+    cleanup();
+    // A worker lands on its own engines; a visitor has no Logs screen of its own.
+    open("/logs", "worker");
+    expect(await screen.findByText("tela-log")).toBeTruthy();
+    cleanup();
+    open("/logs/console", "worker");
+    expect(screen.queryByText("tela-console")).toBeNull();
     cleanup();
     open("/statistics", "admin");
     expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
@@ -324,7 +333,7 @@ describe("profile guard per route", () => {
     open("/audit/logs", "admin");
     expect(await screen.findByText("tela-plugin:audit:logs")).toBeTruthy();
     cleanup();
-    open("/logs", "admin");
+    open("/statistics", "admin");
     expect(await screen.findAllByRole("button", { name: "Comprar agora" })).toBeTruthy();
   });
 

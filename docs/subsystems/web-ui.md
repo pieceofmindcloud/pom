@@ -1181,6 +1181,22 @@ inspector on the right, read-only, using `DeploymentInspector` and the same
 fields as the original configuration. Node can also read the versions through
 `GET /api/ui/deployments`, but still without the administrative actions.
 
+### Logs
+
+The Logs entry is the POM's, for every admin and worker, with or without the
+logs plugin (`lib/logsHub.ts`, `components/LogsTabs.tsx`). Its tabs:
+Request logs (`/logs`, only when a plugin serves that route), Cluster console
+(`/logs/console`, admins: the network's process lines, the core's live tail,
+`routes/LogsConsole.tsx`), one tab per log source (`/logs/source/<code>`,
+`routes/LogSource.tsx`: llama.cpp and every plugin service that publishes a
+log, `plugins-ui.md`), and Deployment logs (`/deployments/logs`, admins, when
+the plugin keeps that history). A worker sees its own machine's sources; an
+admin sees every machine's and picks the machine in the tab (`?node=`), read
+through `GET /api/ui/logs/read`. Without a plugin serving `/logs`, the entry
+lands on the console (admin) or the llama.cpp tab (worker); Statistics is then
+the Business Pack advertising entry. Every log is drawn by the shared
+`components/Terminal.tsx`, which plugins get as `components.Terminal`.
+
 A machine whose load failed shows it on its card, from `RuntimeStatus.failure`
 in its own status (no plugin, every machine for the admin): a rose line at
 the foot of the Flow card (an alert icon on a compact card) and at the top of

@@ -196,9 +196,12 @@ Per-file list:
 - `DeploymentLogDock.tsx` - the Dashboard's cluster console for any admin,
   with no plugin: a collapsed bar that expands upwards to half the area and
   reads the core's live tail (`useClusterConsole`, `/api/ui/cluster-console`).
-- `ClusterConsole.tsx` - the terminal both the dock and the plugin's
-  Deployment Logs screen draw: lines, level tones, follow-the-bottom and copy;
-  the caller brings the entries and the empty-state text.
+- `Terminal.tsx` - the panel's one log terminal: lines as strings or
+  `{source, time, level, text}`, level tones, follow-the-bottom (`scrollTop`,
+  no `scrollTo`), copy of the last lines, empty state from the caller.
+  Plugins get it as `components.Terminal` (host v9, `lib/pluginHost.ts`).
+  `ClusterConsole.tsx` maps `ClusterLogEntry` onto it for the dock, the Logs
+  console tab and Deployment Logs. Tests in `Terminal.test.tsx`.
 - `OpenNativeChatWindowButton.tsx` - a macOS button used only when the
   WebKit bridge `pomOpenWindow` is available; it sits in the `Topbar`'s toolbar, not in the
   Chat's body. It is an icon-only control: the full name stays in the accessible
@@ -208,7 +211,11 @@ Per-file list:
   at the end of the `Topbar` and renders only inside the macOS app.
 ## App chrome
 
-- `LogsTabs.tsx` - the Logs entry opens the logs plugin's request logs (`/logs`) with the deployment logs (`/deployments/logs`) as a tab beside them; no tabs without the plugin or for a demonstration visitor, whose `/deployments/logs` goes back to `/logs`.
+- `LogsTabs.tsx` - the Logs screen's tab row (`lib/logsHub.ts`): the
+  plugin's Request logs, the Cluster console (admin), one tab per log source
+  (llama.cpp and plugin services with a log; an admin's covers every machine,
+  `useLogSources`) and the plugin's Deployment logs. No row with one tab or for
+  a demonstration visitor. Tests in `LogsTabs.test.tsx`.
 - `nav.ts` - `NAV`: the menu as data. Logs is one leaf (`/logs`). `DEV_ONLY_ROUTES` (Payments and Credit, features still in development) leave the menu unless `navForProfile` gets `devMode` (`pom_dev_mode`, from `POM_DEV_MODE`), and `App.tsx`'s `DevOnly` sends their addresses back to the Dashboard outside that mode. Deploy (`nav.deployments`) is a single entry to
   `/deploy` with `Rocket`; History (`/deployments`) has no menu entry and opens
   from the History button beside Deploy on that screen. Logs has separate

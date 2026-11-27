@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { canAccessRoute, homeRoute, isEnterprisePath } from "./lib/access";
+import { hasLogsHub, isLogsHubPath, logsHome } from "./lib/logsHub";
 import {
   api,
   clearAdminAccessToken,
@@ -290,6 +291,8 @@ export const routeLoaders = {
   networkChat: () => import("./routes/NetworkChat").then(({ NetworkChat }) => NetworkChat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
   deploymentLogs: () => import("./routes/DeploymentLogs").then(({ DeploymentLogs }) => DeploymentLogs),
+  logsConsole: () => import("./routes/LogsConsole").then(({ LogsConsole }) => LogsConsole),
+  logSource: () => import("./routes/LogSource").then(({ LogSource }) => LogSource),
   plugins: () => import("./routes/Plugins").then(({ Plugins }) => Plugins),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
   networkSettings: () => import("./routes/NetworkSettings").then(({ NetworkSettings }) => NetworkSettings),
@@ -327,6 +330,8 @@ const MyKeys = lazyRoute(routeLoaders.myKeys);
 const NetworkChat = lazyRoute(routeLoaders.networkChat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
 const DeploymentLogs = lazyRoute(routeLoaders.deploymentLogs);
+const LogsConsole = lazyRoute(routeLoaders.logsConsole);
+const LogSource = lazyRoute(routeLoaders.logSource);
 const Plugins = lazyRoute(routeLoaders.plugins);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
 const NetworkSettings = lazyRoute(routeLoaders.networkSettings);
@@ -453,6 +458,7 @@ export default function App() {
       location.pathname === "/deployments" ||
       pluginRoute?.route.full_bleed === true ||
       location.pathname === "/deployments/logs" ||
+      isLogsHubPath(location.pathname) ||
       location.pathname === "/public-networks" ||
       location.pathname === "/network-chat" ||
       location.pathname === "/config/keys/api" ||
@@ -646,6 +652,10 @@ export default function App() {
                 ) : enterprisePath ? (
                   pluginUiPending ? (
                     <PluginLoading />
+                  ) : location.pathname === "/logs" && hasLogsHub(profile) ? (
+                    // No plugin serves the request logs: the Logs entry opens the
+                    // POM's own tabs (cluster console, engines and services).
+                    <Navigate to={logsHome(profile)} replace />
                   ) : (
                     <EnterpriseFeatureShowcase kind={location.pathname.startsWith("/logs") ? "logs" : "statistics"} />
                   )
@@ -666,6 +676,8 @@ export default function App() {
                         <Route path="/deploy" element={<Page><DeployModel /></Page>} />
                         <Route path="/deploy/image" element={<Navigate to="/deploy?mode=image" replace />} />
                         <Route path="/deployments" element={<Page><Deployments /></Page>} />
+                        <Route path="/logs/console" element={<Page><LogsTabs><LogsConsole /></LogsTabs></Page>} />
+                        <Route path="/logs/source/:code" element={<Page><LogsTabs><LogSource /></LogsTabs></Page>} />
                         <Route path="/deployments/logs" element={<Page>{isDemoUser() ? <Navigate to="/logs" replace /> : <LogsTabs><DeploymentLogs /></LogsTabs>}</Page>} />
                         {/* Keep the former deploy URL working for old bookmarks. */}
                         <Route path="/shards/deploy" element={<Navigate to="/deploy" replace />} />

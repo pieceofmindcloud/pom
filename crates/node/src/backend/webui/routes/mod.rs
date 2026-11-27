@@ -180,6 +180,14 @@ const ROUTE_RULES: &[RouteRule] = &[
         method: None,
         scope: RouteScope::LocalOnly,
     },
+    // A machine's engine and plugin logs, for the Logs screen. Its own
+    // operator (admin or worker) reads them; another node only as an admin
+    // (`node_to_node_scope`).
+    RouteRule {
+        prefix: "/api/ui/logs/read",
+        method: Some(Method::GET),
+        scope: RouteScope::ServingMember,
+    },
     // The public plugin store, read by the node so the browser never leaves
     // its own origin (`crate::plugins::plugin_catalog`).
     RouteRule {
@@ -732,7 +740,8 @@ pub(crate) fn route_scope(method: &Method, path: &str) -> RouteScope {
 pub(crate) fn node_to_node_scope(method: &Method, path: &str, scope: RouteScope) -> RouteScope {
     let admin_only = (method == Method::POST && is_under(path, "/api/ui/model-provider/downloads"))
         || is_under(path, "/api/ui/models/rescan")
-        || (method == Method::POST && is_under(path, "/api/ui/instances"));
+        || (method == Method::POST && is_under(path, "/api/ui/instances"))
+        || is_under(path, "/api/ui/logs/read");
     if admin_only && scope == RouteScope::ServingMember {
         RouteScope::AnyAdmin
     } else {

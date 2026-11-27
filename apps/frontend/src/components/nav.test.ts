@@ -80,13 +80,12 @@ describe("navigation structure", () => {
 
 describe("navForProfile", () => {
   it("shows the administrator the whole menu", () => {
-    // Without the Business Pack plugin, Logs and Statistics fold into its one entry.
+    // Logs is the POM's; without the Business Pack plugin, Statistics is its advertising entry.
     const labels = navForProfile("admin").map((s) => s.labelKey);
     expect(labels).toEqual(NAV.map((s) => s.labelKey)
-      .filter((label) => label !== "nav.statistics")
       // A signed-in person's own keys: never a node profile's.
       .filter((label) => label !== "nav.myKeys")
-      .map((label) => label === "nav.logs" ? "nav.businessPack" : label));
+      .map((label) => label === "nav.statistics" ? "nav.businessPack" : label));
     expect(navFooterForProfile("admin")).toEqual([]);
     expect(navFooterForProfile("worker")).toEqual([]);
   });
@@ -104,11 +103,12 @@ describe("navForProfile", () => {
     for (const profile of ["admin", "worker"] as const) {
       const sections = navForProfile(profile, false);
       const labels = sections.map((s) => s.labelKey);
-      // One entry for the one purchase: logs, statistics and quota.
-      expect(labels, profile).not.toContain("nav.logs");
+      // Logs stays (cluster console, engine and service logs); Statistics is
+      // the one advertising entry for the purchase.
+      expect(sections.find((s) => s.labelKey === "nav.logs"), profile).toMatchObject({ to: "/logs" });
       expect(labels, profile).not.toContain("nav.statistics");
       expect(sections.find((s) => s.labelKey === "nav.businessPack"), profile)
-        .toMatchObject({ to: "/logs" });
+        .toMatchObject({ to: "/statistics" });
     }
   });
 

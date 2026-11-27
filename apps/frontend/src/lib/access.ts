@@ -130,7 +130,14 @@ export function canAccessRoute(path: string, profile: Profile): boolean {
   // Plugin UIs are local to this node and open to every profile.
   // The explicit blocks on native `infer` surfaces still apply.
   if (profile === "visitor" && INFER_DENIED_ROUTES.some((prefix) => isUnder(path, prefix))) return false;
-  const pluginProfiles = pluginRouteProfiles(path);
+  // The Logs screen's own tabs are native even under a plugin's `/logs`
+  // claim, which matches them by prefix (`lib/logsHub.ts`).
+  const logsHub = isUnder(path, "/logs/console") || isUnder(path, "/logs/source");
+  // `/logs` itself opens for every admin and worker: the plugin's Request
+  // logs for the profiles it serves, the POM's tabs for the rest.
+  const logsEntry = path.split(/[?#]/, 1)[0] === "/logs" && (profile === "admin" || profile === "worker");
+  if (logsEntry) return true;
+  const pluginProfiles = logsHub ? null : pluginRouteProfiles(path);
   if (pluginProfiles) return pluginProfiles.includes(profile);
   // Request logs and statistics: a visitor sees the requests that entered
   // through its own node once a plugin serves them, but gets no advertising

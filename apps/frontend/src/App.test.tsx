@@ -241,6 +241,8 @@ describe("profile guard per route", () => {
     cleanup();
     // A worker lands on its own engines; a visitor has no Logs screen of its own.
     open("/logs", "worker");
+    await new Promise((r) => setTimeout(r, 300));
+    console.log("DOM>>", document.body.textContent?.slice(0, 300));
     expect(await screen.findByText("tela-log")).toBeTruthy();
     cleanup();
     open("/logs/console", "worker");
@@ -308,6 +310,36 @@ describe("profile guard per route", () => {
 
     open("/analytics/example", "visitor");
     expect(await screen.findByText("tela-plugin:analytics:example")).toBeTruthy();
+  });
+
+  it("keeps the POM's Logs tabs reachable while the logs plugin claims /logs", async () => {
+    pluginUi.plugins = [{
+      code: "logs",
+      version: "1.0.0",
+      manifest: {
+        schema: "pom-plugin-ui/v1",
+        plugin_code: "logs",
+        menu: [],
+        routes: [{ path: "/logs", screen: "logs", profiles: ["admin"] }],
+        screens: { logs: { module: "ui/logs.js" } },
+        assets: ["ui/logs.js"],
+      },
+    }];
+    open("/logs", "admin");
+    expect(await screen.findByText("tela-plugin:logs:logs")).toBeTruthy();
+    cleanup();
+    // A child of the plugin's `/logs` is the POM's own tab, not the plugin's screen.
+    open("/logs/console", "admin");
+    expect(await screen.findByText("tela-console")).toBeTruthy();
+    expect(screen.queryByText("tela-plugin:logs:logs")).toBeNull();
+    cleanup();
+    // A worker opens its engine tabs and, beside them, the plugin's Request logs.
+    open("/logs/source/llama.cpp", "worker");
+    expect(await screen.findByText("tela-log")).toBeTruthy();
+    cleanup();
+    open("/logs", "worker");
+    expect(await screen.findByText("tela-plugin:logs:logs")).toBeTruthy();
+    pluginUi.plugins = [];
   });
 
   it("namespaces competing claims to a native plugin route and keeps the native fallback", async () => {

@@ -16,7 +16,7 @@
  */
 import type { Profile } from "./profile";
 import type { NodeInfo, PeerView } from "./types";
-import { resolvePluginRoute } from "./pluginUi";
+import { pluginRouteProfiles } from "./pluginUi";
 
 export const LLAMA_CPP_SOURCE = "llama.cpp";
 export const CONSOLE_ROUTE = "/logs/console";
@@ -74,7 +74,7 @@ export function hasLogsHub(profile: Profile): boolean {
 
 export function logsTabs(profile: Profile, sources: LogSource[], t: (key: string) => string): LogsTab[] {
   const tabs: LogsTab[] = [];
-  const plugin = Boolean(resolvePluginRoute("/logs"));
+  const plugin = pluginServesLogs(profile);
   if (plugin) tabs.push({ value: "/logs", label: t("nav.requestLogs") });
   if (!hasLogsHub(profile)) return tabs;
   if (profile === "admin") tabs.push({ value: CONSOLE_ROUTE, label: t("logs.console") });
@@ -83,7 +83,12 @@ export function logsTabs(profile: Profile, sources: LogSource[], t: (key: string
   return tabs;
 }
 
-/** Where the Logs entry lands when no plugin serves `/logs`. */
+/** A plugin serves `/logs` (Request logs) to this profile: its manifest's profiles decide. */
+export function pluginServesLogs(profile: Profile): boolean {
+  return pluginRouteProfiles("/logs")?.includes(profile) ?? false;
+}
+
+/** Where the Logs entry lands when no plugin serves `/logs` to this profile. */
 export function logsHome(profile: Profile): string {
   return profile === "admin" ? CONSOLE_ROUTE : sourceRoute(LLAMA_CPP_SOURCE);
 }

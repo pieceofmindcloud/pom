@@ -1194,7 +1194,11 @@ the plugin keeps that history). A worker sees its own machine's sources; an
 admin sees every machine's and picks the machine in the tab (`?node=`), read
 through `GET /api/ui/logs/read`. Without a plugin serving `/logs`, the entry
 lands on the console (admin) or the llama.cpp tab (worker); Statistics is then
-the Business Pack advertising entry. Every log is drawn by the shared
+the Business Pack advertising entry. A plugin's `/logs` claim never takes the
+hub's own routes: plugin routes match by prefix, so `App.tsx` and
+`lib/access.ts` resolve `/logs/console` and `/logs/source/*` as native first
+(`isLogsHubPath`), and `/logs` goes to the plugin only for the profiles it
+serves (`pluginServesLogs`). Every log is drawn by the shared
 `components/Terminal.tsx`, which plugins get as `components.Terminal`.
 
 A machine whose load failed shows it on its card, from `RuntimeStatus.failure`

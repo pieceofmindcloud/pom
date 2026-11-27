@@ -4,7 +4,8 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({ served: true, demo: false, profile: "admin" }));
-vi.mock("../lib/pluginUi", () => ({ resolvePluginRoute: () => (state.served ? { code: "logs" } : null) }));
+// A plugin that serves `/logs` to admins only (`pluginRouteProfiles`).
+vi.mock("../lib/pluginUi", () => ({ pluginRouteProfiles: () => (state.served ? ["admin"] : null) }));
 vi.mock("../lib/session", () => ({ isDemoUser: () => state.demo }));
 vi.mock("../i18n/provider", () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock("../lib/profile", () => ({ useProfile: () => ({ profile: state.profile }) }));
@@ -46,8 +47,7 @@ describe("LogsTabs", () => {
     expect(tabNames()).toEqual(["logs.console", "llama.cpp", "vLLM", "Qdrant"]);
   });
 
-  it("shows a worker its own machine's sources and no console", () => {
-    state.served = false;
+  it("shows a worker its own machine's sources, no console and no Request logs it cannot open", () => {
     state.profile = "worker";
     renderAt("/logs/source/llama.cpp");
     expect(tabNames()).toEqual(["llama.cpp", "vLLM", "Qdrant"]);

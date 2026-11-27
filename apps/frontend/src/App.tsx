@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { canAccessRoute, homeRoute, isEnterprisePath } from "./lib/access";
-import { hasLogsHub, isLogsHubPath, logsHome } from "./lib/logsHub";
+import { hasLogsHub, isLogsHubPath, logsHome, pluginServesLogs } from "./lib/logsHub";
 import {
   api,
   clearAdminAccessToken,
@@ -412,7 +412,16 @@ export default function App() {
   // The registry is read by `canAccessRoute` and by the menu; it must be up to date
   // before any child consults the guard.
   setPluginUi(pluginUi.data?.plugins);
-  const pluginRoute = resolvePluginRoute(location.pathname);
+  // The Logs screen's own tabs (`/logs/console`, `/logs/source/...`) are the
+  // POM's even while a plugin claims `/logs`: plugin routes match by prefix,
+  // and the logs plugin's screen would take every tab's address.
+  // `/logs` itself is the plugin's Request logs only for the profiles it
+  // serves; a worker under an admin-only claim lands on the POM's tabs.
+  const pluginRoute =
+    isLogsHubPath(location.pathname) ||
+    (location.pathname === "/logs" && hasLogsHub(profile) && !pluginServesLogs(profile))
+      ? null
+      : resolvePluginRoute(location.pathname);
   // Each plugin brings its own texts; follows active plugins and language.
   const activePlugins = pluginUiSnapshot();
   useEffect(() => {

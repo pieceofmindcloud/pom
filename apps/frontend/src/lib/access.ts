@@ -65,6 +65,8 @@ const INFER_ROUTES = [
   // catalog and installs plugins on itself, and their menus join the list
   // below its conversations.
   "/plugins",
+  // Plugins are local to every machine, and so is their desktop.
+  "/pieces",
   "/config/network",
   "/config/my-machine",
   // Its own token usage and budget: every profile that runs inference has one.

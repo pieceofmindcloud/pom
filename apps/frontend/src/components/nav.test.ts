@@ -63,7 +63,10 @@ describe("navigation structure", () => {
     const labels = NAV.map((section) => section.labelKey);
     const plugins = NAV.find((section) => section.labelKey === "nav.plugins");
     expect(plugins?.to).toBe("/plugins");
-    expect(labels.indexOf("nav.plugins")).toBe(labels.indexOf("nav.documentation") - 1);
+    // Pieces (the apps of this machine as a desktop) sits right below Plugins.
+    expect(labels.indexOf("nav.pieces")).toBe(labels.indexOf("nav.plugins") + 1);
+    expect(labels.indexOf("nav.pieces")).toBe(labels.indexOf("nav.documentation") - 1);
+    expect(NAV.find((section) => section.labelKey === "nav.pieces")?.to).toBe("/pieces");
 
     const settings = NAV.find((section) => section.labelKey === "nav.settings");
     const entries = settings?.children?.map((child) => [child.labelKey, child.to]);
@@ -158,6 +161,7 @@ describe("navForProfile", () => {
       "nav.publicNetworks",
       "nav.networkChat",
       "nav.plugins",
+      "nav.pieces",
       "nav.network",
     ]);
     expect(navFooterForProfile("visitor").map((item) => [item.labelKey, item.to])).toEqual([

@@ -15,6 +15,8 @@ import { useAdminSurface, useNode, usePluginUi } from "./lib/queries";
 import { pluginUiSnapshot, resolvePluginRoute, setPluginUi } from "./lib/pluginUi";
 import { PluginScreen } from "./components/PluginScreen";
 import { LogsTabs } from "./components/LogsTabs";
+import { Dock } from "./components/pieces/Dock";
+import { PiecesProvider } from "./components/pieces/PiecesProvider";
 import { PluginLoading } from "./components/PluginLoading";
 import { PluginBridge } from "./components/PluginBridge";
 import { syncPluginCatalogs } from "./lib/pluginI18n";
@@ -27,7 +29,7 @@ import { FirstRunWizard, useFirstRunWizard } from "./components/FirstRunWizard";
 import { EnterpriseFeatureShowcase } from "./components/EnterpriseFeatureShowcase";
 import { useI18n } from "./i18n/provider";
 import type { AdminAccessStatus } from "./lib/types";
-import { isDemoUser, loadSession } from "./lib/session";
+import { isDemoUser, isUserSession, loadSession } from "./lib/session";
 import { modelSearchRoute } from "./lib/modelSearch";
 import { DemoExpiredNotice, DemoNetwork, guestHold, startGuestVisit, DemoQueue, DemoWelcome, useDemoSeat, useQueueReload } from "./components/DemoMode";
 import pomMark from "./assets/pom-mark-dark.png";
@@ -291,6 +293,7 @@ export const routeLoaders = {
   networkChat: () => import("./routes/NetworkChat").then(({ NetworkChat }) => NetworkChat),
   dashboard: () => import("./routes/Dashboard").then(({ Dashboard }) => Dashboard),
   logsConsole: () => import("./routes/LogsConsole").then(({ LogsConsole }) => LogsConsole),
+  pieces: () => import("./routes/Pieces").then(({ Pieces }) => Pieces),
   logSource: () => import("./routes/LogSource").then(({ LogSource }) => LogSource),
   plugins: () => import("./routes/Plugins").then(({ Plugins }) => Plugins),
   modelPaths: () => import("./routes/ModelPaths").then(({ ModelPaths }) => ModelPaths),
@@ -328,6 +331,7 @@ const MyKeys = lazyRoute(routeLoaders.myKeys);
 const NetworkChat = lazyRoute(routeLoaders.networkChat);
 const Dashboard = lazyRoute(routeLoaders.dashboard);
 const LogsConsole = lazyRoute(routeLoaders.logsConsole);
+const Pieces = lazyRoute(routeLoaders.pieces);
 const LogSource = lazyRoute(routeLoaders.logSource);
 const Plugins = lazyRoute(routeLoaders.plugins);
 const ModelPaths = lazyRoute(routeLoaders.modelPaths);
@@ -463,6 +467,7 @@ export default function App() {
       location.pathname === "/deployments" ||
       pluginRoute?.route.full_bleed === true ||
       isLogsHubPath(location.pathname) ||
+      location.pathname === "/pieces" ||
       location.pathname === "/public-networks" ||
       location.pathname === "/network-chat" ||
       location.pathname === "/config/keys/api" ||
@@ -577,8 +582,10 @@ export default function App() {
     );
   }
 
-  return (
-    <ChatSessionProvider>
+  // The POM's "operating system" (Pieces and the dock over every screen) is the
+  // operator's: not a person signed in through a provider, not a demo visit.
+  const piecesEnabled = !isUserSession() && !isDemoUser();
+  const shell = (
       <div className="flex h-full min-h-0 w-full overflow-hidden">
         {/*
           The chrome gets its own boundaries. The routed page below is the part
@@ -599,7 +606,7 @@ export default function App() {
         <ErrorBoundary fallback={null}>
           <FirstRunGuide enabled={profile === "admin"} />
         </ErrorBoundary>
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="relative flex min-w-0 flex-1 flex-col">
           <ErrorBoundary
             fallback={
               <div className="border-b border-line px-4 py-3 text-xs text-faint">
@@ -705,9 +712,10 @@ export default function App() {
                         <Route path="/config/preferences" element={<Page><Preferences /></Page>} />
                         <Route path="/config/preferences/admin" element={<Page><Preferences administrative /></Page>} />
                         <Route path="/config/about" element={<Page><About /></Page>} />
-                        {/* Services is the Plugins screen's first tab now. */}
-                        <Route path="/config/services" element={<Navigate to="/plugins?tab=services" replace />} />
-                        <Route path="/config/background-services" element={<Navigate to="/plugins?tab=services" replace />} />
+                        <Route path="/pieces" element={<Page><Pieces /></Page>} />
+                        {/* Services became Pieces, a main menu entry. */}
+                        <Route path="/config/services" element={<Navigate to="/pieces" replace />} />
+                        <Route path="/config/background-services" element={<Navigate to="/pieces" replace />} />
                         <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                         <Route path="/config/keys/connection" element={<Page><ConnectionKeys /></Page>} />
                         <Route path="/config/folders" element={<Page><ModelPaths /></Page>} />
@@ -720,8 +728,19 @@ export default function App() {
               </Suspense>
             </ErrorBoundary>
           </main>
+          {/* Over the content column, so it centres on the screens and not
+              on the window with the menu beside them. */}
+          {piecesEnabled && (
+            <ErrorBoundary fallback={null}>
+              <Dock />
+            </ErrorBoundary>
+          )}
         </div>
       </div>
+  );
+  return (
+    <ChatSessionProvider>
+      {piecesEnabled ? <PiecesProvider>{shell}</PiecesProvider> : shell}
     </ChatSessionProvider>
   );
 }

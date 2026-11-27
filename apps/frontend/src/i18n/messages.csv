@@ -242,6 +242,7 @@ key,en,pt-BR
 "nav.businessPack","Business Pack","Business Pack"
 "nav.credit","Credit","Crédito"
 "nav.payments","Payments","Pagamentos"
+"nav.pieces","Pieces","Pieces"
 "network.chatVisitorsHint","Off, the Chat is for admins and workers only. On, visitors join it and see who else talks there, other visitors included.","Desligado, o Chat é só de administradores e trabalhadores. Ligado, visitantes entram nele e veem quem mais fala ali, inclusive outros visitantes."
 "network.logsNotAuthority","Only an admin decides this, and the decision applies to the whole cluster.","Só um admin decide isso, e a decisão vale para o cluster inteiro."
 "network.logsPropagates","No restart needed. Any admin can change it: a secondary admin's change goes to the main node, and the other nodes confirm the policy with it before adopting.","Não precisa reiniciar. Qualquer admin pode mudar: a mudança de um admin secundário vai para o principal, e os demais nós confirmam a política com ele antes de adotar."

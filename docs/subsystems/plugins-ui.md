@@ -317,13 +317,14 @@ engine needs a node that has it.
   piece paused, "The <name> piece is paused", why (closed, it uses no memory,
   processor or GPU, and keeps its settings), that it can be closed again with
   the X, and an "Open <name>" button.
-- **Plugins > Services** (`routes/BackgroundServices.tsx`, the Plugins
-  screen's first tab once a plugin is installed, `/plugins?tab=services`;
-  `/config/services` and `/config/background-services` redirect) shows every
+- **Pieces** (`routes/Pieces.tsx`, `/pieces`, a main menu entry below
+  Plugins; `/config/services` and `/config/background-services` redirect)
+  shows every
   plugin as an app icon with its name (the store's name and icon first, then
   `display_name` / `app_icon`) on a desktop: the POM pieces animate on a dark
   sky behind it, the stopped apps are free icons the operator drags anywhere
-  (kept in the browser), and the open ones sit on a dock over the animation,
+  (kept in the browser), and the open ones sit on the POM's dock, which floats over every screen
+  (`components/pieces/`),
   resident ones pinned before a divider and closable ones after it. An
   open on-demand app closes from its X (confirmed, then `/close`); a click on
   the icon opens the app's settings window: open or close it, its memory, and

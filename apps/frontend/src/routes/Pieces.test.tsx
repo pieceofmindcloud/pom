@@ -3,7 +3,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import { BackgroundServices } from "./BackgroundServices";
+import { Pieces } from "./Pieces";
+import { PiecesProvider } from "../components/pieces/PiecesProvider";
+import { Dock } from "../components/pieces/Dock";
 
 const manifest = (code: string) => ({ schema: "pom-plugin-ui/v1", plugin_code: code, menu: [], routes: [], screens: {}, assets: [] });
 
@@ -36,11 +38,14 @@ vi.mock("../lib/queries", () => ({
 function mount() {
   return render(
     <LocaleProvider initialLocale="en">
-      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-        <Routes>
-          <Route path="/" element={<BackgroundServices />} />
-          <Route path="/hermes/main" element={<p>hermes screen</p>} />
-        </Routes>
+      <MemoryRouter initialEntries={["/pieces"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <PiecesProvider>
+          <Routes>
+            <Route path="/pieces" element={<Pieces />} />
+            <Route path="/hermes/main" element={<p>hermes screen</p>} />
+          </Routes>
+          <Dock />
+        </PiecesProvider>
       </MemoryRouter>
     </LocaleProvider>,
   );

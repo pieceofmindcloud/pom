@@ -99,6 +99,7 @@ const chatScenario = vi.hoisted(() => ({
  * proving it.
  */
 vi.mock("../lib/queries", () => ({
+  usePublicPluginCatalog: () => ({ data: { plugins: [] } }),
   useChatAgents: () => ({ data: { agents: [] }, isLoading: false }),
   useAdminSurface: () => ({ data: "available", isLoading: false, isError: false }),
   useAdminAccess: () => ({ data: { default_password: false } }),

@@ -193,23 +193,17 @@ describe("Plugins", () => {
     localStorage.clear();
   });
 
-  it("opens on the Services tab, first, once a plugin is installed", () => {
+  it("has no Services tab any more: the apps moved to Pieces", () => {
     mocks.installedUi = [{
       code: "goose",
       version: "0.1.0",
       manifest: { schema: "pom-plugin-ui/v1", plugin_code: "goose", menu: [], routes: [], screens: {}, assets: [] },
       on_demand: true,
       running: false,
-      lifecycle_default: "on_demand",
     }];
     renderPage("en");
-    const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent);
-    expect(tabs[0]).toBe("Services");
-    expect(screen.getByRole("tab", { name: "Services" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByTestId("background-service-goose")).toBeTruthy();
-    // Checking for updates belongs to the Plugins tab only.
-    expect(screen.queryByRole("button", { name: /check for updates/i })).toBeNull();
-    fireEvent.click(screen.getByRole("tab", { name: "Plugins" }));
+    expect(screen.queryByRole("tab", { name: "Services" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "Plugins" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByRole("button", { name: /check for updates/i })).toBeTruthy();
     mocks.installedUi = undefined;
   });

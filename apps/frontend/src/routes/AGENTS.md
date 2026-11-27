@@ -496,32 +496,18 @@ while the node does not answer.
   links, search + clear, empty state, and the mobile nav/reader/`Voltar`
   contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
-- `BackgroundServices.tsx` - the Services tab of `/plugins` (`embedded`;
-  first, and the screen's start, once a plugin is installed, `?tab=services`;
-  `/config/services` and `/config/background-services` redirect): every plugin from `usePluginUi`
-  as an app (the store's name and icon, else the manifest's `display_name` /
-  `app_icon` / `icon_image`, else a glyph), on a desktop: a dark night sky with
-  the POM pieces locking together behind it (`components/PuzzleBackdrop.tsx`),
-  the available apps as free icons the operator drags anywhere (positions in
-  `localStorage`, `storageKey("services.desktop")`), and the open ones on a
-  dock over the animation, resident ones pinned before a divider. The icons
-  carry no labels but the name. A click on a closed app launches it like an operating
-  system (`launch`): it lands on the dock bouncing while it starts, then the
-  POM goes to its screen (its first menu route, `pluginMenuItems`). A running
-  app with no screen (an inference engine) is not on the dock: it is a system
-  notification at the top right, one under the other, with settings and
-  close. A click on the dock goes to the app's screen; a hover gear opens the
-  settings; a right click opens `ContextMenu` (open, go to screen, settings,
-  keep always on / run on demand, close). Check for updates shows on the
-  Plugins tab only. The dock is compact: small icons, the name only
-  in the tooltip. A click on an icon opens `AppSettings`: version,
-  state, RAM, Open/Close and how the plugin loads on this machine (on demand or
-  always on, the plugin's default marked; `setPluginLifecycle`). An open on-demand app has a hover X with a
-  confirmed Close (`closePlugin`); a click on a stopped icon opens it
-  (`openPlugin`); `memory_bytes` shows as `formatMemory`. Inference engines
-  (a `kind: inference` service in `NodeInfo.plugin_services`) get a badge and
-  the model they serve, and their Close warns that the node releases it. The only place to
-  close a plugin without a menu entry. Tests: `BackgroundServices.test.tsx`.
+- `Pieces.tsx` - Pieces (`/pieces`, main menu right below Plugins; the old
+  `/config/services` addresses redirect): the POM's "operating system",
+  apart from the Dashboard. A dark sky with the POM pieces locking together
+  (`components/PuzzleBackdrop.tsx`), the closed apps as free icons the
+  operator drags anywhere (positions in `localStorage`,
+  `storageKey("services.desktop")`; pointer capture starts only once a drag
+  moves, so a plain click reaches the button), and the running apps with no
+  screen (inference engines) as system notifications at the top right. A
+  click on a closed app launches it; a hover gear opens its settings; a right
+  click the system menu. The open apps are on the global dock. State and
+  windows come from `components/pieces/PiecesProvider.tsx`. Test:
+  `Pieces.test.tsx`.
 - `About.tsx` - an information screen at `/config/about`, the last leaf of
   Settings. It shows the repository's MIT `LICENSE` and the Open Source
   Initiative page, the risk/LGPD notice and links to the site (`pieceofmind.cloud`), contact

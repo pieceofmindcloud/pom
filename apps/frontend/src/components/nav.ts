@@ -16,6 +16,7 @@ import {
   MessagesSquare,
   Network,
   Puzzle,
+  Shapes,
   Rocket,
   Search,
   Send,
@@ -94,6 +95,8 @@ export const NAV: NavSection[] = [
   // not a setting. The menus of the installed plugins are inserted right
   // after it, before Documentation (`withPluginMenus`).
   { labelKey: "nav.plugins", icon: Puzzle, to: "/plugins" },
+  // The POM's "operating system": the apps of this machine on a desktop.
+  { labelKey: "nav.pieces", icon: Shapes, to: "/pieces" },
   // The repo's own documentation, not a screen that reads the cluster: the
   // folder AGENTS.md files and subsystem READMEs embedded at build time.
   {

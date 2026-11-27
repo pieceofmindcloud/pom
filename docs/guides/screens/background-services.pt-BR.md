@@ -1,17 +1,17 @@
 ---
 id: screen-background-services
-label: Serviços
+label: Pieces
 summary: Todos os aplicativos que esta máquina roda, abertos e parados, como um dock e uma pasta
-title: Serviços
-route: /plugins
+title: Pieces
+route: /pieces
 order: 315
 ---
 
 :::lead
-Serviços mostra cada plugin que esta máquina roda como um aplicativo: o ícone com o nome embaixo. Ela parece uma área de trabalho: as peças do POM se encaixam num céu noturno ao fundo, os aplicativos que podem ser abertos ficam nela como ícones que você arrasta para onde quiser (a arrumação fica neste navegador), e os abertos ficam num dock embaixo, como o Dock do macOS: primeiro os que ficam sempre ligados e, depois de uma divisória, os que podem ser fechados. Clique num aplicativo fechado para abri-lo: ele entra no dock, quica enquanto sobe e depois você vai para a tela dele. Um aplicativo sem tela própria, como um motor de inferência, não fica no dock: enquanto roda, aparece no canto superior direito como uma notificação do sistema, com botões para configurar e fechar. Clique num aplicativo do dock para ir à tela dele. A engrenagem que aparece ao passar o mouse sobre um ícone abre os detalhes, como a memória que ele usa, e o botão direito sobre qualquer ícone abre um menu com o que dá para fazer: abrir, ir para a tela, configurar, manter sempre ligado ou rodar sob demanda, fechar. É onde você inicia e para os aplicativos que não têm entrada no menu, como os motores de inferência (vLLM, Avalon) e o agente Goose com que o Chat conversa.
+Pieces mostra cada plugin que esta máquina roda como um aplicativo: o ícone com o nome embaixo. Ela parece uma área de trabalho: as peças do POM se encaixam num céu noturno ao fundo, os aplicativos que podem ser abertos ficam nela como ícones que você arrasta para onde quiser (a arrumação fica neste navegador), e os abertos ficam num dock embaixo, como o Dock do macOS: primeiro os que ficam sempre ligados e, depois de uma divisória, os que podem ser fechados. Clique num aplicativo fechado para abri-lo: ele entra no dock, quica enquanto sobe e depois você vai para a tela dele. Um aplicativo sem tela própria, como um motor de inferência, não fica no dock: enquanto roda, aparece no canto superior direito como uma notificação do sistema, com botões para configurar e fechar. Clique num aplicativo do dock para ir à tela dele. A engrenagem que aparece ao passar o mouse sobre um ícone abre os detalhes, como a memória que ele usa, e o botão direito sobre qualquer ícone abre um menu com o que dá para fazer: abrir, ir para a tela, configurar, manter sempre ligado ou rodar sob demanda, fechar. É onde você inicia e para os aplicativos que não têm entrada no menu, como os motores de inferência (vLLM, Avalon) e o agente Goose com que o Chat conversa.
 :::
 
-Serviços é a primeira aba de Plugins quando há algum plugin instalado. Clique no ícone de um aplicativo para ver as configurações dele: abrir ou fechar, a memória que usa e como ele carrega nesta máquina. **Sob demanda** sobe quando você o abre ou quando algo precisa dele, e você o fecha para liberar a memória; **Sempre ligado** sobe com o POM e fica rodando. A escolha do próprio plugin aparece como padrão, e você pode mudá-la em qualquer plugin, para que um plugin pouco usado não fique ocupando memória.
+Pieces fica no menu principal, logo abaixo de Plugins. O dock dos aplicativos abertos também flutua sobre as outras telas do POM: lá ele se esconde e aparece quando você leva o mouse até a borda de baixo. Clique no ícone de um aplicativo para ver as configurações dele: abrir ou fechar, a memória que usa e como ele carrega nesta máquina. **Sob demanda** sobe quando você o abre ou quando algo precisa dele, e você o fecha para liberar a memória; **Sempre ligado** sobe com o POM e fica rodando. A escolha do próprio plugin aparece como padrão, e você pode mudá-la em qualquer plugin, para que um plugin pouco usado não fique ocupando memória.
 
 :::cards
 ### Abertos

@@ -196,7 +196,16 @@ Per-file list:
 - `DeploymentLogDock.tsx` - the Dashboard's cluster console for any admin,
   with no plugin: a collapsed bar that expands upwards to half the area and
   reads the core's live tail (`useClusterConsole`, `/api/ui/cluster-console`).
-- `PuzzleBackdrop.tsx` - the Services desktop's background: the site's hero
+- `pieces/` - the POM's "operating system", shared by the Pieces screen and the
+  shell: `PiecesProvider.tsx` (mounted once in `App.tsx`: the apps, which
+  one is launching - on the dock, bouncing, then its screen - and the
+  windows any icon opens: `AppSettings` with how the plugin loads, the
+  right-click `ContextMenu`, the close confirmation), `Dock.tsx` (the open
+  apps with a screen, absolute over the shell's content column so it centres
+  on the screens; always shown on Pieces, elsewhere hidden until the pointer
+  reaches the bottom edge; resident apps pinned before a divider) and
+  `shared.tsx` (`AppIcon`, `displayName`, `formatMemory`).
+- `PuzzleBackdrop.tsx` - the Pieces desktop's background: the site's hero
   animation (four glowing particle pieces drift in, spiral, lock, light runs
   along the seams, then they drift apart) on a canvas that fills its parent,
   behind the content, with only the POM pieces, sized by the canvas's smaller

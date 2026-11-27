@@ -47,6 +47,112 @@ pub unsafe extern "C" fn pom_base_plugin_v1() -> *const PluginApiV1 {
     &API
 }
 
+/// `pom_probe_plugin_v1`: the same plugin with a `query` that tries what the
+/// request names and says what worked, so a test can check from inside a
+/// sandboxed host what the sandbox allows (`crates/plugin-host/tests/sandbox.rs`).
+/// Request: `{"read": [paths], "write": [paths], "pid": n}`.
+unsafe extern "C" fn probe_query(_: PluginHandle, request: ByteSlice) -> ByteBuffer {
+    let bytes = if request.ptr.is_null() {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(request.ptr, request.len)
+    };
+    let request: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_default();
+    let outcome = |result: std::io::Result<()>| match result {
+        Ok(()) => "ok".to_owned(),
+        Err(error) => format!("refused: {error}"),
+    };
+    let mut answer = serde_json::Map::new();
+    let mut reads = serde_json::Map::new();
+    for path in request["read"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+    {
+        reads.insert(path.into(), outcome(std::fs::read(path).map(|_| ())).into());
+    }
+    answer.insert("read".into(), reads.into());
+    let mut writes = serde_json::Map::new();
+    for path in request["write"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+    {
+        writes.insert(path.into(), outcome(std::fs::write(path, b"probe")).into());
+    }
+    answer.insert("write".into(), writes.into());
+    #[cfg(unix)]
+    {
+        if let Some(pid) = request["pid"].as_i64() {
+            let signal = libc::kill(pid as i32, 0);
+            answer.insert(
+                "signal".into(),
+                outcome(if signal == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                })
+                .into(),
+            );
+            let traced = libc::ptrace(libc::PTRACE_ATTACH, pid as i32, 0, 0);
+            answer.insert(
+                "ptrace".into(),
+                outcome(if traced == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                })
+                .into(),
+            );
+        }
+        answer.insert("pid".into(), libc::getpid().into());
+    }
+    let visible = std::fs::read_dir("/proc")
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().parse::<u32>().is_ok())
+                .count()
+        })
+        .unwrap_or(0);
+    answer.insert("visible_processes".into(), visible.into());
+    let body = serde_json::Value::Object(answer)
+        .to_string()
+        .into_bytes()
+        .into_boxed_slice();
+    let len = body.len();
+    ByteBuffer {
+        ptr: Box::into_raw(body).cast::<u8>(),
+        len,
+    }
+}
+
+unsafe extern "C" fn probe_free(buffer: ByteBuffer) {
+    if !buffer.ptr.is_null() {
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            buffer.ptr, buffer.len,
+        )));
+    }
+}
+
+static PROBE_API: PluginApiV1 = PluginApiV1 {
+    abi_version: enterprise_protocol::PLUGIN_ABI_VERSION,
+    plugin_version: VERSION.as_ptr().cast(),
+    capabilities: 0,
+    create: Some(create),
+    ingest: Some(ingest),
+    query: Some(probe_query),
+    free_buffer: Some(probe_free),
+    shutdown: Some(shutdown),
+};
+
+#[no_mangle]
+pub unsafe extern "C" fn pom_probe_plugin_v1() -> *const PluginApiV1 {
+    &PROBE_API
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

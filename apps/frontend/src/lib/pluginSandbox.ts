@@ -34,7 +34,18 @@ export function sandboxPermissions(sandbox: PluginSandbox, t: Translate): string
 }
 
 /** The card badge's tooltip: what the sandbox grants, or why a legacy plugin has none. */
-export function sandboxSummary(sandbox: PluginSandbox | null | undefined, enforced: boolean, t: Translate): string {
+export function sandboxSummary(
+  sandbox: PluginSandbox | null | undefined,
+  enforced: boolean,
+  t: Translate,
+  level?: "baseline" | "pid_namespace" | null,
+): string {
   if (!sandbox) return t("plugins.unsandboxedHint");
-  return [t(enforced ? "plugins.sandboxedHint" : "plugins.sandboxDeclaredHint"), ...sandboxPermissions(sandbox, t)].join("\n");
+  if (!enforced) return [t("plugins.sandboxDeclaredHint"), ...sandboxPermissions(sandbox, t)].join("\n");
+  return [
+    t("plugins.sandboxedHint"),
+    t(level === "pid_namespace" ? "plugins.sandboxLevelPid" : "plugins.sandboxLevelBaseline"),
+    t("plugins.sandboxNetworkOpen"),
+    ...sandboxPermissions(sandbox, t),
+  ].join("\n");
 }

@@ -39,13 +39,26 @@ without `sandbox` is a legacy plugin and runs as before).
 
 ## Phase 2 - Linux
 
-- `crates/plugin-host/src/sandbox/linux.rs`; the node passes the policy
-  (paths, ports, GPU) to the host as a JSON argument it builds from the
-  manifest and `config`.
-- Refusal path `sandbox_unavailable:<why>` up to the panel.
-- Tests: a fixture plugin (`crates/enterprise-plugin-fixture`) that tries to
-  list processes, signal the node, read `pom.json` and another plugin's home,
-  and connect out; each must fail, workspace writes must pass.
+Delivered 2026-11-27 for files and processes; the network is the open step.
+
+- [x] `crates/plugin-host/src/sandbox.rs`: Landlock ABI 6 + seccomp +
+  `no_new_privs` before `dlopen`; the PID/mount/IPC namespaces as the extra
+  layer behind a forked probe; the level in `ready`.
+- [x] The node resolves the declaration (`plugins::sandbox_launch`): home,
+  workspace and model folders, install folder and `read_paths`, `HOME` and
+  `TMPDIR` in the home, the database moved home behind a symlink; passes it in
+  `POM_PLUGIN_SANDBOX`; `sandbox_enforced` and `sandbox_level` from `ready`.
+- [x] Refusal `sandbox_unavailable:` below Landlock ABI 6; dev switch
+  `POM_PLUGIN_SANDBOX=off` with `POM_DEV_MODE=1`.
+- [x] `tests/sandbox.rs`: the real host with the fixture's `probe` (legacy
+  unconfined; baseline refuses secrets, other homes, signals, ptrace; the
+  extra layer is PID 1 and sees at most 2 processes).
+- [ ] Network: a network namespace in the extra layer, the node over
+  `host_api.socket_path`, the plugin's loopback servers bridged for the UI
+  proxy (`ui.upstream`) and for the node's engine calls.
+- [ ] The Linux packages ship the AppArmor profile (`userns,`) for
+  `pom-plugin-host`; the compose file documents the Docker opt-in.
+- [ ] A live run of a sandboxed plugin on a cluster node.
 
 ## Phase 3 - macOS
 

@@ -385,6 +385,8 @@ export interface PluginStatus {
   sandbox?: PluginSandbox | null;
   /** The host runs inside that sandbox; false while the node only reads the declaration. */
   sandbox_enforced?: boolean;
+  /** The isolation the running host reported. */
+  sandbox_level?: "baseline" | "pid_namespace" | null;
 }
 
 /** The `sandbox` section of a plugin's release manifest (`enterprise_protocol::sandbox`). */

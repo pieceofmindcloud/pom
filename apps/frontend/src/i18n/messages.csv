@@ -2611,7 +2611,10 @@ plugins.sandboxDeclared,Sandbox declared,Sandbox declarado
 plugins.sandboxDeclaredHint,"This plugin declares a sandbox, which this version of POM does not apply yet: for now it runs like any program of this machine. It asks for:","Este plugin declara um sandbox, que esta versão do POM ainda não aplica: por enquanto ele roda como qualquer programa desta máquina. Ele pede:"
 plugins.unsandboxed,Not sandboxed,Sem sandbox
 plugins.unsandboxedHint,"This plugin's release declares no sandbox, so it runs like any program of this machine, as plugins always have.","A release deste plugin não declara sandbox, então ele roda como qualquer programa desta máquina, como os plugins sempre rodaram."
-plugins.sandboxedHint,"Runs in its own sandbox: it cannot see or touch other processes, and reads only its own folder and the workspace.","Roda no próprio sandbox: não vê nem mexe em outros processos e só acessa a própria pasta e o workspace."
+plugins.sandboxedHint,"Runs in its own sandbox: it cannot touch other processes, and reaches only its own folder, the workspace and what it asks for.","Roda no próprio sandbox: não mexe em outros processos e só alcança a própria pasta, o workspace e o que ele pede."
+plugins.sandboxLevelPid,"Other processes are hidden from it, and its temporary files are its own.","Os outros processos ficam invisíveis para ele, e os arquivos temporários são só dele."
+plugins.sandboxLevelBaseline,"It can still see the list of other processes, but cannot touch them. This machine does not allow the extra layer that hides them.","Ele ainda vê a lista dos outros processos, mas não mexe neles. Esta máquina não permite a camada extra que os esconde."
+plugins.sandboxNetworkOpen,"Network access is not isolated yet.","O acesso à rede ainda não é isolado."
 plugins.sandboxLoopback,Network: this machine only,Rede: só esta máquina
 plugins.sandboxInternet,Network: internet,Rede: internet
 plugins.sandboxListenNetwork,Accepts connections from other machines,Aceita conexões de outras máquinas

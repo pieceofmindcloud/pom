@@ -8,4 +8,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 enterprise-protocol = { path = "../enterprise-protocol" }
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 

@@ -11,10 +11,16 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+mod sandbox;
 mod tree;
 mod update;
 
 pub const MAX_FRAME_BYTES: usize = MAX_IPC_FRAME_BYTES;
+
+/// The sandbox this host runs in, for the `ready` answer: unset for a legacy
+/// plugin, `None` on a system without a sandbox yet.
+static SANDBOX_LEVEL: std::sync::OnceLock<Option<enterprise_protocol::SandboxLevel>> =
+    std::sync::OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IpcRequest {
@@ -342,10 +348,14 @@ fn handle_request(request: &IpcRequest, plugin: Option<&LoadedPlugin>) -> IpcRes
                 return error_response(request, "no plugin loaded");
             };
             match plugin.version() {
-                Ok(version) => response(
-                    request,
-                    serde_json::json!({ "status": "ready", "plugin_version": version }),
-                ),
+                Ok(version) => {
+                    let mut ready =
+                        serde_json::json!({ "status": "ready", "plugin_version": version });
+                    if let Some(Some(level)) = SANDBOX_LEVEL.get() {
+                        ready["sandbox"] = serde_json::json!({ "level": level });
+                    }
+                    response(request, ready)
+                }
                 Err(error) => error_response(request, error.to_string()),
             }
         }
@@ -387,6 +397,12 @@ fn run() -> io::Result<()> {
             )
         })?;
         return update::run(Path::new(&plan));
+    }
+    // The sandbox first: entering its PID namespace forks, and only the child
+    // goes on to load the plugin.
+    if let Some(policy) = sandbox::policy_from_env()? {
+        let level = sandbox::apply(&policy)?;
+        let _ = SANDBOX_LEVEL.set(level);
     }
     // Before the plugin starts anything: its orphans come back to this host.
     tree::adopt_orphans();

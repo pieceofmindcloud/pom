@@ -1139,7 +1139,7 @@ describe("Plugins", () => {
     mocks.plugins.data = [
       pluginStatus("legacy", { active: true, plugin_version: "1.0.0" }),
       pluginStatus("declared", { active: true, plugin_version: "1.0.0", sandbox }),
-      pluginStatus("enforced", { active: true, plugin_version: "1.0.0", sandbox, sandbox_enforced: true }),
+      pluginStatus("enforced", { active: true, plugin_version: "1.0.0", sandbox, sandbox_enforced: true, sandbox_level: "baseline" }),
       pluginStatus("absent"),
     ];
     renderPage();
@@ -1156,6 +1156,8 @@ describe("Plugins", () => {
     const enforced = screen.getByTestId("plugin-sandbox-enforced");
     expect(enforced.textContent).toBe("Sandbox");
     expect(enforced.getAttribute("title")).toContain("Roda no próprio sandbox");
+    expect(enforced.getAttribute("title")).toContain("ainda vê a lista dos outros processos");
+    expect(enforced.getAttribute("title")).toContain("O acesso à rede ainda não é isolado.");
     expect(screen.queryByTestId("plugin-sandbox-absent")).toBeNull();
   });
 

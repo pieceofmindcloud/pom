@@ -30,6 +30,23 @@ host leaves: a reaper during the run would steal the exit status of the
 plugin's own children. Windows uses POM's kill-on-close Job Object instead.
 Only the plugin mode does any of this.
 
+A plugin whose release declares a sandbox runs inside one (`src/sandbox.rs`).
+The node hands the resolved policy in `POM_PLUGIN_SANDBOX`
+(`enterprise_protocol::HostSandboxPolicy`, built by
+`crate::plugins::sandbox_launch`); without it the host runs the plugin as
+before. On Linux, before `dlopen`: the extra layer when a forked probe shows
+user namespaces are allowed (user, PID, mount and IPC namespaces, a fork so the
+plugin side is PID 1, a fresh `/proc`, private `/tmp` and `/dev/shm`), then
+`no_new_privs`, Landlock ABI 6 (the policy's files, system folders read only,
+`/dev/shm` read-write, the signal and abstract-socket scopes) and a seccomp
+filter (`ptrace`, cross-process memory, `unshare`, keyrings, modules). A kernel
+below Landlock ABI 6 is a refusal (`sandbox_unavailable:`); refused user
+namespaces only lower the level, logged on stderr. The network is not filtered.
+`ready` answers `sandbox: {level: baseline|pid_namespace}`. macOS and Windows
+report no level yet. `tests/sandbox.rs` runs this binary with the fixture's
+`probe` entry point; `POM_TEST_PLUGIN_HOST` points it at a copy an AppArmor
+profile allows user namespaces for, to exercise the extra layer.
+
 `pom-plugin-host --apply-update <plan.json>` is a second, unrelated mode
 (`src/update.rs`): the node's POM update (`crates/node/src/pom_core_update.rs`)
 stages a release, writes the plan (the node's pid, each staged entry and what

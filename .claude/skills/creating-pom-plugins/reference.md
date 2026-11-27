@@ -78,6 +78,11 @@ Plugins card shows it. Declare `internet` when the plugin downloads anything
 or runs an engine whose processes talk over TCP (vLLM with several GPUs),
 `listen: "network"` only for a server other machines reach (Qdrant), `gpu` for
 any GPU work. Nodes released before this field refuse a manifest that has it.
+A sandboxed plugin on Linux writes only in its home (`dirname(POM_PLUGIN_DB)/
+<code>/`), the workspace and the model folders; its `HOME` and `TMPDIR` point
+inside its home (never hard-code `/tmp` or `~`), its `POM_PLUGIN_DB` becomes a
+symlink into its home, and it cannot see the node's files or touch other
+processes.
 
 Preference values live in `pom.db` per plugin, reach the plugin only through
 `host.configure` / `preferences.changed`, and never go to the license server.

@@ -516,7 +516,7 @@ function PluginCard({
             {fromGithub && <Badge tone="neutral">GitHub</Badge>}
             {status?.development_install && <Badge tone="neutral">{t("plugins.devInstalled")}</Badge>}
             {status && (status.active || status.plugin_version || status.development_install) && (
-              <span title={sandboxSummary(status.sandbox, status.sandbox_enforced === true, t)} data-testid={`plugin-sandbox-${code}`}>
+              <span title={sandboxSummary(status.sandbox, status.sandbox_enforced === true, t, status.sandbox_level)} data-testid={`plugin-sandbox-${code}`}>
                 {!status.sandbox
                   ? <Badge tone="amber">{t("plugins.unsandboxed")}</Badge>
                   : status.sandbox_enforced

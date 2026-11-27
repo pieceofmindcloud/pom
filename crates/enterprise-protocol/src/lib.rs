@@ -4,7 +4,10 @@ use sha2::{Digest, Sha256};
 pub mod abi;
 pub mod sandbox;
 
-pub use sandbox::{sandbox_widens, PluginSandbox, SandboxListen, SandboxNetwork};
+pub use sandbox::{
+    sandbox_widens, HostSandboxPolicy, PluginSandbox, SandboxLevel, SandboxListen, SandboxNetwork,
+    HOST_SANDBOX_ENV,
+};
 
 pub const LICENSE_PROTOCOL: &str = "pom-license/v1";
 pub const IPC_PROTOCOL: &str = "pom-enterprise-ipc/v1";

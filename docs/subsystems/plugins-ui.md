@@ -416,9 +416,39 @@ node keeps the declaration of the installed release (license, GitHub and
 development installs, the last read from the source's `release/manifest.json`
 or root `manifest.json` at rebuild time) and the Plugins screen shows it as a
 badge on the card: "Not sandboxed" for a legacy plugin, "Sandbox declared"
-while the node only reads the declaration (`PluginStatus.sandbox_enforced` is
-`false` until `pom-plugin-host` applies it), "Sandbox" once applied; the
-tooltip lists what it asks for. `enterprise_protocol::sandbox_widens` (and its
+while the declaration is not applied (macOS and Windows, or
+`POM_DEV_MODE=1` with `POM_PLUGIN_SANDBOX=off`), "Sandbox" once the running
+host reported a level (`PluginStatus.sandbox_enforced`, `sandbox_level`); the
+tooltip lists what it asks for, the level and that the network is not
+isolated yet.
+
+On Linux the node resolves the declaration into a policy
+(`plugins::sandbox_launch`) and `pom-plugin-host` applies it before loading the
+plugin (`crates/plugin-host/AGENTS.md`). What changes for a sandboxed plugin:
+
+- it reads and writes only its home `<data dir>/<code>/`, the workspace and
+  the model folders, and reads the system folders, its install folder and its
+  `read_paths`; the data folder (`pom.json`, the node's keys, `pom.db`) and
+  every other plugin's home are out of reach;
+- its database moves into its home and a symlink stays at `POM_PLUGIN_DB`
+  (SQLite follows it and keeps its `-wal` beside the real file); a plain file
+  at the old path beside a moved one is a refusal to start, not a guess;
+- `HOME` is `<home>/home` and `TMPDIR` `<home>/tmp` (or `/dev/shm/pom-<code>`
+  when that path is longer than 60 bytes, for the Unix sockets engines put
+  there); on the baseline `/tmp` is not reachable, under the extra layer it is
+  a tmpfs of its own;
+- it cannot signal, `ptrace` or read the memory of any process outside its
+  tree. On the baseline it still sees other processes in `/proc` (their
+  command lines included) and shares `/dev/shm`; the extra layer (own PID,
+  mount and IPC namespaces) hides them, and needs unprivileged user
+  namespaces: an AppArmor profile with `userns,` for `pom-plugin-host` on
+  Ubuntu 23.10 and later, and in Docker a seccomp profile that allows
+  `unshare`, an AppArmor profile and `systempaths=unconfined`
+  (`docs/reports/2026-11-27-plugin-sandbox-linux-spike.md`);
+- the network is not filtered yet: Landlock cannot tell loopback from the
+  internet. A network namespace with the node reached over
+  `host_api.socket_path` and the plugin's servers bridged for the proxy is the
+  next step. `enterprise_protocol::sandbox_widens` (and its
 mirror `lib/pluginSandbox.ts` on the screen) tells whether an update asks for
 more, leaving the sandbox included. The GitHub install dialog lists what a
 release with a sandbox asks for (a POM team plugin that declares one goes

@@ -912,6 +912,9 @@ pub(crate) struct PluginStatus {
     /// screen must not claim an isolation the node does not give yet.
     #[serde(default)]
     pub sandbox_enforced: bool,
+    /// The level the running host reported: `baseline` or `pid_namespace`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_level: Option<enterprise_protocol::SandboxLevel>,
     /// On-demand plugin on this machine: the operator's choice, else the
     /// manifest's `lifecycle: "on_demand"`.
     #[serde(default)]
@@ -955,6 +958,7 @@ impl PluginStatus {
             preferences: None,
             sandbox: None,
             sandbox_enforced: false,
+            sandbox_level: None,
             on_demand: false,
             lifecycle_default: None,
             lifecycle_override: None,
@@ -1154,9 +1158,64 @@ impl PluginRuntime {
         path: &std::path::Path,
     ) -> anyhow::Result<crate::plugin_host::PluginHost> {
         let database_path = self.plugin_database_path();
-        let host = crate::plugin_host::PluginHost::start(&self.code, path, &database_path).await?;
+        let sandbox = match self.installed_sandbox().await {
+            Some(sandbox) if !sandbox_switched_off() => {
+                let context = self
+                    .host_context
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                    .unwrap_or_default();
+                let model_dirs: Vec<String> = context["model_dirs"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|dir| dir.as_str().map(str::to_owned))
+                    .collect();
+                sandbox_launch(
+                    &self.code,
+                    path,
+                    &database_path,
+                    &sandbox,
+                    context["workspace_root"].as_str(),
+                    &model_dirs,
+                    std::env::var_os("HOME").map(std::path::PathBuf::from).as_deref(),
+                )?
+            }
+            _ => None,
+        };
+        let host = crate::plugin_host::PluginHost::start(
+            &self.code,
+            path,
+            &database_path,
+            sandbox.as_ref(),
+        )
+        .await?;
         self.configure_host(&host).await;
         Ok(host)
+    }
+
+    /// The sandbox the artifact that runs declares: a development build
+    /// replaces the release.
+    async fn installed_sandbox(&self) -> Option<enterprise_protocol::PluginSandbox> {
+        if let Some(development) = self
+            .development_install
+            .lock()
+            .await
+            .as_ref()
+            .filter(|installed| installed.fingerprint == self.fingerprint)
+        {
+            return development.sandbox.clone();
+        }
+        if let Some(persisted) = self.persisted.lock().await.as_ref() {
+            return persisted.sandbox.clone();
+        }
+        self.public_install
+            .lock()
+            .await
+            .as_ref()
+            .filter(|installed| installed.fingerprint == self.fingerprint)
+            .and_then(|installed| installed.sandbox.clone())
     }
 
     /// `host.configure`: the local OpenAI endpoint and the API key the plugin
@@ -1280,14 +1339,15 @@ impl PluginRuntime {
             .clone()
             .filter(|installed| installed.fingerprint == self.fingerprint);
         status.development_install = development_install.is_some();
-        // The artifact that runs: a development build replaces the release.
-        status.sandbox = match development_install.as_ref() {
-            Some(development) => development.sandbox.clone(),
-            None => match self.persisted.lock().await.as_ref() {
-                Some(persisted) => persisted.sandbox.clone(),
-                None => public_install.as_ref().and_then(|installed| installed.sandbox.clone()),
-            },
-        };
+        status.sandbox = self.installed_sandbox().await;
+        let level = self
+            .host
+            .lock()
+            .await
+            .as_ref()
+            .and_then(crate::plugin_host::PluginHost::sandbox_level);
+        status.sandbox_enforced = status.sandbox.is_some() && level.is_some();
+        status.sandbox_level = level;
         status.github_repository = public_install
             .as_ref()
             .and_then(|installed| installed.repository_url.clone());
@@ -5549,6 +5609,126 @@ pub(crate) fn license_base_url() -> String {
         .unwrap_or_else(|| "https://license.pieceofmind.cloud".into())
 }
 
+/// `POM_DEV_MODE=1` with `POM_PLUGIN_SANDBOX=off` runs every plugin without a
+/// sandbox, for debugging; never in a release build without development mode.
+fn sandbox_switched_off() -> bool {
+    std::env::var("POM_DEV_MODE").as_deref() == Ok("1")
+        && std::env::var(enterprise_protocol::HOST_SANDBOX_ENV).as_deref() == Ok("off")
+}
+
+/// The longest `TMPDIR` inside a plugin's home: engines put Unix sockets there
+/// and a socket path holds about 107 bytes (vLLM's ZeroMQ names add ~40).
+const MAX_PLUGIN_TMPDIR: usize = 60;
+
+/// Resolves a plugin's declared sandbox into the policy `pom-plugin-host`
+/// applies on this machine, and prepares what it needs:
+///
+/// - its home `<data dir>/<code>/` (the plugin convention), with `home/` as
+///   its `HOME` and `tmp/` as its `TMPDIR` (or `/dev/shm/pom-<code>` when that
+///   path is too long for the sockets engines put there);
+/// - its database moved into that home, with a symlink left at the path the
+///   plugin knows (`POM_PLUGIN_DB`): SQLite follows the link and keeps its
+///   `-wal` beside the real file, inside the home, while the data folder,
+///   which holds `pom.json` and the node's keys, stays out of reach;
+/// - read and write: the home, the workspace, the model folders; read only:
+///   the install folder and the manifest's `read_paths` (`~/` from `user_home`).
+///
+/// `None` on a system without a sandbox yet (macOS, Windows).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sandbox_launch(
+    code: &str,
+    artifact: &std::path::Path,
+    database: &std::path::Path,
+    sandbox: &enterprise_protocol::PluginSandbox,
+    workspace: Option<&str>,
+    model_dirs: &[String],
+    user_home: Option<&std::path::Path>,
+) -> std::io::Result<Option<crate::plugin_host::SandboxLaunch>> {
+    if !cfg!(target_os = "linux") {
+        return Ok(None);
+    }
+    let data_dir = database
+        .parent()
+        .ok_or_else(|| std::io::Error::other("plugin database has no folder"))?;
+    let home = data_dir.join(code);
+    let tmp = if home.join("tmp").as_os_str().len() <= MAX_PLUGIN_TMPDIR {
+        home.join("tmp")
+    } else {
+        std::path::PathBuf::from(format!("/dev/shm/pom-{code}"))
+    };
+    for dir in [&home, &home.join("home"), &tmp] {
+        std::fs::create_dir_all(dir)?;
+    }
+    move_database_into_home(database, &home.join(format!("{code}.db")))?;
+
+    let mut read_write = vec![home.to_string_lossy().into_owned()];
+    if tmp.starts_with("/dev/shm") {
+        read_write.push(tmp.to_string_lossy().into_owned());
+    }
+    read_write.extend(workspace.filter(|path| !path.is_empty()).map(str::to_owned));
+    read_write.extend(model_dirs.iter().cloned());
+    let mut read_only: Vec<String> = artifact
+        .parent()
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .into_iter()
+        .collect();
+    for path in &sandbox.read_paths {
+        match (path.strip_prefix("~/"), user_home) {
+            (Some(relative), Some(user_home)) => {
+                read_only.push(user_home.join(relative).to_string_lossy().into_owned())
+            }
+            (Some(_), None) => {}
+            (None, _) => read_only.push(path.clone()),
+        }
+    }
+    Ok(Some(crate::plugin_host::SandboxLaunch {
+        policy: enterprise_protocol::HostSandboxPolicy {
+            read_write,
+            read_only,
+            gpu: sandbox.gpu,
+            pid_namespace: true,
+        },
+        env: vec![
+            ("HOME".into(), home.join("home").to_string_lossy().into_owned()),
+            ("TMPDIR".into(), tmp.to_string_lossy().into_owned()),
+        ],
+    }))
+}
+
+/// Moves a plugin database (and its SQLite side files) to `target` and leaves
+/// a symlink at the old path. Nothing to do when the link is already there.
+#[cfg(unix)]
+fn move_database_into_home(
+    database: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(database);
+    if metadata.as_ref().is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Ok(());
+    }
+    if metadata.is_ok() {
+        if target.exists() {
+            return Err(std::io::Error::other(format!(
+                "both {} and {} exist; refusing to choose",
+                database.display(),
+                target.display()
+            )));
+        }
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let from = std::path::PathBuf::from(format!("{}{suffix}", database.display()));
+            if from.exists() {
+                std::fs::rename(&from, format!("{}{suffix}", target.display()))?;
+            }
+        }
+    }
+    std::os::unix::fs::symlink(target, database)
+}
+
+#[cfg(not(unix))]
+fn move_database_into_home(_: &std::path::Path, _: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 fn plugin_database_path_for(
     code: &str,
     pom_database_path: Option<&std::path::Path>,
@@ -6529,6 +6709,56 @@ mod tests {
             .expect("owned installed version");
         assert_eq!(version, semver::Version::new(0, 1, 0));
         assert_eq!(version.to_string(), persisted.plugin_version);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_sandboxed_plugin_gets_its_database_moved_home_and_a_policy_of_its_folders() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path().join("d");
+        std::fs::create_dir(&data).unwrap();
+        let database = data.join("vllm.db");
+        std::fs::write(&database, b"main").unwrap();
+        std::fs::write(data.join("vllm.db-wal"), b"wal").unwrap();
+        std::fs::write(data.join("pom.json"), b"{}").unwrap();
+        let artifact = directory.path().join("plugins/vllm/x.so");
+        let sandbox = enterprise_protocol::PluginSandbox {
+            gpu: true,
+            read_paths: vec!["~/models".into(), "/opt/cuda".into()],
+            ..Default::default()
+        };
+        let user_home = std::path::Path::new("/home/someone");
+        let launch = |sandbox: &enterprise_protocol::PluginSandbox| {
+            sandbox_launch("vllm", &artifact, &database, sandbox, Some("/w"), &["/m".to_owned()], Some(user_home))
+        };
+
+        let started = launch(&sandbox).unwrap().expect("Linux has a sandbox");
+        let home = data.join("vllm");
+        assert_eq!(std::fs::read(home.join("vllm.db")).unwrap(), b"main");
+        assert_eq!(std::fs::read(home.join("vllm.db-wal")).unwrap(), b"wal");
+        assert!(std::fs::symlink_metadata(&database).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read(&database).unwrap(), b"main", "the plugin's path still opens it");
+        assert!(!data.join("vllm.db-wal").exists());
+        let policy = &started.policy;
+        assert_eq!(policy.read_write, [home.to_str().unwrap(), "/w", "/m"]);
+        assert!(!policy.read_write.iter().any(|path| path == data.to_str().unwrap()), "never the data folder");
+        assert_eq!(
+            policy.read_only,
+            [directory.path().join("plugins/vllm").to_str().unwrap(), "/home/someone/models", "/opt/cuda"]
+        );
+        assert!(policy.gpu && policy.pid_namespace);
+        assert!(started.env.contains(&("HOME".into(), home.join("home").to_string_lossy().into_owned())));
+        assert!(started.env.contains(&("TMPDIR".into(), home.join("tmp").to_string_lossy().into_owned())));
+        assert!(home.join("tmp").is_dir() && home.join("home").is_dir());
+
+        // Again, as on every start: nothing to move.
+        launch(&sandbox).unwrap();
+        assert_eq!(std::fs::read(&database).unwrap(), b"main");
+
+        // A plain file back at the old path beside the moved one: no guessing.
+        std::fs::remove_file(&database).unwrap();
+        std::fs::write(&database, b"other").unwrap();
+        assert!(launch(&sandbox).is_err());
     }
 
     #[test]

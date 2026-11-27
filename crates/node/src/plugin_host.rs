@@ -51,11 +51,22 @@ struct IpcResponse {
 }
 
 struct HostProcess {
+    /// The isolation the host reported in `ready`; unset for a legacy plugin
+    /// and on a system without a sandbox yet.
+    sandbox_level: std::sync::OnceLock<enterprise_protocol::SandboxLevel>,
     child: Mutex<Child>,
     /// The host and everything it starts; dropping it ends the tree (Windows).
     _tree: Option<crate::process_tree::ProcessTree>,
     ipc: Arc<IpcConnection>,
     lifecycle: RwLock<()>,
+}
+
+/// The sandbox a host starts in: the policy `pom-plugin-host` applies and the
+/// environment the plugin gets with it (`HOME` and `TMPDIR` inside its home).
+#[derive(Debug, Clone)]
+pub(crate) struct SandboxLaunch {
+    pub policy: enterprise_protocol::HostSandboxPolicy,
+    pub env: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -214,7 +225,15 @@ impl IpcConnection {
 }
 
 impl PluginHost {
-    pub(crate) async fn start(plugin_code: &str, plugin: &Path, database: &Path) -> Result<Self> {
+    /// Starts the host. `sandbox` is the policy for a plugin whose release
+    /// declares one (`crate::plugins::sandbox_launch`) and the environment it
+    /// runs with; `None` runs a legacy plugin as before.
+    pub(crate) async fn start(
+        plugin_code: &str,
+        plugin: &Path,
+        database: &Path,
+        sandbox: Option<&SandboxLaunch>,
+    ) -> Result<Self> {
         let host = host_executable()?;
         let mut command = Command::new(&host);
         command
@@ -229,6 +248,16 @@ impl PluginHost {
             // there left no trace of why.
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        command.env_remove(enterprise_protocol::HOST_SANDBOX_ENV);
+        if let Some(sandbox) = sandbox {
+            command.env(
+                enterprise_protocol::HOST_SANDBOX_ENV,
+                serde_json::to_string(&sandbox.policy)?,
+            );
+            for (key, value) in &sandbox.env {
+                command.env(key, value);
+            }
+        }
         // `pom.exe` is a GUI program with no console, so Windows opened a
         // console window for the host and left it on screen. CREATE_NO_WINDOW
         // gives the host a console without a window, which the processes it
@@ -276,6 +305,7 @@ impl PluginHost {
         };
         let supervisor = Self {
             process: Arc::new(HostProcess {
+                sandbox_level: std::sync::OnceLock::new(),
                 child: Mutex::new(child),
                 _tree: tree,
                 ipc: IpcConnection::new(stdout, stdin),
@@ -289,6 +319,13 @@ impl PluginHost {
         .await
         {
             Ok(Ok(ready)) if ready.get("status").and_then(Value::as_str) == Some("ready") => {
+                if let Some(level) = ready
+                    .pointer("/sandbox/level")
+                    .cloned()
+                    .and_then(|level| serde_json::from_value(level).ok())
+                {
+                    let _ = supervisor.process.sandbox_level.set(level);
+                }
                 Ok(supervisor)
             }
             Ok(Ok(ready)) => {
@@ -307,6 +344,11 @@ impl PluginHost {
                 )
             }
         }
+    }
+
+    /// The isolation the host runs in, as it reported in `ready`.
+    pub(crate) fn sandbox_level(&self) -> Option<enterprise_protocol::SandboxLevel> {
+        self.process.sandbox_level.get().copied()
     }
 
     /// Kills the helper process without going through the `shutdown` protocol -

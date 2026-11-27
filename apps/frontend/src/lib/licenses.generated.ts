@@ -2782,6 +2782,20 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "rust"
   },
   {
+    "name": "enumflags2",
+    "version": "0.7.12",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/meithecatte/enumflags2",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "enumflags2_derive",
+    "version": "0.7.12",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/meithecatte/enumflags2",
+    "ecosystem": "rust"
+  },
+  {
     "name": "equivalent",
     "version": "1.0.2",
     "license": "Apache-2.0 OR MIT",
@@ -3650,6 +3664,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "rust"
   },
   {
+    "name": "landlock",
+    "version": "0.4.8",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/landlock-lsm/rust-landlock",
+    "ecosystem": "rust"
+  },
+  {
     "name": "lazy_static",
     "version": "1.5.0",
     "license": "MIT OR Apache-2.0",
@@ -3665,7 +3686,7 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
   },
   {
     "name": "libc",
-    "version": "0.2.183",
+    "version": "0.2.191",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/rust-lang/libc",
     "ecosystem": "rust"
@@ -4980,6 +5001,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
     "ecosystem": "rust"
   },
   {
+    "name": "seccompiler",
+    "version": "0.4.0",
+    "license": "Apache-2.0 OR BSD-3-Clause",
+    "repository": "https://github.com/rust-vmm/seccompiler",
+    "ecosystem": "rust"
+  },
+  {
     "name": "security-framework",
     "version": "3.7.0",
     "license": "MIT OR Apache-2.0",
@@ -5450,20 +5478,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
   },
   {
     "name": "thiserror",
-    "version": "1.0.69",
+    "version": "2.0.18",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/dtolnay/thiserror",
     "ecosystem": "rust"
   },
   {
     "name": "thiserror",
-    "version": "2.0.18",
-    "license": "MIT OR Apache-2.0",
-    "repository": "https://github.com/dtolnay/thiserror",
-    "ecosystem": "rust"
-  },
-  {
-    "name": "thiserror-impl",
     "version": "1.0.69",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/dtolnay/thiserror",
@@ -5472,6 +5493,13 @@ export const THIRD_PARTY_LICENSES: readonly LicenseEntry[] = [
   {
     "name": "thiserror-impl",
     "version": "2.0.18",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/dtolnay/thiserror",
+    "ecosystem": "rust"
+  },
+  {
+    "name": "thiserror-impl",
+    "version": "1.0.69",
     "license": "MIT OR Apache-2.0",
     "repository": "https://github.com/dtolnay/thiserror",
     "ecosystem": "rust"

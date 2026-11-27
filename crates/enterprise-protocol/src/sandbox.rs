@@ -113,6 +113,43 @@ fn validate_read_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The environment variable the node hands `pom-plugin-host` the policy in, as
+/// JSON. Absent for a legacy plugin: the host then runs it as before.
+pub const HOST_SANDBOX_ENV: &str = "POM_PLUGIN_SANDBOX";
+
+/// What the node resolved a plugin's [`PluginSandbox`] into on this machine:
+/// absolute paths and the device grant. The host applies it before it loads
+/// the plugin, so every process the plugin starts inherits it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostSandboxPolicy {
+    /// Read and write: the plugin's home, the workspace, the model folders.
+    #[serde(default)]
+    pub read_write: Vec<String>,
+    /// Read only, beyond the system folders the host always allows: the
+    /// plugin's install folder and the manifest's `read_paths`.
+    #[serde(default)]
+    pub read_only: Vec<String>,
+    #[serde(default)]
+    pub gpu: bool,
+    /// Try the extra layer (own PID, mount and IPC namespaces) and fall back
+    /// to the baseline where the system refuses it.
+    #[serde(default)]
+    pub pid_namespace: bool,
+}
+
+/// The isolation the host established, in its `ready` answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxLevel {
+    /// Landlock (files, signals, abstract sockets) and seccomp: no access to
+    /// other processes or files outside the policy; other processes stay
+    /// visible in `/proc`.
+    Baseline,
+    /// The baseline plus its own PID, mount and IPC namespaces: no other
+    /// process is visible, and `/tmp` and `/dev/shm` are its own.
+    PidNamespace,
+}
+
 /// Whether moving from the installed release's sandbox to a new one asks for
 /// more, so the operator must approve the update again. A legacy release
 /// (`None`) runs unconfined: leaving the sandbox widens, entering it does not.

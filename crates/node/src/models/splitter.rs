@@ -883,6 +883,15 @@ fn split_impl(
         .iter()
         .find(|entry| entry.key.ends_with(".block_count"))
         .and_then(|entry| source_scalar_u32(mm, entry));
+    if matches!(arch.as_str(), "inkling2" | "inkling2_loop") {
+        let total = original_block_count
+            .ok_or_else(|| anyhow::anyhow!("{arch}.block_count is missing or invalid"))?;
+        if start_layer != 0 || end_layer + 1 != total {
+            bail!(
+                "slicing of architecture '{arch}' is unsupported: its cross-layer residual mixer state cannot be carried between pipeline stages; only the complete model is valid"
+            );
+        }
+    }
     let ple_key = format!("{arch}.ple.layers");
     let ple_layers = if crate::gguf::is_layer_selector_array(&ple_key, &arch) {
         entries
@@ -2761,6 +2770,90 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
 }
 
 #[cfg(test)]
+fn inkling2_loop_test_gguf_bytes() -> Vec<u8> {
+    let mut tensors: Vec<(String, Vec<u64>, u32, Vec<u8>)> = Vec::new();
+    let tensor = |name: String| (name, vec![1], T_F32, 1.0f32.to_le_bytes().to_vec());
+    tensors.push(tensor("token_embd.weight".into()));
+    for layer in 0..24 {
+        tensors.push(tensor(format!("blk.{layer}.attn_q.weight")));
+        if (6..18).contains(&layer) {
+            tensors.push(tensor(format!("blk.{layer}.loop_msg_query.weight")));
+        }
+    }
+    tensors.push(tensor("output_norm.weight".into()));
+    tensors.push(tensor("output.weight".into()));
+
+    let string = |value: &str| {
+        let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(value.as_bytes());
+        bytes
+    };
+    let string_kv = |key: &str, value: &str| {
+        let mut bytes = string(key);
+        bytes.extend_from_slice(&T_STR.to_le_bytes());
+        bytes.extend_from_slice(&string(value));
+        bytes
+    };
+    let u32_kv = |key: &str, value: u32| {
+        let mut bytes = string(key);
+        bytes.extend_from_slice(&T_U32.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+        bytes
+    };
+    let bool_kv = |key: &str, value: bool| {
+        let mut bytes = string(key);
+        bytes.extend_from_slice(&T_BOOL.to_le_bytes());
+        bytes.push(u8::from(value));
+        bytes
+    };
+    let kv = vec![
+        string_kv("general.architecture", "inkling2_loop"),
+        u32_kv("inkling2_loop.embedding_length", 4),
+        u32_kv("inkling2_loop.block_count", 24),
+        u32_kv("inkling2_loop.attn_res_block_size", 6),
+        u32_kv("inkling2_loop.loop.start", 6),
+        u32_kv("inkling2_loop.loop.end", 18),
+        u32_kv("inkling2_loop.loop.count", 2),
+        u32_kv("inkling2_loop.loop.gate_rank", 2),
+        bool_kv("inkling2_loop.loop.varying", false),
+    ];
+
+    let mut header = Vec::new();
+    header.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+    header.extend_from_slice(&3u32.to_le_bytes());
+    header.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+    header.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+    for entry in &kv {
+        header.extend_from_slice(entry);
+    }
+
+    let mut offset = 0u64;
+    let offsets: Vec<u64> = tensors
+        .iter()
+        .map(|(_, _, _, data)| {
+            let current = offset;
+            offset = align_up(offset + data.len() as u64);
+            current
+        })
+        .collect();
+    for ((name, dims, dtype, _), tensor_offset) in tensors.iter().zip(offsets) {
+        header.extend_from_slice(&string(name));
+        header.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+        for dim in dims {
+            header.extend_from_slice(&dim.to_le_bytes());
+        }
+        header.extend_from_slice(&dtype.to_le_bytes());
+        header.extend_from_slice(&tensor_offset.to_le_bytes());
+    }
+    header.resize(align_up(header.len() as u64) as usize, 0);
+    for (_, _, _, data) in tensors {
+        header.extend_from_slice(&data);
+        header.resize(align_up(header.len() as u64) as usize, 0);
+    }
+    header
+}
+
+#[cfg(test)]
 /// A minimal structurally valid qwen35 GGUF with `n_blocks` layers and a
 /// `nextn` (MTP) block only on the last layer, mirroring the real model: the
 /// predictor lives at the very end, never in the middle.
@@ -3076,6 +3169,59 @@ mod tests {
             r.skip_value(vtype).ok()?;
         }
         None
+    }
+
+    fn kv_string(mm: &[u8], want: &str) -> Option<String> {
+        let mut r = R { data: mm, pos: 0 };
+        if r.u32().ok()? != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?;
+        r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            if key == want && vtype == T_STR {
+                return Some(r.string().ok()?);
+            }
+            r.skip_value(vtype).ok()?;
+        }
+        None
+    }
+
+    #[test]
+    fn inkling2_loop_cannot_be_split_across_pipeline_stages() {
+        let dir = std::env::temp_dir().join(format!("pom-inkling2-loop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source_path = dir.join("inkling2-loop.gguf");
+        let partial_path = dir.join("partial.gguf");
+        let whole_path = dir.join("whole.gguf");
+        std::fs::write(&source_path, inkling2_loop_test_gguf_bytes()).unwrap();
+
+        let layout = crate::gguf::read_layout(&source_path).unwrap();
+        assert_eq!(layout.restricted_slice_starts, Some(Vec::new()));
+        assert_eq!(layout.valid_prefix_end_layers(), vec![23]);
+        let error = split(&source_path, &partial_path, 0, 11, true, false, |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cross-layer residual mixer state"));
+
+        split(&source_path, &whole_path, 0, 23, true, true, |_| {}).unwrap();
+        let whole = std::fs::read(&whole_path).unwrap();
+        assert_eq!(
+            kv_string(&whole, "general.architecture").as_deref(),
+            Some("inkling2_loop")
+        );
+        assert_eq!(kv_u32(&whole, "inkling2_loop.block_count"), Some(24));
+        assert_eq!(kv_u32(&whole, "inkling2_loop.loop.start"), Some(6));
+        assert_eq!(kv_u32(&whole, "inkling2_loop.loop.end"), Some(18));
+        assert_eq!(
+            layout.slice_bytes(0, 23, true),
+            whole_path.metadata().unwrap().len()
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Writes a real and a virtual slice of a real model for a manual load

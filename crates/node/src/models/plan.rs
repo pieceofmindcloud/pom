@@ -182,6 +182,17 @@ fn plan_split_impl(
         let is_last = is_last_peer || end_layer + 1 >= total_layers;
         let (weight_bytes, kv_bytes, total_bytes) =
             range_cost(layout, info, kv, start_layer, end_layer, is_last)?;
+        if total_bytes > usable_bytes {
+            warnings.push(format!(
+                "{}: the smallest architecture-valid range L{}-{} needs {:.0} MB, above this peer's {:.0} MB usable budget",
+                budget.label,
+                start_layer,
+                end_layer,
+                total_bytes as f64 / MB,
+                usable_mb
+            ));
+            continue;
+        }
 
         if !budget.has_model {
             warnings.push(format!(
@@ -732,10 +743,12 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
         // "The rest" takes everything left. The final entry is always the rest,
         // even when an older client still sends a numeric target for it.
         let take_rest = slice.target_mb.is_none() || last_requested;
-        let (end, too_small) = if take_rest {
+        let requested_budget =
+            (!take_rest).then(|| (slice.target_mb.unwrap_or(0.0).max(0.0) * MB) as u64);
+        let (end, mut too_small) = if take_rest {
             (total_layers - 1, false)
         } else {
-            let budget = (slice.target_mb.unwrap_or(0.0).max(0.0) * MB) as u64;
+            let budget = requested_budget.unwrap_or_default();
             let mut end = pos;
             let mut fits_one = false;
             while end < total_layers {
@@ -763,15 +776,29 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
         let end = end.min(total_layers - 1);
         let is_last = end + 1 >= total_layers;
         let bytes = layout.slice_bytes(pos, end, is_last);
+        if requested_budget.is_some_and(|budget| bytes > budget) {
+            too_small = true;
+        }
 
         if too_small {
-            warnings.push(format!(
-                "slice {}: {} do not cover even layer {}, which alone already weighs {}",
-                index + 1,
-                fmt_gb(slice.target_mb.unwrap_or(0.0) * MB),
-                pos,
-                fmt_gb(bytes as f64)
-            ));
+            if let Some(budget) = requested_budget.filter(|budget| bytes > *budget && end > pos) {
+                warnings.push(format!(
+                    "slice {}: the smallest architecture-valid range L{}-{} weighs {}, above the target {}",
+                    index + 1,
+                    pos,
+                    end,
+                    fmt_gb(bytes as f64),
+                    fmt_gb(budget as f64)
+                ));
+            } else {
+                warnings.push(format!(
+                    "slice {}: {} do not cover even layer {}, which alone already weighs {}",
+                    index + 1,
+                    fmt_gb(slice.target_mb.unwrap_or(0.0) * MB),
+                    pos,
+                    fmt_gb(bytes as f64)
+                ));
+            }
         }
 
         ranges.push(SizedRange {
@@ -1025,6 +1052,12 @@ mod tests {
         }
     }
 
+    fn inkling2_unsplittable_layout(n: u32, per_layer_mb: f64) -> GgufLayout {
+        let mut layout = layout(n, per_layer_mb);
+        layout.restricted_slice_starts = Some(Vec::new());
+        layout
+    }
+
     /// A hybrid stack: every 4th layer is attention, the rest are recurrent.
     fn hybrid_layout(n: u32, per_layer_mb: f64) -> GgufLayout {
         let mut l = layout(n, per_layer_mb);
@@ -1093,6 +1126,53 @@ mod tests {
             );
         }
         assert_eq!(plan.shards.last().unwrap().end_layer, 31);
+    }
+
+    #[test]
+    fn inkling2_loop_size_plan_refuses_partial_ranges() {
+        let l = inkling2_unsplittable_layout(24, 100.0);
+        let plan = plan_equal(&l, 2).unwrap();
+
+        assert_eq!(
+            plan.ranges
+                .iter()
+                .filter(|range| !range.empty)
+                .map(|range| (range.start_layer, range.end_layer))
+                .collect::<Vec<_>>(),
+            vec![(0, 23)]
+        );
+        assert!(plan.blocked);
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("smallest architecture-valid range")));
+    }
+
+    #[test]
+    fn inkling2_loop_budget_plan_only_assigns_the_full_model_when_it_fits() {
+        let l = inkling2_unsplittable_layout(24, 100.0);
+        let plan =
+            plan_split("/m/inkling2-loop.gguf", &l, &[budget("whole", 3000.0)], 0.0).unwrap();
+
+        assert!(plan.complete);
+        assert_eq!(plan.shards.len(), 1);
+        assert_eq!(
+            (plan.shards[0].start_layer, plan.shards[0].end_layer),
+            (0, 23)
+        );
+
+        let too_small = plan_split(
+            "/m/inkling2-loop.gguf",
+            &l,
+            &[budget("small", 1500.0), budget("also-small", 1500.0)],
+            0.0,
+        )
+        .unwrap();
+        assert!(too_small.shards.is_empty());
+        assert!(too_small
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("smallest architecture-valid range")));
     }
 
     #[test]

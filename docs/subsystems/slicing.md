@@ -156,6 +156,15 @@ The engine's `gguf` module reads the GGUF without loading weights:
   published DeepSeek-V4.1 Flash has one such layer, 20. An empty list means the
   model stays whole. `validate_slice_ranges` refuses any other start and
   `snap_end_layer` never returns a cut outside the list.
+- `inkling2` and `inkling2_loop` are not pipeline-sliceable with the current
+  one-hidden-state boundary: their depth mixer attends to residual states kept
+  from earlier blocks, and the pipeline wire cannot carry that collection. A
+  loop model has an additional hard loader constraint: `loop.end` must fit in
+  the slice's local physical layer count and align to `attn_res_block_size`.
+  The layout therefore offers only the full range; size/budget plans never
+  extend an undersized peer past its memory budget, and the splitter refuses a
+  direct partial cut before writing it. Supporting a correct distributed cut
+  requires carrying the architecture's residual-state bank across peers.
 - `arch_boundaries`/`snap_end_layer` - hybrid models (Mamba + Attention) are
   not a stack of equal blocks; the cut only happens at a type boundary,
   otherwise the block renumbers to the wrong type (`missing tensor` or a

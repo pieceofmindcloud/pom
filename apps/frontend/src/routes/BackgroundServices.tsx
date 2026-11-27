@@ -1,4 +1,4 @@
-import { Blocks, Cpu, Layers, Lock, Power, X } from "lucide-react";
+import { Blocks, Cpu, Layers, Lock, MemoryStick, Power, X } from "lucide-react";
 import clsx from "clsx";
 import { useState } from "react";
 import { Confirm } from "../components/Confirm";
@@ -6,7 +6,8 @@ import { Empty, PageHeader } from "../components/ui";
 import { useI18n } from "../i18n/provider";
 import { closePlugin, openPlugin } from "../lib/api";
 import { pluginAssetUrl, pluginDisplayName, type ActivePluginUi } from "../lib/pluginUi";
-import { useNode, usePluginUi } from "../lib/queries";
+import { useNode, usePluginUi, usePublicPluginCatalog } from "../lib/queries";
+import type { PublicPluginCatalogEntry } from "../lib/pluginCatalog";
 import { useToast } from "../lib/toast";
 
 /** `314572800` -> `300 MB`; one decimal above 1 GB. */
@@ -16,16 +17,22 @@ export function formatMemory(bytes: number): string {
   return `${(mb / 1024).toFixed(1)} GB`;
 }
 
-/** A plugin with no menu has no label of its own: its code, capitalized. */
-function displayName(plugin: ActivePluginUi, locale: string): string {
+/**
+ * The app's name: the product name the store lists (the logs plugin is the
+ * Business Pack, whatever its first menu entry says), else its menu label,
+ * else its code, capitalized.
+ */
+function displayName(plugin: ActivePluginUi, locale: string, entry?: PublicPluginCatalogEntry): string {
+  if (entry?.display_name) return entry.display_name;
   const name = pluginDisplayName(plugin.code, locale);
   return name === plugin.code ? plugin.code.charAt(0).toUpperCase() + plugin.code.slice(1) : name;
 }
 
-/** The app icon: the manifest's `icon_image`, else a glyph on a tile. */
-function AppIcon({ plugin, engine, dim }: { plugin: ActivePluginUi; engine: boolean; dim: boolean }) {
+/** The app icon: the store's icon, else the manifest's `icon_image`, else a glyph on a tile. */
+function AppIcon({ plugin, engine, dim, storeIcon }: { plugin: ActivePluginUi; engine: boolean; dim: boolean; storeIcon?: string | null }) {
   const [broken, setBroken] = useState(false);
-  const image = plugin.manifest.icon_image;
+  const own = plugin.manifest.app_icon ?? plugin.manifest.icon_image;
+  const image = storeIcon ?? (own ? pluginAssetUrl(plugin.code, own) : null);
   return (
     <span
       className={clsx(
@@ -35,7 +42,7 @@ function AppIcon({ plugin, engine, dim }: { plugin: ActivePluginUi; engine: bool
       )}
     >
       {image && !broken ? (
-        <img src={pluginAssetUrl(plugin.code, image)} alt="" className="h-full w-full object-cover" onError={() => setBroken(true)} />
+        <img src={image} alt="" className="h-full w-full object-cover" onError={() => setBroken(true)} />
       ) : engine ? (
         <Cpu size={28} />
       ) : (
@@ -60,6 +67,10 @@ export function BackgroundServices() {
   const toast = useToast();
   const query = usePluginUi();
   const node = useNode();
+  // The store names and draws the plugins it sells (as the Plugins screen does).
+  const catalog = usePublicPluginCatalog();
+  const entryOf = (code: string) => catalog.data?.plugins.find((entry) => entry.code === code);
+  const nameOf = (plugin: ActivePluginUi) => displayName(plugin, locale, entryOf(plugin.code));
   const [confirming, setConfirming] = useState<ActivePluginUi | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   // The plugins that publish an inference service on this machine (a stopped
@@ -69,12 +80,14 @@ export function BackgroundServices() {
   );
   const serving = node.data?.config?.inference_service ?? null;
   const servedModel = node.data?.config?.model_label ?? null;
-  const plugins = [...(query.data?.plugins ?? [])].sort((a, b) =>
-    displayName(a, locale).localeCompare(displayName(b, locale)),
-  );
+  const plugins = [...(query.data?.plugins ?? [])].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
   // A resident plugin runs while it is installed and active.
   const isOpen = (plugin: ActivePluginUi) => plugin.running || !plugin.on_demand;
   const open = plugins.filter(isOpen);
+  // Like the Dock: the apps that cannot be closed are pinned at the start, the
+  // ones that can follow after a divider.
+  const pinned = open.filter((plugin) => !plugin.on_demand);
+  const closable = open.filter((plugin) => plugin.on_demand);
   const stopped = plugins.filter((plugin) => !isOpen(plugin));
 
   const act = (plugin: ActivePluginUi, start: boolean) => {
@@ -88,14 +101,14 @@ export function BackgroundServices() {
   };
 
   const tile = (plugin: ActivePluginUi) => {
-    const name = displayName(plugin, locale);
+    const name = nameOf(plugin);
     const engine = engines.has(plugin.code);
     const running = isOpen(plugin);
     const working = busy === plugin.code;
+    const memory = running && plugin.memory_bytes != null ? formatMemory(plugin.memory_bytes) : null;
     const details = [
-      engine ? t("backgroundServices.engine") : null,
       serving === plugin.code && servedModel ? t("backgroundServices.serving", { model: servedModel }) : null,
-      running && plugin.memory_bytes != null ? formatMemory(plugin.memory_bytes) : null,
+      engine ? t("backgroundServices.engine") : null,
       !plugin.on_demand ? t("backgroundServices.alwaysOn") : null,
     ].filter(Boolean) as string[];
     return (
@@ -116,7 +129,7 @@ export function BackgroundServices() {
             working && "animate-pulse",
           )}
         >
-          <AppIcon plugin={plugin} engine={engine} dim={!running} />
+          <AppIcon plugin={plugin} engine={engine} dim={!running} storeIcon={entryOf(plugin.code)?.icon_url} />
           {!running && (
             <span className="absolute inset-0 flex items-center justify-center rounded-[1.1rem] bg-black/35 text-white opacity-0 transition-opacity group-hover:opacity-100">
               <Power size={22} />
@@ -146,9 +159,19 @@ export function BackgroundServices() {
           </span>
         )}
         <span className="w-full truncate text-[0.72rem] font-medium text-fg">{name}</span>
+        {memory && (
+          <span
+            data-testid={`background-service-memory-${plugin.code}`}
+            title={t("backgroundServices.memoryHint")}
+            className="-mt-0.5 inline-flex items-center gap-1 rounded-full border border-aqua/40 bg-aqua/15 px-2 py-0.5 font-mono text-[0.66rem] font-semibold text-aqua"
+          >
+            <MemoryStick size={11} />
+            {memory}
+          </span>
+        )}
         {details.length > 0 && (
-          <span className="-mt-1 w-full truncate text-[0.6rem] text-faint" data-testid={`background-service-detail-${plugin.code}`}>
-            {serving === plugin.code && servedModel ? t("backgroundServices.serving", { model: servedModel }) : details[0]}
+          <span className="w-full truncate text-[0.6rem] text-faint" data-testid={`background-service-detail-${plugin.code}`}>
+            {details[0]}
           </span>
         )}
         {/* The Dock's running light. */}
@@ -158,35 +181,48 @@ export function BackgroundServices() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="flex min-h-[calc(100dvh-8.5rem)] flex-col">
       <PageHeader title={t("backgroundServices.title")} subtitle={t("backgroundServices.subtitle")} />
       {plugins.length === 0 ? (
         <Empty icon={<Layers size={18} />} title={t("backgroundServices.empty")} />
       ) : (
         <>
-          <section aria-label={t("backgroundServices.running", { count: open.length })}>
-            <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-faint">
-              {t("backgroundServices.running", { count: open.length })}
+          {/* The stopped apps, like the apps folder: what can be opened. */}
+          <section aria-label={t("backgroundServices.stoppedList")} className="flex-1 pb-8">
+            <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-faint">
+              {t("backgroundServices.stoppedList")}
             </h2>
-            <ul className="flex flex-wrap justify-center gap-x-3 gap-y-4 rounded-[1.75rem] border border-white/10 bg-surface/60 px-5 pb-3 pt-5 shadow-[0_18px_50px_rgb(0_0_0/0.18)] backdrop-blur-xl">
-              {open.length === 0 ? <li className="py-6 text-sm text-faint">{t("backgroundServices.noneOpen")}</li> : open.map(tile)}
-            </ul>
-          </section>
-          {stopped.length > 0 && (
-            <section aria-label={t("backgroundServices.stoppedList")}>
-              <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-faint">
-                {t("backgroundServices.stoppedList")}
-              </h2>
-              <ul className="grid grid-cols-[repeat(auto-fill,minmax(6rem,1fr))] justify-items-center gap-y-5 rounded-[1.75rem] border border-line bg-raised/40 px-5 py-5">
+            {stopped.length === 0 ? (
+              <p className="text-sm text-faint">{t("backgroundServices.noneStopped")}</p>
+            ) : (
+              <ul className="grid grid-cols-[repeat(auto-fill,minmax(6rem,1fr))] justify-items-center gap-y-6">
                 {stopped.map(tile)}
               </ul>
-            </section>
-          )}
+            )}
+          </section>
+          {/* The open apps on a dock at the bottom of the screen, as on macOS:
+              the ones that cannot be closed pinned first, then a divider. */}
+          <section
+            aria-label={t("backgroundServices.running", { count: open.length })}
+            className="sticky bottom-3 z-10 mt-auto flex justify-center"
+          >
+            <ul
+              data-testid="services-dock"
+              className="flex max-w-full flex-wrap items-start justify-center gap-x-3 gap-y-3 rounded-[1.75rem] border border-white/15 bg-surface/70 px-5 pb-2 pt-4 shadow-[0_18px_50px_rgb(0_0_0/0.35)] backdrop-blur-2xl"
+            >
+              {open.length === 0 && <li className="px-6 py-4 text-sm text-faint">{t("backgroundServices.noneOpen")}</li>}
+              {pinned.map(tile)}
+              {pinned.length > 0 && closable.length > 0 && (
+                <li aria-hidden="true" data-testid="dock-divider" className="mx-1 w-px self-stretch bg-line-strong" />
+              )}
+              {closable.map(tile)}
+            </ul>
+          </section>
         </>
       )}
       <Confirm
         open={confirming !== null}
-        title={t("backgroundServices.confirmTitle", { name: confirming ? displayName(confirming, locale) : "" })}
+        title={t("backgroundServices.confirmTitle", { name: confirming ? nameOf(confirming) : "" })}
         description={
           confirming && serving === confirming.code
             ? t("backgroundServices.confirmEngineBody", { model: servedModel ?? "" })

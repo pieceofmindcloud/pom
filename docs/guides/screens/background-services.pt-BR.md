@@ -8,7 +8,7 @@ order: 315
 ---
 
 :::lead
-Serviços mostra cada plugin que esta máquina roda como um aplicativo: o ícone com o nome embaixo. Os abertos ficam numa prateleira como o Dock do macOS, e os parados numa pasta abaixo. É onde você inicia e para os aplicativos que não têm entrada no menu, como os motores de inferência (vLLM, Avalon) e o agente Goose com que o Chat conversa.
+Serviços mostra cada plugin que esta máquina roda como um aplicativo: o ícone com o nome embaixo. Os que podem ser abertos ficam em cima, como uma pasta de aplicativos; os abertos ficam num dock na parte de baixo da tela, como o Dock do macOS: primeiro os que ficam sempre ligados e, depois de uma divisória, os que podem ser fechados. Cada aplicativo aberto mostra quanta memória (RAM) usa. É onde você inicia e para os aplicativos que não têm entrada no menu, como os motores de inferência (vLLM, Avalon) e o agente Goose com que o Chat conversa.
 :::
 
 :::cards

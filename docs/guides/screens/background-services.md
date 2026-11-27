@@ -8,7 +8,7 @@ order: 315
 ---
 
 :::lead
-Services shows every plugin this machine runs as an app: its icon with its name underneath. The open ones sit on a shelf like the macOS Dock, the stopped ones in a folder below. It is where you start and stop the apps that have no menu entry, such as the inference engines (vLLM, Avalon) and the Goose agent the Chat talks to.
+Services shows every plugin this machine runs as an app: its icon with its name underneath. The apps you can open sit at the top, like a folder of apps; the open ones sit on a dock at the bottom of the screen, like the macOS Dock: first the ones that are always on, then, after a divider, the ones you can close. Each open app shows how much memory (RAM) it uses. It is where you start and stop the apps that have no menu entry, such as the inference engines (vLLM, Avalon) and the Goose agent the Chat talks to.
 :::
 
 :::cards

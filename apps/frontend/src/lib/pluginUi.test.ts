@@ -64,6 +64,16 @@ const otherPlugin: ActivePluginUi = {
 describe("plugin UI registry", () => {
   afterEach(() => setPluginUi([]));
 
+  it("names a plugin by the product name its manifest gives, else by its menu", () => {
+    setPluginUi([plugin]);
+    const before = pluginDisplayName("acme", "en");
+    setPluginUi([{ ...plugin, manifest: { ...plugin.manifest, display_name: { en: "Business Pack", "pt-BR": "Pacote" } } }]);
+    expect(pluginDisplayName("acme", "en")).toBe("Business Pack");
+    expect(pluginDisplayName("acme", "pt-BR")).toBe("Pacote");
+    expect(pluginDisplayName("acme", "fr")).toBe("Business Pack");
+    expect(before).not.toBe("Business Pack");
+  });
+
   it("is empty without plugins: no route, no profile rule", () => {
     expect(resolvePluginRoute("/logs")).toBeNull();
     expect(pluginRouteProfiles("/logs")).toBeNull();

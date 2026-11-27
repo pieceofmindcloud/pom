@@ -92,6 +92,17 @@ pub(crate) struct PluginUiManifest {
     /// Optional PNG served by the plugin and used in the navigation menu.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon_image: Option<String>,
+    /// Optional PNG for the app itself (Services, Plugins), apart from the
+    /// menu: `icon_image` replaces the icon of every menu entry, which a
+    /// plugin with several entries (the logs plugin) does not want. Without
+    /// it, the screens use `icon_image`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_icon: Option<String>,
+    /// The product's name per language (`en` required when present): what
+    /// Services and the other plugin lists call the app, instead of its first
+    /// menu label (the logs plugin is "Business Pack", not "Logs").
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub display_name: std::collections::BTreeMap<String, String>,
     /// Short description per language (`en` required when present), shown on
     /// the Plugins screen.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -263,6 +274,8 @@ fn normalize_ui_manifest_documentation(value: Value) -> Result<Value, String> {
 }
 
 const MAX_SCREENSHOTS: usize = 8;
+/// Longest product name a manifest gives per language.
+const MAX_DISPLAY_NAME_TEXT: usize = 60;
 const MAX_DESCRIPTION_TEXT: usize = 2000;
 
 /// Safe relative path inside the repository or `https://` URL without
@@ -304,10 +317,23 @@ impl PluginUiManifest {
         if manifest.plugin_code != expected_code {
             return Err("manifest plugin_code is not that of the installed plugin".into());
         }
+        if let Some(icon) = &manifest.app_icon {
+            if !icon.ends_with(".png") || !manifest.assets.iter().any(|asset| asset == icon) {
+                return Err("app_icon must be a declared PNG asset".into());
+            }
+        }
         if let Some(icon) = &manifest.icon_image {
             if !icon.ends_with(".png") || !manifest.assets.iter().any(|asset| asset == icon) {
                 return Err("icon_image must be a declared PNG asset".into());
             }
+        }
+        if !manifest.display_name.is_empty()
+            && (!manifest.display_name.contains_key("en")
+                || manifest.display_name.iter().any(|(locale, text)| {
+                    !valid_locale(locale) || text.trim().is_empty() || text.len() > MAX_DISPLAY_NAME_TEXT
+                }))
+        {
+            return Err("display_name needs en and short names per language".into());
         }
         if !manifest.description.is_empty()
             && (!manifest.description.contains_key("en")
@@ -419,7 +445,7 @@ impl PluginUiManifest {
     }
 
     pub(crate) fn is_icon_image(&self, asset: &str) -> bool {
-        self.icon_image.as_deref() == Some(asset)
+        self.icon_image.as_deref() == Some(asset) || self.app_icon.as_deref() == Some(asset)
     }
 
     /// What the shell loads for an installed plugin even while its process is
@@ -431,6 +457,7 @@ impl PluginUiManifest {
     pub(crate) fn shell_assets(&self) -> Vec<String> {
         let mut assets: Vec<String> = self.i18n.values().cloned().collect();
         assets.extend(self.icon_image.clone());
+        assets.extend(self.app_icon.clone());
         assets.extend(
             self.assets
                 .iter()
@@ -1154,12 +1181,34 @@ mod tests {
         assert!(PluginUiManifest::parse("base", manifest(duplicated, json!({}))).is_err());
         for extra in [
             json!({ "description": { "pt-BR": "without en" } }),
+            json!({ "display_name": { "pt-BR": "without en" } }),
+            json!({ "display_name": { "en": "" } }),
             json!({ "screenshots": ["../fora.png"] }),
             json!({ "screenshots": ["docs/script.js"] }),
             json!({ "screenshots": ["http://example.com/a.png"] }),
         ] {
             assert!(PluginUiManifest::parse("base", manifest(menu.clone(), extra)).is_err());
         }
+    }
+
+    /// A product name per language reaches the screens as it came.
+    #[test]
+    fn a_display_name_is_kept_for_the_screens() {
+        let mut value = manifest();
+        value["display_name"] = json!({ "en": "Business Pack", "pt-BR": "Business Pack" });
+        value["app_icon"] = json!("ui/icon.png");
+        value["assets"].as_array_mut().unwrap().push(json!("ui/icon.png"));
+        let parsed = PluginUiManifest::parse("logs", value.clone()).expect("valid manifest");
+        assert_eq!(parsed.display_name.get("en").map(String::as_str), Some("Business Pack"));
+        let shown = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(shown["display_name"]["en"], "Business Pack");
+        assert_eq!(shown["app_icon"], "ui/icon.png");
+        // The app icon is served as PNG and kept for a stopped plugin.
+        assert!(parsed.is_icon_image("ui/icon.png"));
+        assert!(parsed.shell_assets().contains(&"ui/icon.png".to_string()));
+        // An app icon outside the declared assets is refused.
+        value["app_icon"] = json!("ui/other.png");
+        assert!(PluginUiManifest::parse("logs", value).is_err());
     }
 
     /// The manifest the `logs` plugin (pom-plugin-logs) ships today.

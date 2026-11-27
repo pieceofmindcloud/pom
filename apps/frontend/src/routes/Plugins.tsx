@@ -390,7 +390,9 @@ function PluginCard({
       ?? repository?.manifest.description
       ?? null;
   const iconUrl = entry?.icon_url
-    ?? (uiPlugin?.manifest.icon_image ? pluginAssetUrl(code, uiPlugin.manifest.icon_image) : null);
+    ?? ((uiPlugin?.manifest.app_icon ?? uiPlugin?.manifest.icon_image)
+      ? pluginAssetUrl(code, (uiPlugin?.manifest.app_icon ?? uiPlugin?.manifest.icon_image)!)
+      : null);
   const release = entry ? releaseForTarget(entry.releases, targetOs, targetArch) : null;
   const hasRequiredLicense = entry?.requires_license === true;
   const fromGithub = Boolean(repository) || status?.public_install === true;

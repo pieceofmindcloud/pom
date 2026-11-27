@@ -43,7 +43,9 @@ namespace. The real code of Request Logs and Statistics lives in
 | Field | Rule |
 |---|---|
 | `schema`, `plugin_code` | `pom-plugin-ui/v1`; the code must be the installed plugin's |
-| `icon_image` | optional; path of a `.png` asset. The frontend uses it in the menu and falls back to `menu[].icon` when the image fails or is missing |
+| `icon_image` | optional; path of a `.png` asset. The frontend uses it in the menu and falls back to `menu[].icon` when the image fails or is missing. It replaces the icon of every menu entry of the plugin |
+| `app_icon` | optional; path of a declared `.png` asset: the app's own icon on Services and Plugins, apart from the menu (a plugin with several entries keeps their Lucide icons). Without it those screens use `icon_image`; the store's icon, when the store lists the plugin, comes first |
+| `display_name` | optional; the product's name per language (`en` required, up to 60 bytes each): what Services, notices and loaders call the plugin, instead of its first menu label. The store's name, when it lists the plugin, comes first on Services |
 | `lifecycle` | optional; `resident` (default, the process starts with POM and the heartbeat restarts it) or `on_demand` (see "On-demand processes"). Any other value refuses the manifest |
 | `description` | optional; short text per language (`en` required, up to 2000 bytes each), shown on the Plugins screen card |
 | `screenshots` | optional; up to 8 images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) as paths relative to the root of the plugin's GitHub repository or `https://` URLs without credentials. They are not assets and the node never serves them: relative paths become `https://raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>` and the browser loads them straight from GitHub |
@@ -317,8 +319,10 @@ engine needs a node that has it.
   the X, and an "Open <name>" button.
 - **Settings > Services** (`routes/BackgroundServices.tsx`,
   `/config/services`; `/config/background-services` redirects) shows every
-  plugin as an app icon with its name: the open ones (running, or resident and
-  "always on") on a dock-like shelf, the stopped ones in a folder below. An
+  plugin as an app icon with its name (the store's name and icon first, then
+  `display_name` / `app_icon`): the stopped ones at the top, the open ones on
+  a dock at the bottom of the screen, resident ones pinned before a divider
+  and closable ones after it, each with the RAM it uses. An
   open on-demand app closes from its X (confirmed, then `/close`); a click on
   a stopped one opens it. It is the only place to close a plugin with no menu
   entry (`pom-plugin-goose`, the engines).

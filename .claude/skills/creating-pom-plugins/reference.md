@@ -80,7 +80,9 @@ The Plugins card shows a gear while the plugin is active and has a schema.
 |---|---|
 | `schema`, `plugin_code` | `pom-plugin-ui/v1`; code matches the installed plugin, `^[a-z][a-z0-9_]{1,63}$` |
 | `lifecycle` | `resident` (default) or `on_demand` (process only while open; menu X badge; `/open`, `/close` routes) |
-| `icon_image` | `.png` asset for the menu; `menu[].icon` is the fallback |
+| `icon_image` | `.png` asset for the menu (replaces every entry's icon); `menu[].icon` is the fallback |
+| `app_icon` | `.png` asset for the app on Services and Plugins, apart from the menu; falls back to `icon_image` |
+| `display_name` | product name per language, `en` required, at most 60 bytes; Services and notices call the plugin by it instead of its first menu label |
 | `description` | per language, `en` required, at most 2000 bytes each |
 | `screenshots` | up to 8, repository-relative (served from `raw.githubusercontent.com/<owner>/<repo>/HEAD/`) or `https://`; **not** assets |
 | `menu[]` | `id` (unique, children included), `label{en,...}`, `icon`, `to`, optional `children[]`, `roles`/`profiles` (validated, not enforced) |

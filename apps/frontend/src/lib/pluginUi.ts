@@ -62,6 +62,10 @@ export interface PluginUiManifest {
   plugin_code: string;
   /** Optional PNG asset; the icon declared in the menu remains the fallback. */
   icon_image?: string;
+  /** Optional PNG of the app itself (Services, Plugins); falls back to `icon_image`. */
+  app_icon?: string;
+  /** The product's name per language (Services calls the app by it). */
+  display_name?: Record<string, string>;
   /** Description per language, shown on the Plugins screen. */
   description?: Record<string, string>;
   menu: PluginMenuItem[];
@@ -236,12 +240,15 @@ function normalizePlugin(
     return null;
   }
   const iconImage = manifest.icon_image;
+  const appIcon = manifest.app_icon;
   const documentation = manifest.documentation;
   if (
     (iconImage !== undefined &&
       (!isNonEmptyString(iconImage) ||
         !iconImage.endsWith(".png") ||
         !manifest.assets.includes(iconImage))) ||
+    (appIcon !== undefined &&
+      (!isNonEmptyString(appIcon) || !appIcon.endsWith(".png") || !manifest.assets.includes(appIcon))) ||
     (documentation !== undefined && !isRecord(documentation))
   ) {
     return null;
@@ -437,6 +444,10 @@ function normalizePlugin(
     });
   }
 
+  const displayName = isRecord(manifest.display_name) &&
+    Object.values(manifest.display_name).every((text) => typeof text === "string")
+    ? { ...(manifest.display_name as Record<string, string>) }
+    : undefined;
   const description = isRecord(manifest.description) &&
     Object.values(manifest.description).every((text) => typeof text === "string")
     ? { ...(manifest.description as Record<string, string>) }
@@ -449,6 +460,8 @@ function normalizePlugin(
       schema: "pom-plugin-ui/v1",
       plugin_code: code,
       ...(isNonEmptyString(iconImage) ? { icon_image: iconImage } : {}),
+      ...(isNonEmptyString(appIcon) ? { app_icon: appIcon } : {}),
+      ...(displayName ? { display_name: displayName } : {}),
       ...(description ? { description } : {}),
       menu: rawMenu,
       routes: rawRoutes,
@@ -603,6 +616,10 @@ function localized(texts: Record<string, string>, locale: string): string | null
  */
 export function pluginDisplayName(code: string, locale: string): string {
   const plugin = registry.find((entry) => entry.plugin.code === code);
+  // The product name the manifest gives wins over its first menu label.
+  const named = plugin?.plugin.manifest.display_name;
+  const product = named ? named[locale] ?? named.en : undefined;
+  if (product) return product;
   const item = plugin?.menu.find((entry) => entry.id === code) ?? plugin?.menu[0];
   return (item && localized(item.label, locale)) || code;
 }

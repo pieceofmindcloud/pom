@@ -13,12 +13,14 @@ const mocks = vi.hoisted(() => ({
   refetch: vi.fn(),
   plugins: [] as unknown[],
   node: { plugin_services: [], config: null } as unknown,
+  catalog: [] as unknown[],
 }));
 
 vi.mock("../lib/api", () => ({ openPlugin: mocks.openPlugin, closePlugin: mocks.closePlugin }));
 vi.mock("../lib/queries", () => ({
   usePluginUi: () => ({ data: { plugins: mocks.plugins }, isLoading: false, refetch: mocks.refetch }),
   useNode: () => ({ data: mocks.node }),
+  usePublicPluginCatalog: () => ({ data: { plugins: mocks.catalog } }),
 }));
 
 function mount() {
@@ -39,6 +41,25 @@ afterEach(() => {
 });
 
 describe("Services", () => {
+  it("names and draws an app as the store does, pins the resident ones before a divider and stresses RAM", () => {
+    mocks.catalog = [{ code: "logs", display_name: "Business Pack", icon_url: "https://store.example/logs.png" }];
+    mocks.plugins = [
+      { code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true, memory_bytes: 314572800 },
+      { code: "logs", version: "1.0.0", manifest: manifest("logs"), on_demand: false, running: true, memory_bytes: 34603008 },
+    ];
+    mount();
+    const shelf = screen.getByRole("region", { name: "Open (2)" });
+    const items = Array.from(shelf.querySelectorAll("li")).map((li) => li.getAttribute("data-testid"));
+    // Pinned (cannot close) first, then the divider, then the closable ones.
+    expect(items).toEqual(["background-service-logs", "dock-divider", "background-service-goose"]);
+    const logs = screen.getByTestId("background-service-logs");
+    expect(within(logs).getByText("Business Pack")).toBeTruthy();
+    expect(logs.querySelector("img")?.getAttribute("src")).toBe("https://store.example/logs.png");
+    expect(screen.getByTestId("background-service-memory-goose").textContent).toBe("300 MB");
+    expect(screen.getByTestId("background-service-memory-logs").textContent).toBe("33 MB");
+    mocks.catalog = [];
+  });
+
   it("shows open apps on the shelf and stopped ones in the folder, with their names", () => {
     mocks.plugins = [
       { code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true, memory_bytes: 314572800 },
@@ -52,7 +73,7 @@ describe("Services", () => {
     // A resident plugin is an open app too, always on and with no close.
     expect(within(screen.getByTestId("background-service-logs")).getByText("always on")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Close Logs" })).toBeNull();
-    const folder = screen.getByRole("region", { name: "Stopped" });
+    const folder = screen.getByRole("region", { name: "Available" });
     expect(within(folder).getByText("Hermes")).toBeTruthy();
   });
 

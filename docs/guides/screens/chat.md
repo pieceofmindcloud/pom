@@ -17,7 +17,7 @@ The Chat talks to the model your network serves, through the same OpenAI-compati
 
 :::cards
 ### Agents
-When a plugin of this machine serves an agent (the Goose plugin), a picker beside the model lets you talk to it instead. The agent works in the machine's projects folder, shows each tool it runs and asks before doing anything risky; close it in Settings > Background services.
+When a plugin of this machine serves an agent (the Goose plugin), a picker beside the model lets you talk to it instead. The agent works in the machine's projects folder, shows each tool it runs and asks before doing anything risky; close it in Settings > Services.
 ### Model
 Which model answers. Only models some machine of the network is serving show up here.
 ### Inference head

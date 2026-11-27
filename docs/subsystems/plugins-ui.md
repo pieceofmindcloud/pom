@@ -286,7 +286,7 @@ it; the node reads the flag from the last `ui.manifest` it saved in `pom.db`
 A resident plugin behaves as before.
 
 An inference engine may be on demand (vLLM and Avalon are, with no menu
-entry): Settings > Background services starts and stops it, marked as an
+entry): Settings > Services starts and stops it, marked as an
 inference engine, with the model it serves. `plugin_engine::run` opens an
 on-demand engine before `engine.load`, so a deployment or a restart that
 resumes a slice starts it. The node saves the inference services an
@@ -315,10 +315,13 @@ engine needs a node that has it.
   piece paused, "The <name> piece is paused", why (closed, it uses no memory,
   processor or GPU, and keeps its settings), that it can be closed again with
   the X, and an "Open <name>" button.
-- **Settings > Background services** (`routes/BackgroundServices.tsx`,
-  `/config/background-services`) lists the on-demand plugins, running first,
-  with Close (confirmed, then `/close`) and Open for stopped ones. It is the
-  only place to close a plugin with no menu entry (`pom-plugin-goose`).
+- **Settings > Services** (`routes/BackgroundServices.tsx`,
+  `/config/services`; `/config/background-services` redirects) shows every
+  plugin as an app icon with its name: the open ones (running, or resident and
+  "always on") on a dock-like shelf, the stopped ones in a folder below. An
+  open on-demand app closes from its X (confirmed, then `/close`); a click on
+  a stopped one opens it. It is the only place to close a plugin with no menu
+  entry (`pom-plugin-goose`, the engines).
   `GET /api/ui/plugins/ui` adds `memory_bytes` to a running plugin: the
   resident memory of its host's process tree (`process_memory.rs`, `/proc`
   on Linux; omitted elsewhere or when unmeasurable).

@@ -38,8 +38,44 @@ afterEach(() => {
   mocks.refetch.mockReset();
 });
 
-describe("BackgroundServices", () => {
-  it("marks an inference engine, names the model it serves and warns before stopping it", async () => {
+describe("Services", () => {
+  it("shows open apps on the shelf and stopped ones in the folder, with their names", () => {
+    mocks.plugins = [
+      { code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true, memory_bytes: 314572800 },
+      { code: "logs", version: "1.0.0", manifest: manifest("logs"), on_demand: false, running: true },
+      { code: "hermes", version: "0.2.0", manifest: manifest("hermes"), on_demand: true, running: false },
+    ];
+    mount();
+    const shelf = screen.getByRole("region", { name: "Open (2)" });
+    expect(within(shelf).getByText("Goose")).toBeTruthy();
+    expect(within(shelf).getByText("300 MB")).toBeTruthy();
+    // A resident plugin is an open app too, always on and with no close.
+    expect(within(screen.getByTestId("background-service-logs")).getByText("always on")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Close Logs" })).toBeNull();
+    const folder = screen.getByRole("region", { name: "Stopped" });
+    expect(within(folder).getByText("Hermes")).toBeTruthy();
+  });
+
+  it("closes an open app after a confirmation", async () => {
+    mocks.plugins = [{ code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true }];
+    mocks.closePlugin.mockResolvedValue({ code: "goose", running: false });
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "Close Goose" }));
+    expect(mocks.closePlugin).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(mocks.closePlugin).toHaveBeenCalledWith("goose"));
+    await waitFor(() => expect(mocks.refetch).toHaveBeenCalled());
+  });
+
+  it("opens a stopped app with a click on its icon", async () => {
+    mocks.plugins = [{ code: "hermes", version: "0.2.0", manifest: manifest("hermes"), on_demand: true, running: false }];
+    mocks.openPlugin.mockResolvedValue({ code: "hermes", running: true });
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: "Open Hermes" }));
+    await waitFor(() => expect(mocks.openPlugin).toHaveBeenCalledWith("hermes"));
+  });
+
+  it("marks an inference engine, names the model it serves and warns before stopping it", () => {
     mocks.plugins = [
       { code: "vllm", version: "1.2.0", manifest: manifest("vllm"), on_demand: true, running: true, memory_bytes: 1048576 },
     ];
@@ -48,51 +84,15 @@ describe("BackgroundServices", () => {
       config: { model_label: "Qwen3", inference_service: "vllm" },
     };
     mount();
-    const row = screen.getByTestId("background-service-vllm");
-    expect(within(row).getByText("Inference engine")).toBeTruthy();
-    expect(within(row).getByTestId("background-service-model-vllm").textContent).toBe("serving Qwen3");
-    fireEvent.click(within(row).getByRole("button", { name: /close/i }));
+    expect(screen.getByTestId("background-service-detail-vllm").textContent).toBe("serving Qwen3");
+    fireEvent.click(screen.getByRole("button", { name: "Close Vllm" }));
     expect(screen.getByText(/releases that model first/)).toBeTruthy();
     mocks.node = { plugin_services: [], config: null };
   });
 
-  it("lists running on-demand plugins with memory and leaves resident ones out", () => {
-    mocks.plugins = [
-      { code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true, memory_bytes: 314572800 },
-      { code: "logs", version: "1.0.0", manifest: manifest("logs"), on_demand: false, running: true },
-    ];
-    mount();
-    const row = screen.getByTestId("background-service-goose");
-    expect(within(row).getByText("Goose")).toBeTruthy();
-    expect(within(row).getByText("300 MB")).toBeTruthy();
-    expect(within(row).getByText("0.1.0")).toBeTruthy();
-    expect(screen.queryByTestId("background-service-logs")).toBeNull();
-  });
-
-  it("close asks for confirmation then calls close and refreshes", async () => {
-    mocks.plugins = [{ code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: true }];
-    mocks.closePlugin.mockResolvedValue({ code: "goose", running: false });
-    mount();
-    fireEvent.click(within(screen.getByTestId("background-service-goose")).getByRole("button", { name: "Close" }));
-    expect(mocks.closePlugin).not.toHaveBeenCalled();
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(mocks.closePlugin).toHaveBeenCalledWith("goose"));
-    await waitFor(() => expect(mocks.refetch).toHaveBeenCalled());
-  });
-
-  it("stopped on-demand plugins offer Open", async () => {
-    mocks.plugins = [{ code: "goose", version: "0.1.0", manifest: manifest("goose"), on_demand: true, running: false }];
-    mocks.openPlugin.mockResolvedValue({ code: "goose", running: true });
-    mount();
-    const row = screen.getByTestId("background-service-goose");
-    expect(within(row).getByText("Stopped")).toBeTruthy();
-    fireEvent.click(within(row).getByRole("button", { name: "Open" }));
-    await waitFor(() => expect(mocks.openPlugin).toHaveBeenCalledWith("goose"));
-  });
-
-  it("says so when nothing runs in the background", () => {
+  it("says so when no plugin is installed", () => {
     mocks.plugins = [];
     mount();
-    expect(screen.getByText("No plugin runs on demand on this machine.")).toBeTruthy();
+    expect(screen.getByText("No plugin is installed on this machine.")).toBeTruthy();
   });
 });

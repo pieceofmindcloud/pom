@@ -185,9 +185,10 @@ the boundary.
 
 ## Menu and routes
 
-`/config/background-services` (Settings > Background services,
-`routes/BackgroundServices.tsx`) lists the on-demand plugins with their memory
-and closes or opens them; it is not on the user surface (`USER_ROUTES`).
+`/config/services` (Settings > Services, `routes/BackgroundServices.tsx`;
+`/config/background-services` redirects) shows every plugin as an app, the
+open ones on a dock-like shelf and the stopped ones in a folder, and closes or
+opens the on-demand ones; it is not on the user surface (`USER_ROUTES`).
 
 `src/components/nav.ts` holds the menu as data (`NAV`: sections and leaves with
 `labelKey`, route and `end`), consumed by the Sidebar and by the router in

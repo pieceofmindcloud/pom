@@ -17,7 +17,7 @@ O Chat conversa com o modelo que a sua rede serve, pela mesma rota compatível c
 
 :::cards
 ### Agentes
-Quando um plugin desta máquina serve um agente (o plugin do Goose), um seletor ao lado do modelo permite conversar com ele. O agente trabalha na pasta de projetos da máquina, mostra cada ferramenta que executa e pede permissão antes de algo arriscado; feche-o em Configurações > Serviços em segundo plano.
+Quando um plugin desta máquina serve um agente (o plugin do Goose), um seletor ao lado do modelo permite conversar com ele. O agente trabalha na pasta de projetos da máquina, mostra cada ferramenta que executa e pede permissão antes de algo arriscado; feche-o em Configurações > Serviços.
 ### Modelo
 Qual modelo responde. Só aparecem aqui os modelos que alguma máquina da rede está servindo.
 ### Cabeça de inferência

@@ -1,25 +1,25 @@
 ---
 id: screen-background-services
-label: Background services
-summary: The plugins that run only while opened, the memory each uses, and closing them
-title: Background services
-route: /config/background-services
+label: Services
+summary: Every app this machine runs, open and stopped, like a dock and a folder
+title: Services
+route: /config/services
 order: 315
 ---
 
 :::lead
-Some plugins run only while you use them. Background services lists them, says how much memory each running one takes, and closes the ones you are done with. It is the only place to close a plugin that has no menu entry of its own, such as the Goose agent the Chat talks to.
+Services shows every plugin this machine runs as an app: its icon with its name underneath. The open ones sit on a shelf like the macOS Dock, the stopped ones in a folder below. It is where you start and stop the apps that have no menu entry, such as the inference engines (vLLM, Avalon) and the Goose agent the Chat talks to.
 :::
 
 :::cards
-### Running
-Each on-demand plugin whose process is up, with its version and, where this machine can measure it (Linux), the resident memory of the plugin and everything it started.
+### Open
+The shelf at the top: every app whose process is up, with a light under it. Below the name: what it is (an inference engine and the model it serves), or the memory it uses where this machine can measure it (Linux). A plugin that always runs says "always on".
 ### Close
-Stops the plugin at once, after a confirmation. It keeps its license, installation, settings and data, and uses no memory, processor or GPU until it is opened again.
+The X that shows on an open app when you point at it stops it, after a confirmation. It keeps its license, installation, settings and data, and uses no memory, processor or GPU until opened again. Closing the engine that serves this machine's model releases that model first.
 ### Stopped
-The on-demand plugins that are installed but closed. Open starts one again; the Chat also opens an agent plugin by itself when you pick its agent.
+The folder below: the apps installed but closed, dimmed. Click an icon to open it. A deployment starts an inference engine by itself, and the Chat opens an agent plugin when you pick its agent.
 :::
 
 :::deep docs/subsystems/plugins-ui.md
-On-demand plugins and the ACP agents they serve
+On-demand plugins, inference engines and the ACP agents they serve
 :::

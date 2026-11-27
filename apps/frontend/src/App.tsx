@@ -707,7 +707,9 @@ export default function App() {
                         <Route path="/config/preferences" element={<Page><Preferences /></Page>} />
                         <Route path="/config/preferences/admin" element={<Page><Preferences administrative /></Page>} />
                         <Route path="/config/about" element={<Page><About /></Page>} />
-                        <Route path="/config/background-services" element={<Page><BackgroundServices /></Page>} />
+                        <Route path="/config/services" element={<Page><BackgroundServices /></Page>} />
+                        {/* Renamed: it lists every app, not only the background ones. */}
+                        <Route path="/config/background-services" element={<Navigate to="/config/services" replace />} />
                         <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                         <Route path="/config/keys/connection" element={<Page><ConnectionKeys /></Page>} />
                         <Route path="/config/folders" element={<Page><ModelPaths /></Page>} />

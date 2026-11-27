@@ -496,10 +496,13 @@ while the node does not answer.
   links, search + clear, empty state, and the mobile nav/reader/`Voltar`
   contract. Loading the embedded set requires
   `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
-- `BackgroundServices.tsx` - Settings > Background services at
-  `/config/background-services`: the on-demand plugins from `usePluginUi`,
-  running first with `memory_bytes` (`formatMemory`) and a confirmed Close
-  (`closePlugin`), stopped ones with Open (`openPlugin`). Inference engines
+- `BackgroundServices.tsx` - Settings > Services at `/config/services`
+  (`/config/background-services` redirects): every plugin from `usePluginUi`
+  as an app icon (`icon_image`, else a glyph) with its name underneath, the
+  open ones (running, or resident: "always on") on a dock-like shelf and the
+  stopped ones in a folder grid. An open on-demand app has a hover X with a
+  confirmed Close (`closePlugin`); a click on a stopped icon opens it
+  (`openPlugin`); `memory_bytes` shows as `formatMemory`. Inference engines
   (a `kind: inference` service in `NodeInfo.plugin_services`) get a badge and
   the model they serve, and their Close warns that the node releases it. The only place to
   close a plugin without a menu entry. Tests: `BackgroundServices.test.tsx`.

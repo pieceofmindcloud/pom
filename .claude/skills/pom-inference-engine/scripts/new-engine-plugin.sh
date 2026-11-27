@@ -167,7 +167,7 @@ manifest["description"] = {
     "en": f"Runs models on the {engine_name} inference engine.",
     "pt-BR": f"Executa modelos no motor de inferência {engine_name}.",
 }
-# An engine is on demand with no menu entry: Background services starts and
+# An engine is on demand with no menu entry: Settings > Services starts and
 # stops it, a deployment starts it, its log and facts are a Logs screen tab.
 manifest["lifecycle"] = "on_demand"
 manifest["menu"] = []

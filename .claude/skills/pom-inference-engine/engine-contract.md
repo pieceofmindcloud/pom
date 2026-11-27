@@ -57,7 +57,7 @@ this (`overlay/ui/src/screens/Main.tsx`, `EngineLog`).
 ## Lifecycle and menu
 
 An engine plugin is `"lifecycle": "on_demand"` with an empty `menu`: the
-operator starts and stops it in the POM's Settings > Background services, a
+operator starts and stops it in the POM's Settings > Services, a
 deployment starts it (the node opens it before `engine.load`), and its log
 and facts (`engine.status`: `model`, `n_ctx`, `in_flight`, `runtime.version`)
 are a tab of the Logs screen. Keep `engine.status` filling those fields. A

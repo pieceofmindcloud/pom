@@ -118,8 +118,12 @@ Models, GGUF reading, planning and slice files. The module is used by
   is valid; in a hybrid layout, only the ends derived from `arch_boundaries` are
   valid. A kind change at the index of a start-relative count (the dense prefix
   of a MoE, `leading_dense_block_count`) is not a boundary, because the slicer
-  rebases that count. `prefix_cut_granularity` only reports a step when every cut has the same
-  distance; the consumer uses the cut list when the boundaries are irregular.
+  rebases that count. `inkling2` and `inkling2_loop` are restricted to the full
+  range: their depth mixer needs residual states the current pipeline boundary
+  cannot carry, and the loop variant also requires `loop.end` to fit its local
+  physical layer count. `prefix_cut_granularity` only reports a step when every
+  cut has the same distance; the consumer uses the cut list when the boundaries
+  are irregular.
 - `splitter.rs` - maps the source to read the header and the weights without
   keeping a GGUF fd open. The logical table is not a storage order: the selected
   payloads are sorted by `(part_index, src_offset)` before the copy to avoid

@@ -43,7 +43,7 @@ desktop = ["dep:tao", "dep:wry", "dep:webkit2gtk"]
 [dependencies]
 # All the llama.cpp code (FFI, MTP, MoE, GGUF, sysmon) lives here, so that
 # editing the backend/network/routing of `node` does not rebuild it.
-llama-engine = { git = "https://github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "3c2244d1b2f4865f383c0d2a61a6c9b2cb71eb3c" }
+llama-engine = { git = "https://github.com/pieceofmindcloud/pom-plugin-llama.cpp.git", rev = "b90e71ae3238da60f49e7d515bdb2268f1a8af11" }
 brand = { path = "../brand" }
 enterprise-protocol = { path = "../enterprise-protocol" }
 arc-swap = "1"

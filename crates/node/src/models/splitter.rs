@@ -883,6 +883,59 @@ fn split_impl(
         .iter()
         .find(|entry| entry.key.ends_with(".block_count"))
         .and_then(|entry| source_scalar_u32(mm, entry));
+    let inkling_loop_core = if arch == "inkling2_loop" {
+        let core_start = entries
+            .iter()
+            .find(|entry| entry.key == "inkling2_loop.loop.start")
+            .and_then(|entry| source_scalar_u32(mm, entry))
+            .ok_or_else(|| anyhow::anyhow!("inkling2_loop.loop.start is missing or invalid"))?;
+        let core_end = entries
+            .iter()
+            .find(|entry| entry.key == "inkling2_loop.loop.end")
+            .and_then(|entry| source_scalar_u32(mm, entry))
+            .ok_or_else(|| anyhow::anyhow!("inkling2_loop.loop.end is missing or invalid"))?;
+        let block_size = entries
+            .iter()
+            .find(|entry| entry.key == "inkling2_loop.attn_res.block_size")
+            .and_then(|entry| source_scalar_u32(mm, entry))
+            .filter(|&size| size > 0)
+            .ok_or_else(|| anyhow::anyhow!("inkling2_loop.attn_res.block_size is missing or invalid"))?;
+        let total = original_block_count
+            .ok_or_else(|| anyhow::anyhow!("inkling2_loop.block_count is missing or invalid"))?;
+        if core_start == 0 || core_start >= core_end || core_end > total
+            || core_start % block_size != 0 || core_end % block_size != 0
+        {
+            bail!("inkling2_loop has invalid core [{core_start}, {core_end}) with block size {block_size} for {total} layers");
+        }
+        Some((core_start, core_end, block_size))
+    } else {
+        None
+    };
+    if matches!(arch.as_str(), "inkling2" | "inkling2_loop") {
+        let total = original_block_count
+            .ok_or_else(|| anyhow::anyhow!("{arch}.block_count is missing or invalid"))?;
+        let block_size = entries
+            .iter()
+            .find(|entry| entry.key == format!("{arch}.attn_res.block_size"))
+            .and_then(|entry| source_scalar_u32(mm, entry))
+            .filter(|&size| size > 0)
+            .ok_or_else(|| anyhow::anyhow!("{arch}.attn_res.block_size is missing or invalid"))?;
+        let end_exclusive = end_layer
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("layer range end overflow"))?;
+        if end_exclusive > total || start_layer % block_size != 0
+            || (end_exclusive != total && end_exclusive % block_size != 0)
+        {
+            bail!("{arch} slice L{start_layer}-{end_layer} is not aligned to residual blocks of size {block_size}");
+        }
+        if let Some((core_start, core_end, _)) = inkling_loop_core {
+            let overlaps_core = start_layer < core_end && end_exclusive > core_start;
+            let contains_core = start_layer <= core_start && end_exclusive >= core_end;
+            if overlaps_core && !contains_core {
+                bail!("inkling2_loop slice L{start_layer}-{end_layer} cuts through loop core [{core_start}, {core_end})");
+            }
+        }
+    }
     let ple_key = format!("{arch}.ple.layers");
     let ple_layers = if crate::gguf::is_layer_selector_array(&ple_key, &arch) {
         entries
@@ -987,6 +1040,25 @@ fn split_impl(
                 kv_out.push(KvOut::Encoded(buf));
             }
             continue;
+        }
+        if let Some((core_start, core_end, _)) = inkling_loop_core {
+            let end_exclusive = end_layer + 1;
+            let carries_core = start_layer <= core_start && end_exclusive >= core_end;
+            let local_core = if carries_core {
+                (core_start - start_layer, core_end - start_layer, None)
+            } else {
+                (0, 0, Some(1))
+            };
+            let loop_value = match key.as_str() {
+                "inkling2_loop.loop.start" => Some(local_core.0),
+                "inkling2_loop.loop.end" => Some(local_core.1),
+                "inkling2_loop.loop.count" => local_core.2,
+                _ => None,
+            };
+            if let Some(value) = loop_value {
+                kv_out.push(KvOut::Encoded(encode_kv_like_source(key, entry.vtype, value)));
+                continue;
+            }
         }
         if key.ends_with(".block_count") {
             kv_out.push(KvOut::Encoded(encode_kv_u32(key, n_split)));
@@ -2395,6 +2467,8 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
         if key.starts_with(&format!("{}.", crate::brand::slug()))
             || key.ends_with(".block_count")
             || key.ends_with(".attention.recurrent_layers")
+            || (arch == "inkling2_loop"
+                && matches!(key.as_str(), "inkling2_loop.loop.start" | "inkling2_loop.loop.end" | "inkling2_loop.loop.count"))
         {
             continue; // re-added below
         }
@@ -2442,6 +2516,45 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
         &format!("{arch}.block_count"),
         total,
     )));
+    if arch == "inkling2_loop" {
+        let mut source_core = None;
+        for (index, source) in parsed.iter().enumerate() {
+            let value = |key: &str| {
+                source
+                    .kv
+                    .iter()
+                    .find(|entry| entry.key == key)
+                    .and_then(|entry| merged_scalar_u32(mmaps[index].as_ref(), entry.value_start, entry.value_type))
+            };
+            let start = value("inkling2_loop.loop.start")
+                .ok_or_else(|| anyhow::anyhow!("inkling2_loop.loop.start is missing in slice {}", index + 1))?;
+            let end = value("inkling2_loop.loop.end")
+                .ok_or_else(|| anyhow::anyhow!("inkling2_loop.loop.end is missing in slice {}", index + 1))?;
+            let count = value("inkling2_loop.loop.count")
+                .ok_or_else(|| anyhow::anyhow!("inkling2_loop.loop.count is missing in slice {}", index + 1))?;
+            if start < end {
+                let global = (parts[index].start_layer + start, parts[index].start_layer + end, count);
+                if source_core.is_some_and(|previous| previous != global) {
+                    bail!("Inkling Loop core metadata differs between slices");
+                }
+                source_core = Some(global);
+            }
+        }
+        let (core_start, core_end, passes) = match source_core {
+            Some((start, end, passes))
+                if start_first <= start && end_last + 1 >= end =>
+            {
+                (start - start_first, end - start_first, passes)
+            }
+            Some((start, end, _)) if start < end_last + 1 && end > start_first => {
+                bail!("merged Inkling Loop range L{start_first}-{end_last} cuts through core [{start}, {end})")
+            }
+            _ => (0, 0, 1),
+        };
+        kv_out.push(KvOut::Encoded(encode_kv_u32("inkling2_loop.loop.start", core_start)));
+        kv_out.push(KvOut::Encoded(encode_kv_u32("inkling2_loop.loop.end", core_end)));
+        kv_out.push(KvOut::Encoded(encode_kv_u32("inkling2_loop.loop.count", passes)));
+    }
     if let Some(orig) = parsed.iter().filter_map(|p| p.original_block_count).max() {
         kv_out.push(KvOut::Encoded(encode_kv_u32(
             &crate::brand::gguf_key("original_block_count"),
@@ -2761,6 +2874,92 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
 }
 
 #[cfg(test)]
+fn inkling2_loop_test_gguf_bytes() -> Vec<u8> {
+    let mut tensors: Vec<(String, Vec<u64>, u32, Vec<u8>)> = Vec::new();
+    let tensor = |name: String| (name, vec![1], T_F32, 1.0f32.to_le_bytes().to_vec());
+    tensors.push(tensor("token_embd.weight".into()));
+    for layer in 0..24 {
+        tensors.push(tensor(format!("blk.{layer}.attn_q.weight")));
+        if (6..18).contains(&layer) {
+            tensors.push(tensor(format!("blk.{layer}.loop_msg_query.weight")));
+        }
+    }
+    tensors.push(tensor("token_embd_norm.weight".into()));
+    tensors.push(tensor("output_norm.weight".into()));
+    tensors.push(tensor("output.weight".into()));
+    tensors.push(tensor("output_res_query.weight".into()));
+
+    let string = |value: &str| {
+        let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(value.as_bytes());
+        bytes
+    };
+    let string_kv = |key: &str, value: &str| {
+        let mut bytes = string(key);
+        bytes.extend_from_slice(&T_STR.to_le_bytes());
+        bytes.extend_from_slice(&string(value));
+        bytes
+    };
+    let u32_kv = |key: &str, value: u32| {
+        let mut bytes = string(key);
+        bytes.extend_from_slice(&T_U32.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+        bytes
+    };
+    let bool_kv = |key: &str, value: bool| {
+        let mut bytes = string(key);
+        bytes.extend_from_slice(&T_BOOL.to_le_bytes());
+        bytes.push(u8::from(value));
+        bytes
+    };
+    let kv = vec![
+        string_kv("general.architecture", "inkling2_loop"),
+        u32_kv("inkling2_loop.embedding_length", 4),
+        u32_kv("inkling2_loop.block_count", 24),
+        u32_kv("inkling2_loop.attn_res.block_size", 6),
+        u32_kv("inkling2_loop.loop.start", 6),
+        u32_kv("inkling2_loop.loop.end", 18),
+        u32_kv("inkling2_loop.loop.count", 2),
+        u32_kv("inkling2_loop.loop.gate_rank", 2),
+        bool_kv("inkling2_loop.loop.varying", false),
+    ];
+
+    let mut header = Vec::new();
+    header.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+    header.extend_from_slice(&3u32.to_le_bytes());
+    header.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+    header.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+    for entry in &kv {
+        header.extend_from_slice(entry);
+    }
+
+    let mut offset = 0u64;
+    let offsets: Vec<u64> = tensors
+        .iter()
+        .map(|(_, _, _, data)| {
+            let current = offset;
+            offset = align_up(offset + data.len() as u64);
+            current
+        })
+        .collect();
+    for ((name, dims, dtype, _), tensor_offset) in tensors.iter().zip(offsets) {
+        header.extend_from_slice(&string(name));
+        header.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+        for dim in dims {
+            header.extend_from_slice(&dim.to_le_bytes());
+        }
+        header.extend_from_slice(&dtype.to_le_bytes());
+        header.extend_from_slice(&tensor_offset.to_le_bytes());
+    }
+    header.resize(align_up(header.len() as u64) as usize, 0);
+    for (_, _, _, data) in tensors {
+        header.extend_from_slice(&data);
+        header.resize(align_up(header.len() as u64) as usize, 0);
+    }
+    header
+}
+
+#[cfg(test)]
 /// A minimal structurally valid qwen35 GGUF with `n_blocks` layers and a
 /// `nextn` (MTP) block only on the last layer, mirroring the real model: the
 /// predictor lives at the very end, never in the middle.
@@ -3051,6 +3250,127 @@ mod tests {
         None
     }
 
+    /// End-to-end residual-bank transport on a real model: the logits of a
+    /// pipeline of slices must match the whole model's, for the prompt and for
+    /// one decode step after it. CPU only; point `POM_RESIDUAL_E2E_GGUF` at an
+    /// Inkling 2 (or other residual-bank) GGUF and run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn residual_bank_pipeline_matches_the_whole_model() {
+        use llama_engine::llm::{EngineConfig, LlmEngine, ModelCache};
+        let Ok(source) = std::env::var("POM_RESIDUAL_E2E_GGUF") else {
+            eprintln!("POM_RESIDUAL_E2E_GGUF not set; skipping");
+            return;
+        };
+        let source = PathBuf::from(source);
+        let dir = std::env::var("POM_RESIDUAL_E2E_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("pom-residual-e2e"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout = crate::gguf::read_layout(&source).unwrap();
+        let total = layout.layer_bytes.len() as u32;
+        let ends = layout.valid_prefix_end_layers();
+        assert!(ends.len() >= 2, "no valid cut in {ends:?}");
+        // Up to three slices: cut at the first and the second-to-last valid ends.
+        let mut cuts = vec![ends[0]];
+        if ends.len() >= 3 && ends[ends.len() - 2] != ends[0] {
+            cuts.push(ends[ends.len() - 2]);
+        }
+        let mut ranges = Vec::new();
+        let mut start = 0;
+        for &end in &cuts {
+            ranges.push((start, end));
+            start = end + 1;
+        }
+        ranges.push((start, total - 1));
+        eprintln!("slices: {ranges:?}");
+        let cfg = |need_embeddings: bool| EngineConfig {
+            n_ctx: 512,
+            offload_kqv: false,
+            cache_type_k: llama_engine::KvCacheType::F32,
+            cache_type_v: llama_engine::KvCacheType::F32,
+            fit_memory: false,
+            fit_memory_margin_mb: 0,
+            n_batch: 512,
+            n_ubatch: 512,
+            n_gpu_layers: 0,
+            devices: Some(vec![]),
+            n_threads: 0,
+            max_sessions: 1,
+            need_embeddings,
+            mtp: false,
+            mtp_cpu_fallback_enabled: false,
+            mtp_placement: Default::default(),
+            moe_experts_in_ram: false,
+            moe_cache_mib: 0,
+            rs_seq_window: 0,
+            mmproj_path: None,
+            mtp_draft_path: None,
+        };
+        let argmax = |l: &[f32]| {
+            l.iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(i, _)| i as i32)
+                .unwrap()
+        };
+        let max_diff = |a: &[f32], b: &[f32]| {
+            assert_eq!(a.len(), b.len());
+            a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+        };
+
+        // Whole model: prompt, then one decode step.
+        let (tokens, whole_prompt, next, whole_step) = {
+            let cache = ModelCache::new();
+            let mut whole =
+                LlmEngine::load_with_cache(source.to_str().unwrap(), &cfg(false), &cache, false)
+                    .unwrap();
+            let tokens = whole.tokenize("The capital of France is", true, false);
+            whole.decode_tokens(&tokens, 0, 0, false).unwrap();
+            let prompt = whole.logits_ith(-1).to_vec();
+            let next = argmax(&prompt);
+            whole.decode_tokens(&[next], tokens.len() as u32, 0, false).unwrap();
+            (tokens, prompt, next, whole.logits_ith(-1).to_vec())
+        };
+
+        let mut engines = Vec::new();
+        for (index, &(start, end)) in ranges.iter().enumerate() {
+            let path = dir.join(format!("slice-{start}-{end}.gguf"));
+            if !path.exists() {
+                split(&source, &path, start, end, index == 0, index + 1 == ranges.len(), |_| {})
+                    .unwrap();
+            }
+            let last = index + 1 == ranges.len();
+            engines.push(
+                LlmEngine::load_with_cache(path.to_str().unwrap(), &cfg(!last), &ModelCache::new(), false)
+                    .unwrap(),
+            );
+        }
+        let mut run = |ids: &[i32], pos: u32| -> Vec<f32> {
+            let n = ids.len();
+            engines[0].decode_tokens(ids, pos, 0, false).unwrap();
+            let mut residual = engines[0].take_residual(n).unwrap();
+            let count = engines.len();
+            for (index, engine) in engines.iter_mut().enumerate().skip(1) {
+                eprintln!("stage {index} receives shape {:?}", residual.shape);
+                engine
+                    .decode_hidden(&residual.values, &residual.shape, n, pos, 0, false, Some(ids))
+                    .unwrap();
+                if index + 1 < count {
+                    residual = engine.take_residual(n).unwrap();
+                }
+            }
+            engines.last().unwrap().logits_ith(-1).to_vec()
+        };
+        let sliced_prompt = run(&tokens, 0);
+        let sliced_step = run(&[next], tokens.len() as u32);
+        let (d_prompt, d_step) = (max_diff(&whole_prompt, &sliced_prompt), max_diff(&whole_step, &sliced_step));
+        eprintln!("max |Δlogit| prompt {d_prompt}, step {d_step}");
+        assert_eq!(argmax(&whole_prompt), argmax(&sliced_prompt));
+        assert_eq!(argmax(&whole_step), argmax(&sliced_step));
+        assert!(d_prompt < 1e-2 && d_step < 1e-2, "sliced logits diverge");
+    }
+
     fn kv_u32(mm: &[u8], want: &str) -> Option<u32> {
         let mut r = R { data: mm, pos: 0 };
         let magic = r.u32().ok()?;
@@ -3076,6 +3396,101 @@ mod tests {
             r.skip_value(vtype).ok()?;
         }
         None
+    }
+
+    fn kv_string(mm: &[u8], want: &str) -> Option<String> {
+        let mut r = R { data: mm, pos: 0 };
+        if r.u32().ok()? != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?;
+        r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            if key == want && vtype == T_STR {
+                return Some(r.string().ok()?);
+            }
+            r.skip_value(vtype).ok()?;
+        }
+        None
+    }
+
+    #[test]
+    fn inkling2_loop_slices_rebase_the_core_and_leave_other_shards_unlooped() {
+        let dir = std::env::temp_dir().join(format!("pom-inkling2-loop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source_path = dir.join("inkling2-loop.gguf");
+        let prefix_path = dir.join("prefix.gguf");
+        let core_path = dir.join("core.gguf");
+        let tail_path = dir.join("tail.gguf");
+        let whole_path = dir.join("whole.gguf");
+        std::fs::write(&source_path, inkling2_loop_test_gguf_bytes()).unwrap();
+
+        let layout = crate::gguf::read_layout(&source_path).unwrap();
+        assert_eq!(layout.restricted_slice_starts, Some(vec![6, 18]));
+        assert_eq!(layout.valid_prefix_end_layers(), vec![5, 17, 23]);
+
+        split(&source_path, &prefix_path, 0, 5, true, false, |_| {}).unwrap();
+        let prefix = std::fs::read(&prefix_path).unwrap();
+        assert_eq!(kv_u32(&prefix, "inkling2_loop.block_count"), Some(6));
+        assert_eq!(kv_u32(&prefix, "inkling2_loop.loop.start"), Some(0));
+        assert_eq!(kv_u32(&prefix, "inkling2_loop.loop.end"), Some(0));
+        assert_eq!(kv_u32(&prefix, "inkling2_loop.loop.count"), Some(1));
+        assert_eq!(kv_u32(&prefix, "pom.start_layer"), Some(0));
+        assert_eq!(kv_u32(&prefix, "pom.end_layer"), Some(5));
+
+        split(&source_path, &core_path, 6, 17, false, false, |_| {}).unwrap();
+        let core = std::fs::read(&core_path).unwrap();
+        assert_eq!(kv_u32(&core, "inkling2_loop.block_count"), Some(12));
+        assert_eq!(kv_u32(&core, "inkling2_loop.loop.start"), Some(0));
+        assert_eq!(kv_u32(&core, "inkling2_loop.loop.end"), Some(12));
+        assert_eq!(kv_u32(&core, "inkling2_loop.loop.count"), Some(2));
+        assert_eq!(kv_u32(&core, "pom.start_layer"), Some(6));
+        assert_eq!(kv_u32(&core, "pom.end_layer"), Some(17));
+
+        split(&source_path, &tail_path, 18, 23, false, true, |_| {}).unwrap();
+        let tail = std::fs::read(&tail_path).unwrap();
+        assert_eq!(kv_u32(&tail, "inkling2_loop.block_count"), Some(6));
+        assert_eq!(kv_u32(&tail, "inkling2_loop.loop.start"), Some(0));
+        assert_eq!(kv_u32(&tail, "inkling2_loop.loop.end"), Some(0));
+        assert_eq!(kv_u32(&tail, "inkling2_loop.loop.count"), Some(1));
+        assert_eq!(kv_u32(&tail, "pom.start_layer"), Some(18));
+        assert_eq!(kv_u32(&tail, "pom.end_layer"), Some(23));
+
+        split(&source_path, &whole_path, 0, 23, true, true, |_| {}).unwrap();
+        let whole = std::fs::read(&whole_path).unwrap();
+        assert_eq!(
+            kv_string(&whole, "general.architecture").as_deref(),
+            Some("inkling2_loop")
+        );
+        assert_eq!(kv_u32(&whole, "inkling2_loop.block_count"), Some(24));
+        assert_eq!(kv_u32(&whole, "inkling2_loop.loop.start"), Some(6));
+        assert_eq!(kv_u32(&whole, "inkling2_loop.loop.end"), Some(18));
+        assert_eq!(
+            layout.slice_bytes(0, 23, true),
+            whole_path.metadata().unwrap().len()
+        );
+
+        let merged_path = dir.join("merged.gguf");
+        merge(
+            &[
+                MergePart { path: prefix_path, start_layer: 0, end_layer: 5 },
+                MergePart { path: core_path, start_layer: 6, end_layer: 17 },
+                MergePart { path: tail_path, start_layer: 18, end_layer: 23 },
+            ],
+            &merged_path,
+            |_| {},
+        )
+        .unwrap();
+        let merged = std::fs::read(&merged_path).unwrap();
+        assert_eq!(kv_u32(&merged, "inkling2_loop.block_count"), Some(24));
+        assert_eq!(kv_u32(&merged, "inkling2_loop.loop.start"), Some(6));
+        assert_eq!(kv_u32(&merged, "inkling2_loop.loop.end"), Some(18));
+        assert_eq!(kv_u32(&merged, "inkling2_loop.loop.count"), Some(2));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Writes a real and a virtual slice of a real model for a manual load

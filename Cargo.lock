@@ -3192,7 +3192,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 [[package]]
 name = "llama-cpp-sys-2"
 version = "0.1.154"
-source = "git+https://github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=25994856816d6fe9f8dab889c7c33f33df9be1d8#25994856816d6fe9f8dab889c7c33f33df9be1d8"
+source = "git+https://github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=b90e71ae3238da60f49e7d515bdb2268f1a8af11#b90e71ae3238da60f49e7d515bdb2268f1a8af11"
 dependencies = [
  "bindgen",
  "cc",
@@ -3205,7 +3205,7 @@ dependencies = [
 [[package]]
 name = "llama-engine"
 version = "0.1.0"
-source = "git+https://github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=25994856816d6fe9f8dab889c7c33f33df9be1d8#25994856816d6fe9f8dab889c7c33f33df9be1d8"
+source = "git+https://github.com/pieceofmindcloud/pom-plugin-llama.cpp.git?rev=b90e71ae3238da60f49e7d515bdb2268f1a8af11#b90e71ae3238da60f49e7d515bdb2268f1a8af11"
 dependencies = [
  "anyhow",
  "cc",

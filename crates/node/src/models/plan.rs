@@ -1049,12 +1049,22 @@ mod tests {
             has_nextn_tensors: false,
             serialized: None,
             restricted_slice_starts: None,
+            residual_block_size: None,
+            inkling_loop_core: None,
         }
     }
 
-    fn inkling2_unsplittable_layout(n: u32, per_layer_mb: f64) -> GgufLayout {
+    fn inkling2_layout(n: u32, per_layer_mb: f64) -> GgufLayout {
         let mut layout = layout(n, per_layer_mb);
-        layout.restricted_slice_starts = Some(Vec::new());
+        layout.restricted_slice_starts = Some((6..n).step_by(6).collect());
+        layout.residual_block_size = Some(6);
+        layout
+    }
+
+    fn inkling2_loop_layout(n: u32, per_layer_mb: f64) -> GgufLayout {
+        let mut layout = inkling2_layout(n, per_layer_mb);
+        layout.restricted_slice_starts = Some(vec![6, 18]);
+        layout.inkling_loop_core = Some((6, 18));
         layout
     }
 
@@ -1129,47 +1139,63 @@ mod tests {
     }
 
     #[test]
-    fn inkling2_loop_size_plan_refuses_partial_ranges() {
-        let l = inkling2_unsplittable_layout(24, 100.0);
-        let plan = plan_equal(&l, 2).unwrap();
-
-        assert_eq!(
-            plan.ranges
-                .iter()
-                .filter(|range| !range.empty)
-                .map(|range| (range.start_layer, range.end_layer))
-                .collect::<Vec<_>>(),
-            vec![(0, 23)]
-        );
-        assert!(plan.blocked);
-        assert!(plan
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("smallest architecture-valid range")));
-    }
-
-    #[test]
-    fn inkling2_loop_budget_plan_only_assigns_the_full_model_when_it_fits() {
-        let l = inkling2_unsplittable_layout(24, 100.0);
-        let plan =
-            plan_split("/m/inkling2-loop.gguf", &l, &[budget("whole", 3000.0)], 0.0).unwrap();
-
-        assert!(plan.complete);
-        assert_eq!(plan.shards.len(), 1);
-        assert_eq!(
-            (plan.shards[0].start_layer, plan.shards[0].end_layer),
-            (0, 23)
-        );
-
-        let too_small = plan_split(
-            "/m/inkling2-loop.gguf",
+    fn inkling2_planning_aligns_every_shard_to_a_residual_block() {
+        let l = inkling2_layout(24, 100.0);
+        assert_eq!(l.valid_prefix_end_layers(), vec![5, 11, 17, 23]);
+        let plan = plan_split(
+            "/m/inkling2.gguf",
             &l,
-            &[budget("small", 1500.0), budget("also-small", 1500.0)],
+            &[
+                budget("a", 800.0),
+                budget("b", 800.0),
+                budget("c", 800.0),
+                budget("d", 800.0),
+            ],
             0.0,
         )
         .unwrap();
-        assert!(too_small.shards.is_empty());
-        assert!(too_small
+        assert_eq!(
+            plan.shards
+                .iter()
+                .map(|shard| (shard.start_layer, shard.end_layer))
+                .collect::<Vec<_>>(),
+            vec![(0, 5), (6, 11), (12, 17), (18, 23)]
+        );
+    }
+
+    #[test]
+    fn inkling2_loop_planning_keeps_the_loop_core_whole() {
+        let l = inkling2_loop_layout(24, 100.0);
+        assert_eq!(l.valid_prefix_end_layers(), vec![5, 17, 23]);
+        let plan = plan_split(
+            "/m/inkling2-loop.gguf",
+            &l,
+            &[budget("prelude", 1500.0), budget("core", 1500.0), budget("tail", 1500.0)],
+            0.0,
+        )
+        .unwrap();
+        assert!(plan.complete);
+        assert_eq!(
+            plan.shards
+                .iter()
+                .map(|shard| (shard.start_layer, shard.end_layer))
+                .collect::<Vec<_>>(),
+            vec![(0, 5), (6, 17), (18, 23)]
+        );
+    }
+
+    #[test]
+    fn inkling2_loop_small_budgets_do_not_cut_through_the_core() {
+        let l = inkling2_loop_layout(24, 100.0);
+        let plan = plan_split(
+            "/m/inkling2-loop.gguf",
+            &l,
+            &[budget("small", 400.0), budget("also-small", 400.0)],
+            0.0,
+        )
+        .unwrap();
+        assert!(plan.shards.is_empty());
+        assert!(plan
             .warnings
             .iter()
             .any(|warning| warning.contains("smallest architecture-valid range")));
